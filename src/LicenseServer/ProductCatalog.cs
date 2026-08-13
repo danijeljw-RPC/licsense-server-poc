@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
+using LicenseServer.Authorization;
 
 namespace LicenseServer;
 
@@ -17,12 +18,16 @@ internal static partial class LicenseEditions
         value is not null && All.Contains(value, StringComparer.Ordinal);
 }
 
-internal sealed partial class ProductCatalogService(ApplicationDbContext db, TimeProvider clock)
+internal sealed partial class ProductCatalogService(
+    ApplicationDbContext db,
+    TimeProvider clock,
+    PermissionGuard permissions)
 {
-    public Task<List<ProductCatalogItem>> SearchAsync(
+    public async Task<List<ProductCatalogItem>> SearchAsync(
         string? search = null,
         CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.ProductsRead);
         var query = db.ProductDefinitions.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -32,20 +37,23 @@ internal sealed partial class ProductCatalogService(ApplicationDbContext db, Tim
                 || EF.Functions.ILike(item.DisplayName, $"%{term}%"));
         }
 
-        return query.OrderBy(item => item.DisplayName)
+        return await query.OrderBy(item => item.DisplayName)
             .Select(item => new ProductCatalogItem(
                 item.Id, item.Code, item.DisplayName, item.Description, item.IsActive,
                 item.Entitlements.Count, item.CreatedAt, item.UpdatedAt))
             .ToListAsync(cancellationToken);
     }
 
-    public Task<List<ProductCatalogItem>> ActiveAsync(CancellationToken cancellationToken = default) =>
-        db.ProductDefinitions.AsNoTracking().Where(item => item.IsActive)
+    public async Task<List<ProductCatalogItem>> ActiveAsync(CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.ProductsRead);
+        return await db.ProductDefinitions.AsNoTracking().Where(item => item.IsActive)
             .OrderBy(item => item.DisplayName)
             .Select(item => new ProductCatalogItem(
                 item.Id, item.Code, item.DisplayName, item.Description, item.IsActive,
                 item.Entitlements.Count, item.CreatedAt, item.UpdatedAt))
             .ToListAsync(cancellationToken);
+    }
 
     public async Task<ProductCatalogItem> CreateAsync(
         string? code,
@@ -54,6 +62,7 @@ internal sealed partial class ProductCatalogService(ApplicationDbContext db, Tim
         string actor,
         CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.ProductsManage);
         var stableCode = code?.Trim();
         var name = displayName?.Trim();
         if (stableCode is null || !ProductCodePattern().IsMatch(stableCode))
@@ -85,6 +94,7 @@ internal sealed partial class ProductCatalogService(ApplicationDbContext db, Tim
         string actor,
         CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.ProductsManage);
         var product = await db.ProductDefinitions.SingleOrDefaultAsync(item => item.Id == id, cancellationToken)
             ?? throw new InvalidOperationException("Product was not found.");
         var name = displayName?.Trim();
@@ -106,6 +116,7 @@ internal sealed partial class ProductCatalogService(ApplicationDbContext db, Tim
         string actor,
         CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.ProductsManage);
         var product = await db.ProductDefinitions.SingleOrDefaultAsync(item => item.Id == id, cancellationToken)
             ?? throw new InvalidOperationException("Product was not found.");
         if (product.IsActive == isActive) return;

@@ -13,7 +13,7 @@ The signer and validator deliberately share `Licensing.Core`, so their interpret
 
 `LicenseServer` combines static server-rendered Blazor pages with narrowly scoped interactive support for Identity passkeys. EF Core and Npgsql persist customers, licenses, entitlements, activation history, signing-key metadata, ASP.NET Core Identity users/roles/passkeys, revocations, and append-only audit events in PostgreSQL. API request contracts remain separate from database entities.
 
-The public device APIs preserve the `/api/v1/licenses/{licenseId}/activate` and `/api/v1/activations/{activationId}/{validate|refresh|deactivate}` routes. Administrative pages and `/api/v1/admin/*` require the `Administrator` policy. The old `local-poc-admin-key` header has been removed.
+The public device APIs preserve the `/api/v1/licenses/{licenseId}/activate` and `/api/v1/activations/{activationId}/{validate|refresh|deactivate}` routes. Administrative pages and `/api/v1/admin/*` use named action-level permission policies. The legacy `Administrator` role is mapped to `System Administrator` during initialization, and the old `local-poc-admin-key` header has been removed.
 
 Activation and deactivation use serializable database transactions. Issuance uses a read-committed transaction containing one atomic PostgreSQL counter upsert, the customer, license, entitlement, and audit insert; rollback therefore returns the counter value as well. Counter-row locking makes concurrent allocation safe without retrying serializable transactions, and the unique license-ID index remains the final integrity boundary. `Licensing:IdTimeZone` controls only the business date embedded in the ID and defaults to `Australia/Adelaide`; every real timestamp remains UTC.
 
@@ -125,20 +125,33 @@ After login, open **Security**:
 - **Passkeys** registers, names, lists, renames, and removes WebAuthn credentials. .NET 10 Identity performs challenge creation, attestation, assertion validation, counter handling, and PostgreSQL public-credential storage. The server never receives private passkey material.
 - The login screen supports password, TOTP challenge, recovery-code challenge, and passkey authentication. Five failed password attempts trigger a 15-minute lockout.
 
+Production requires an MFA-authenticated Identity principal for `users.manage`, `apiKeys.manageAll`, and `licenses.revoke`. Development bypasses this high-risk gate unless `Security:RequireMfaForHighRiskPermissions=true` is set explicitly; the PostgreSQL authorization tests set it to `true`. A user with Identity two-factor enabled receives the `amr=mfa` session claim used by these policies. The built-in role matrix is:
+
+| Role | Access summary |
+| --- | --- |
+| System Administrator | All 16 roadmap permissions |
+| License Manager | Full license/customer/activation lifecycle, product read, self API-key management, and audit read |
+| License Issuer | License read/issue, customer read, product read, and self API-key management |
+| Support Agent | License/customer/product read, activation management, and self API-key management |
+| Product Administrator | Product read/manage and self API-key management |
+| Auditor | Read-only licenses, customers, products, users, and audit plus self API-key management |
+| Billing Automation | License read/issue/update, customer read/manage, product read, and billing management |
+
 WebAuthn requires a secure browser context. `http://localhost` is the browser-defined local-development exception. Deploy behind HTTPS everywhere else, preserve the public host and scheme through trusted forwarded headers, persist Data Protection keys, and set cookie secure policy to `Always` at the TLS boundary.
 
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:
 
-1. **Licenses** supports search, status filters, sort, pagination, and details. The demo seed receives a generated ID shown in this list; its activation code is `POC-DEMO-ACTIVATION-CODE` for development only.
-2. **Issue license** creates a customer, entitlement, and hashed activation credential. Deliver the original activation code through a separate secure channel because it cannot be recovered.
+1. **Licenses** supports case-insensitive search by ID, customer, or normalized customer email, plus status filters, sort, pagination, and details. The demo seed receives a generated ID shown in this list; its activation code is `POC-DEMO-ACTIVATION-CODE` for development only.
+2. **Issue license** selects one active product UUID from the catalog and creates a customer, one entitlement, an authoritative signed `metadata.contactEmail` snapshot, and a hashed activation credential. The normalized email is plaintext to anyone holding the signed file. Deliver the original activation code through a separate secure channel because it cannot be recovered.
 3. A license detail page accepts a client-generated 32-byte Base64 activation token and the device's 64-character SHA-256 ID. It issues a downloadable signed response without rendering either secret back to the page.
 4. For an online activation, enter its token and full device ID to refresh the lease and download the refreshed signed file.
 5. To transfer, use **Deactivate / transfer** first. A second device receives HTTP 409 until authenticated deactivation succeeds; the page makes this ordering explicit.
 6. **Revoke license** requires a reason and confirmation. Revocation prevents online validation and lease refresh. It cannot recall an offline file already in the field.
 7. **Offline issuance** imports JSON created by `scripts/New-OfflineActivationRequest.ps1`, validates it, and downloads the signed `.license` response. The imported token and full device ID are cleared and never displayed.
-8. **Audit trail** shows actor, action, target, UTC timestamp, result, and non-secret context. **System status** and `/health/ready` show aggregate readiness without secrets.
+8. **Products** supports search, add, display-name/description edit, activation, and archival while retaining stable immutable codes and historical reference counts.
+9. **Audit trail** shows actor, action, target, UTC timestamp, result, and non-secret context. **System status** and `/health/ready` show aggregate readiness without secrets.
 
 ### Tests
 
@@ -247,8 +260,11 @@ The seeded PoC license receives a generated `LIC-YYYY-MMDDXXXXXX` ID; find it on
 | `POST /api/v1/activations/{activationId}/validate` | Check current server state. |
 | `POST /api/v1/activations/{activationId}/refresh` | Issue a fresh signed online lease. |
 | `POST /api/v1/activations/{activationId}/deactivate` | Authenticate deactivation and make the licence transferable. |
-| `GET /api/v1/admin/licenses/{licenseId}` | Inspect state; requires an authenticated Administrator cookie. |
-| `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires Administrator authorization and an antiforgery token. |
+| `GET /api/v1/admin/licenses/{licenseId}` | Inspect state; requires `licenses.read`. |
+| `POST /api/v1/admin/licenses` | Issue one catalog product by UUID; requires `licenses.issue`. |
+| `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires `licenses.revoke`, MFA in production, and an antiforgery token for cookie requests. |
+| `GET /api/v1/admin/products` | Search the readable product catalog; requires `products.read`. |
+| `POST/PATCH /api/v1/admin/products` | Add, edit, activate, or archive products; requires `products.manage`. |
 
 The service uses PostgreSQL transactions, database uniqueness constraints, ASP.NET Core Identity, and immutable audit records. The web process loads a mounted development PEM only for this PoC; move signing behind a KMS/HSM boundary before production.
 

@@ -2,10 +2,12 @@ using LicenseServer;
 using LicenseServer.Components;
 using LicenseServer.Components.Account;
 using LicenseServer.Data;
+using LicenseServer.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using System.Security.Claims;
@@ -41,17 +43,26 @@ builder.Services.AddAuthentication(options =>
             cookie.SlidingExpiration = true;
             cookie.LoginPath = "/Account/Login";
             cookie.AccessDeniedPath = "/Account/AccessDenied";
+            cookie.Events.OnRedirectToLogin = context =>
+            {
+                if (context.Request.Path.StartsWithSegments("/api"))
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                else
+                    context.Response.Redirect(context.RedirectUri);
+                return Task.CompletedTask;
+            };
+            cookie.Events.OnRedirectToAccessDenied = context =>
+            {
+                if (context.Request.Path.StartsWithSegments("/api"))
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                else
+                    context.Response.Redirect(context.RedirectUri);
+                return Task.CompletedTask;
+            };
         });
     });
 
-var authorization = builder.Services.AddAuthorizationBuilder()
-    .AddPolicy("Administrator", policy => policy.RequireRole(DatabaseInitializer.AdministratorRole));
-foreach (var permission in new[] { "licenses.read", "licenses.issue", "licenses.update", "licenses.cancel", "licenses.revoke", "activations.manage", "products.read", "products.manage", "audit.read" })
-{
-    authorization.AddPolicy(permission, policy => policy.RequireAssertion(context =>
-        context.User.IsInRole(DatabaseInitializer.AdministratorRole)
-        || context.User.HasClaim("permission", permission)));
-}
+builder.Services.AddPermissionAuthorization(builder.Environment, builder.Configuration);
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is required.");
@@ -74,6 +85,7 @@ builder.Services.AddIdentityCore<ApplicationUser>(options =>
     .AddRoles<IdentityRole>()
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddSignInManager()
+    .AddClaimsPrincipalFactory<MfaUserClaimsPrincipalFactory>()
     .AddDefaultTokenProviders();
 
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
@@ -242,6 +254,14 @@ app.MapPost("/api/v1/activations/{activationId}/deactivate", async (
 }).AllowAnonymous();
 
 var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization();
+adminApi.MapGet("/authorization/{permission}", async (
+    string permission, IAuthorizationService authorizationService, HttpContext context) =>
+{
+    if (!Permissions.All.Contains(permission, StringComparer.Ordinal)) return Results.NotFound();
+    return (await authorizationService.AuthorizeAsync(context.User, null, permission)).Succeeded
+        ? Results.NoContent()
+        : Results.Forbid();
+});
 adminApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) =>
 {
     var tokens = antiforgery.GetAndStoreTokens(context);
@@ -249,10 +269,10 @@ adminApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) 
 });
 adminApi.MapGet("/licenses/{licenseId}", async (string licenseId, AdminDataService data, CancellationToken ct) =>
     await data.GetLicenseAsync(licenseId, ct) is { } item ? Results.Ok(item) : Results.NotFound())
-    .RequireAuthorization("licenses.read");
+    .RequireAuthorization(Permissions.LicensesRead);
 adminApi.MapGet("/products", async (string? search, ProductCatalogService catalog, CancellationToken ct) =>
     Results.Ok(await catalog.SearchAsync(search, ct)))
-    .RequireAuthorization("products.read");
+    .RequireAuthorization(Permissions.ProductsRead);
 adminApi.MapPost("/products", async (
     CreateProductRequest request, ProductCatalogService catalog, IAntiforgery antiforgery,
     HttpContext context, CancellationToken ct) =>
@@ -268,7 +288,7 @@ adminApi.MapPost("/products", async (
     {
         return Results.ValidationProblem(new Dictionary<string, string[]> { ["product"] = [exception.Message] });
     }
-}).RequireAuthorization("products.manage");
+}).RequireAuthorization(Permissions.ProductsManage);
 adminApi.MapPatch("/products/{id:guid}", async (
     Guid id, UpdateProductRequest request, ProductCatalogService catalog, IAntiforgery antiforgery,
     HttpContext context, CancellationToken ct) =>
@@ -286,7 +306,7 @@ adminApi.MapPatch("/products/{id:guid}", async (
     {
         return Results.ValidationProblem(new Dictionary<string, string[]> { ["product"] = [exception.Message] });
     }
-}).RequireAuthorization("products.manage");
+}).RequireAuthorization(Permissions.ProductsManage);
 adminApi.MapPost("/licenses", async (
     IssueLicenseRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
@@ -304,7 +324,7 @@ adminApi.MapPost("/licenses", async (
     return result.Success
         ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
         : IssueProblem(result);
-}).RequireAuthorization("licenses.issue")
+}).RequireAuthorization(Permissions.LicensesIssue)
   .WithDescription("Issues one license transactionally. Online lifecycle changes are immediate; previously downloaded offline files cannot be recalled.");
 adminApi.MapPost("/licenses/{licenseId}/revoke", async (
     string licenseId, RevokeRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext httpContext, CancellationToken ct) =>
@@ -316,7 +336,7 @@ adminApi.MapPost("/licenses/{licenseId}/revoke", async (
         licenseId, request.Reason, httpContext.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
         request.Version, httpContext.TraceIdentifier, ct);
     return result.Success ? Results.Ok(new { licenseId, status = "revoked" }) : Problem(result);
-}).RequireAuthorization("licenses.revoke")
+}).RequireAuthorization(Permissions.LicensesRevoke)
   .WithDescription("Revocation is terminal and immediately blocks online checks. Previously downloaded offline files cannot be recalled.");
 adminApi.MapPost("/licenses/{licenseId}/cancel", async (
     string licenseId, CancelRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
@@ -328,7 +348,7 @@ adminApi.MapPost("/licenses/{licenseId}/cancel", async (
         licenseId, request.Reason, context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
         request.Version, request.Reference, context.TraceIdentifier, ct);
     return result.Success ? Results.Ok(new { licenseId, status = "cancelled" }) : Problem(result);
-}).RequireAuthorization("licenses.cancel")
+}).RequireAuthorization(Permissions.LicensesCancel)
   .WithDescription("Cancels a never-activated license. Cancellation is terminal; previously downloaded offline files cannot be recalled.");
 adminApi.MapPost("/licenses/{licenseId}/terms", async (
     string licenseId, AmendTermsRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
@@ -338,7 +358,7 @@ adminApi.MapPost("/licenses/{licenseId}/terms", async (
         licenseId, request, context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
         context.TraceIdentifier, ct);
     return result.Success ? Results.Ok(new { licenseId, status = "amended" }) : Problem(result);
-}).RequireAuthorization("licenses.update")
+}).RequireAuthorization(Permissions.LicensesUpdate)
   .WithDescription("Amends expiry, seats, or update coverage with optimistic concurrency. Online checks observe changes immediately; previously downloaded offline files cannot be recalled.");
 
 adminApi.MapPost("/activations/{activationId}/deactivate", async (
@@ -350,7 +370,7 @@ adminApi.MapPost("/activations/{activationId}/deactivate", async (
     var result = await store.AdminDeactivateAsync(activationId, request.Reason, request.Version,
         context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow, context.TraceIdentifier, ct);
     return result.Success ? Results.Ok(new { activationId, status = "deactivated" }) : Problem(result);
-}).RequireAuthorization("activations.manage");
+}).RequireAuthorization(Permissions.ActivationsManage);
 
 app.MapPost("/licenses/{licenseId}/cancel", async (string licenseId, HttpRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
@@ -360,7 +380,7 @@ app.MapPost("/licenses/{licenseId}/cancel", async (string licenseId, HttpRequest
     var result = await store.CancelAsync(licenseId, form["Reason"], context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
         version, form["Reference"], context.TraceIdentifier, ct);
     return result.Success ? LifecycleRedirect(licenseId, "notice", "License cancelled.") : LifecycleRedirect(licenseId, "error", result.Error);
-}).RequireAuthorization("licenses.cancel").WithMetadata(new RequireAntiforgeryTokenAttribute(true));
+}).RequireAuthorization(Permissions.LicensesCancel).WithMetadata(new RequireAntiforgeryTokenAttribute(true));
 
 app.MapPost("/licenses/{licenseId}/revoke", async (string licenseId, HttpRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
@@ -370,7 +390,7 @@ app.MapPost("/licenses/{licenseId}/revoke", async (string licenseId, HttpRequest
     var result = await store.RevokeAsync(licenseId, form["Reason"], context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
         version, context.TraceIdentifier, ct);
     return result.Success ? LifecycleRedirect(licenseId, "notice", "License revoked.") : LifecycleRedirect(licenseId, "error", result.Error);
-}).RequireAuthorization("licenses.revoke").WithMetadata(new RequireAntiforgeryTokenAttribute(true));
+}).RequireAuthorization(Permissions.LicensesRevoke).WithMetadata(new RequireAntiforgeryTokenAttribute(true));
 
 app.MapPost("/licenses/{licenseId}/terms", async (string licenseId, HttpRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
@@ -384,7 +404,7 @@ app.MapPost("/licenses/{licenseId}/terms", async (string licenseId, HttpRequest 
     var result = await store.AmendTermsAsync(licenseId, new AmendTermsRequest(expires, seats, updates, form["Reason"], version, edition),
         context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow, context.TraceIdentifier, ct);
     return result.Success ? LifecycleRedirect(licenseId, "notice", "License terms updated.") : LifecycleRedirect(licenseId, "error", result.Error);
-}).RequireAuthorization("licenses.update").WithMetadata(new RequireAntiforgeryTokenAttribute(true));
+}).RequireAuthorization(Permissions.LicensesUpdate).WithMetadata(new RequireAntiforgeryTokenAttribute(true));
 
 app.MapPost("/licenses/{licenseId}/activations/{activationId}/deactivate", async (
     string licenseId, string activationId, HttpRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
@@ -395,7 +415,7 @@ app.MapPost("/licenses/{licenseId}/activations/{activationId}/deactivate", async
     var result = await store.AdminDeactivateAsync(activationId, form["Reason"], version,
         context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow, context.TraceIdentifier, ct);
     return result.Success ? LifecycleRedirect(licenseId, "notice", "Activation deactivated. The license is available for transfer.") : LifecycleRedirect(licenseId, "error", result.Error);
-}).RequireAuthorization("activations.manage").WithMetadata(new RequireAntiforgeryTokenAttribute(true));
+}).RequireAuthorization(Permissions.ActivationsManage).WithMetadata(new RequireAntiforgeryTokenAttribute(true));
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();

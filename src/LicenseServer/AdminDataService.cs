@@ -3,13 +3,15 @@ using System.Text;
 using System.Text.Json;
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
+using LicenseServer.Authorization;
 
 namespace LicenseServer;
 
-internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore store)
+internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore store, PermissionGuard permissions)
 {
     public async Task<DashboardView> GetDashboardAsync(CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesRead);
         var now = DateTimeOffset.UtcNow;
         var licenses = await db.Licenses.AsNoTracking()
             .Select(x => new { x.CancelledAt, x.RevokedAt, x.ExpiresAt, Active = x.Activations.Any(a => a.DeactivatedAt == null) })
@@ -39,6 +41,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesRead);
         var now = DateTimeOffset.UtcNow;
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 5, 100);
@@ -82,6 +85,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
 
     public async Task<LicenseDetailView?> GetLicenseAsync(string licenseId, CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesRead);
         var x = await db.Licenses.AsNoTracking()
             .Include(x => x.Customer).Include(x => x.Entitlements).Include(x => x.Activations)
             .SingleOrDefaultAsync(x => x.LicenseId == licenseId, cancellationToken);
@@ -133,10 +137,13 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         return result.Value!;
     }
 
-    public Task<List<AuditView>> GetAuditAsync(int take = 200, CancellationToken cancellationToken = default) =>
-        db.AuditRecords.AsNoTracking().OrderByDescending(x => x.TimestampUtc).Take(Math.Clamp(take, 1, 500))
+    public async Task<List<AuditView>> GetAuditAsync(int take = 200, CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.AuditRead);
+        return await db.AuditRecords.AsNoTracking().OrderByDescending(x => x.TimestampUtc).Take(Math.Clamp(take, 1, 500))
             .Select(x => new AuditView(x.Actor, x.Action, x.TargetType, x.TargetId, x.Result, x.TimestampUtc, x.ContextJson))
             .ToListAsync(cancellationToken);
+    }
 }
 
 public sealed record DashboardView(int Total, int Available, int Active, int Expired, int Revoked, int Online, int Offline, int LeasesApproachingExpiry, IReadOnlyList<AuditView> RecentAudit);

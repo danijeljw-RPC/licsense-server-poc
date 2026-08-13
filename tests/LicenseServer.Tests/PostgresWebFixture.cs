@@ -11,6 +11,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using SoftwareLicensing;
+using LicenseServer.Authorization;
 
 namespace LicenseServer.Tests;
 
@@ -27,6 +28,7 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         var connectionString = Environment.GetEnvironmentVariable("TEST_POSTGRES_CONNECTION")
             ?? throw new InvalidOperationException("Run tests through scripts/Test-DatabaseAndAuth.ps1 so they receive an isolated PostgreSQL database.");
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", connectionString);
+        Environment.SetEnvironmentVariable("Security__RequireMfaForHighRiskPermissions", "true");
         var keys = ResolveSigningKeys();
         Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", keys.PrivateKeyPath);
         Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", keys.PublicKeyPath);
@@ -78,6 +80,7 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", null);
         Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", null);
         Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", null);
+        Environment.SetEnvironmentVariable("Security__RequireMfaForHighRiskPermissions", null);
         if (temporaryKeyDirectory is not null && Directory.Exists(temporaryKeyDirectory))
             Directory.Delete(temporaryKeyDirectory, recursive: true);
         if (originalTrustedPublicKey is not null)
@@ -85,6 +88,27 @@ public sealed class PostgresWebFixture : IAsyncLifetime
     }
 
     public HttpClient CreateAuthenticatedClient(bool administrator, params string[] permissions)
+    {
+        var client = CreateTestClient();
+        if (administrator)
+        {
+            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.RoleHeader, DatabaseInitializer.AdministratorRole);
+            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.MfaHeader, "true");
+        }
+        foreach (var permission in permissions)
+            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.PermissionHeader, permission);
+        return client;
+    }
+
+    public HttpClient CreateRoleClient(string role, bool mfa)
+    {
+        var client = CreateTestClient();
+        client.DefaultRequestHeaders.Add(TestAuthenticationHandler.RoleHeader, role);
+        if (mfa) client.DefaultRequestHeaders.Add(TestAuthenticationHandler.MfaHeader, "true");
+        return client;
+    }
+
+    private HttpClient CreateTestClient()
     {
         var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
@@ -104,10 +128,6 @@ public sealed class PostgresWebFixture : IAsyncLifetime
             HandleCookies = true,
             BaseAddress = new Uri("https://localhost")
         });
-        if (administrator)
-            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.RoleHeader, DatabaseInitializer.AdministratorRole);
-        foreach (var permission in permissions)
-            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.PermissionHeader, permission);
         return client;
     }
 
@@ -124,7 +144,8 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["DEFAULT_ADMIN_EMAIL"] = DatabaseInitializer.DefaultEmail,
                 ["DEFAULT_ADMIN_PASSWORD"] = DatabaseInitializer.DefaultPassword,
                 ["ActivationCodes:Pepper"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-                ["Security:UseHttpsRedirection"] = "false"
+                ["Security:UseHttpsRedirection"] = "false",
+                ["Security:RequireMfaForHighRiskPermissions"] = "true"
             }));
         }
     }
@@ -139,6 +160,7 @@ public sealed class TestAuthenticationHandler(
     public const string SchemeName = "Phase0Test";
     public const string RoleHeader = "X-Test-Role";
     public const string PermissionHeader = "X-Test-Permission";
+    public const string MfaHeader = "X-Test-Mfa";
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
@@ -147,8 +169,15 @@ public sealed class TestAuthenticationHandler(
             new(ClaimTypes.NameIdentifier, "phase0-test-operator"),
             new(ClaimTypes.Name, "phase0-test-operator")
         };
-        claims.AddRange(Request.Headers[RoleHeader].Select(value => new Claim(ClaimTypes.Role, value!)));
+        foreach (var role in Request.Headers[RoleHeader].Select(value => value!).Where(value => value is not null))
+        {
+            claims.Add(new Claim(ClaimTypes.Role, role));
+            claims.AddRange(BuiltInRoles.PermissionsFor(role)
+                .Select(permission => new Claim(Permissions.ClaimType, permission)));
+        }
         claims.AddRange(Request.Headers[PermissionHeader].Select(value => new Claim("permission", value!)));
+        if (string.Equals(Request.Headers[MfaHeader].FirstOrDefault(), "true", StringComparison.OrdinalIgnoreCase))
+            claims.Add(new Claim("amr", "mfa"));
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName)));
     }

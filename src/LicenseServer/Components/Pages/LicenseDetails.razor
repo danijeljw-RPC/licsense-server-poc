@@ -1,6 +1,6 @@
 @page "/licenses/{LicenseId}"
 @rendermode InteractiveServer
-@attribute [Authorize(Policy = "licenses.read")]
+@attribute [Authorize(Policy = Permissions.LicensesRead)]
 @inject AdminDataService Data
 @inject LicenseStore Store
 @inject LicenseEnvelopeSigner Signer
@@ -46,7 +46,7 @@ else
 
     @if (!IsTerminal)
     {
-        <AuthorizeView Policy="licenses.update">
+        <AuthorizeView Policy="@Permissions.LicensesUpdate">
             <Authorized>
                 <h2 class="section-heading">Edit license terms</h2>
                 <div class="terms-grid">
@@ -78,7 +78,7 @@ else
     <div class="split-grid operations">
         @if (!IsTerminal && license.IssuanceHistory.Count == 0)
         {
-            <AuthorizeView Policy="licenses.cancel"><Authorized>
+            <AuthorizeView Policy="@Permissions.LicensesCancel"><Authorized>
                 <article class="panel danger-zone"><h2>Cancel never-activated license</h2><p>Cancellation is terminal and prevents future activation.</p>
                     <form method="post" action="@($"/licenses/{Uri.EscapeDataString(LicenseId)}/cancel")"><AntiforgeryToken /><input type="hidden" name="Version" value="@license.Version" /><label>Required reason<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><label class="confirm"><input type="checkbox" name="Confirmed" value="true" required /> I explicitly confirm cancellation.</label><p class="notice">Offline files cannot be recalled.</p><button class="button danger" type="submit">Confirm cancellation</button></form>
                 </article>
@@ -90,7 +90,7 @@ else
         }
         @if (!IsTerminal)
         {
-            <AuthorizeView Policy="licenses.revoke"><Authorized>
+            <AuthorizeView Policy="@Permissions.LicensesRevoke"><Authorized>
                 <article class="panel danger-zone"><h2>Revoke license</h2><p>Revocation is terminal and immediately blocks activation, validation, and online refresh.</p>
                     <form method="post" action="@($"/licenses/{Uri.EscapeDataString(LicenseId)}/revoke")"><AntiforgeryToken /><input type="hidden" name="Version" value="@license.Version" /><label>Required reason<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><label class="confirm"><input type="checkbox" name="Confirmed" value="true" required /> I explicitly confirm revocation.</label><p class="notice">Previously downloaded offline files cannot be recalled.</p><button class="button danger" type="submit">Confirm revocation</button></form>
                 </article>
@@ -103,8 +103,8 @@ else
         {
             <div class="activation-card"><div><span>Mode</span><strong>@active.Mode</strong></div><div><span>Device</span><strong>…@active.DeviceSuffix</strong></div><div><span>Activated</span><strong>@active.ActivatedAt.ToString("u") UTC</strong></div><div><span>Lease expires</span><strong>@(active.LeaseExpiresAt?.ToString("u") ?? "Offline")</strong></div></div>
             <div class="split-grid operations">
-                <EditForm Model="credentials" FormName="refresh-lease" OnValidSubmit="RefreshAsync"><DataAnnotationsValidator /><h2>Refresh online lease</h2><label>Activation token<InputText type="password" @bind-Value="credentials.ActivationToken" autocomplete="off" /></label><label>Full device ID<InputText type="password" @bind-Value="credentials.DeviceId" autocomplete="off" /></label><button class="button secondary" type="submit" disabled="@(active.Mode != "online")">Refresh and issue</button></EditForm>
-                <AuthorizeView Policy="activations.manage"><Authorized><form method="post" action="@($"/licenses/{Uri.EscapeDataString(LicenseId)}/activations/{Uri.EscapeDataString(active.ActivationId)}/deactivate")"><AntiforgeryToken /><h2>Operator deactivation / transfer</h2><input type="hidden" name="Version" value="@license.Version" /><label>Required reason<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><label class="confirm"><input type="checkbox" name="Confirmed" value="true" required /> Confirm deactivation before transfer.</label><button class="button danger" type="submit">Deactivate</button></form></Authorized></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized Context="refreshPermissionContext"><EditForm Model="credentials" FormName="refresh-lease" OnValidSubmit="RefreshAsync"><DataAnnotationsValidator /><h2>Refresh online lease</h2><label>Activation token<InputText type="password" @bind-Value="credentials.ActivationToken" autocomplete="off" /></label><label>Full device ID<InputText type="password" @bind-Value="credentials.DeviceId" autocomplete="off" /></label><button class="button secondary" type="submit" disabled="@(active.Mode != "online")">Refresh and issue</button></EditForm></Authorized></AuthorizeView>
+                <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized><form method="post" action="@($"/licenses/{Uri.EscapeDataString(LicenseId)}/activations/{Uri.EscapeDataString(active.ActivationId)}/deactivate")"><AntiforgeryToken /><h2>Operator deactivation / transfer</h2><input type="hidden" name="Version" value="@license.Version" /><label>Required reason<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><label class="confirm"><input type="checkbox" name="Confirmed" value="true" required /> Confirm deactivation before transfer.</label><button class="button danger" type="submit">Deactivate</button></form></Authorized></AuthorizeView>
             </div>
         }
         else { <p class="empty-inline">No active device. This license is available for activation or transfer.</p> }
@@ -112,7 +112,7 @@ else
 
     @if (!IsTerminal)
     {
-        <article class="panel"><h2>Activate for a device</h2><EditForm Model="activate" FormName="activate-license" OnValidSubmit="ActivateAsync"><DataAnnotationsValidator /><ValidationSummary /><label>Activation code<InputText type="password" @bind-Value="activate.ActivationCode" autocomplete="off" /></label><label>Client-generated activation token<InputText type="password" @bind-Value="activate.ActivationToken" autocomplete="off" /></label><label>Device ID (SHA-256)<InputText type="password" @bind-Value="activate.DeviceId" autocomplete="off" /></label><label>Device name<InputText @bind-Value="activate.DeviceName" /></label><label>Mode<InputSelect @bind-Value="activate.Mode"><option value="online">Online lease</option><option value="offline">Offline</option></InputSelect></label><button class="button" type="submit">Activate and issue</button></EditForm></article>
+        <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized Context="activationPermissionContext"><article class="panel"><h2>Activate for a device</h2><EditForm Model="activate" FormName="activate-license" OnValidSubmit="ActivateAsync"><DataAnnotationsValidator /><ValidationSummary /><label>Activation code<InputText type="password" @bind-Value="activate.ActivationCode" autocomplete="off" /></label><label>Client-generated activation token<InputText type="password" @bind-Value="activate.ActivationToken" autocomplete="off" /></label><label>Device ID (SHA-256)<InputText type="password" @bind-Value="activate.DeviceId" autocomplete="off" /></label><label>Device name<InputText @bind-Value="activate.DeviceName" /></label><label>Mode<InputSelect @bind-Value="activate.Mode"><option value="online">Online lease</option><option value="offline">Offline</option></InputSelect></label><button class="button" type="submit">Activate and issue</button></EditForm></article></Authorized></AuthorizeView>
     }
 
     <article class="panel"><h2>Immutable history</h2><div class="table-wrap"><table><thead><tr><th>Time (UTC)</th><th>Action</th><th>Actor</th><th>Result</th><th>Old/new context</th></tr></thead><tbody>

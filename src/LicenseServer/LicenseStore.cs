@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SoftwareLicensing;
+using LicenseServer.Authorization;
 
 namespace LicenseServer;
 
@@ -19,7 +20,8 @@ internal sealed class LicenseStore(
     IActivationCodeGenerator activationCodeGenerator,
     IActivationCodeHasher activationCodeHasher,
     IDataProtectionProvider dataProtectionProvider,
-    IOptions<ActivationCodeOptions> activationCodeOptions)
+    IOptions<ActivationCodeOptions> activationCodeOptions,
+    PermissionGuard permissions)
 {
     private readonly IDataProtector issuanceResultProtector = dataProtectionProvider.CreateProtector(
         "LicenseServer.IssuanceResult.v1");
@@ -27,6 +29,7 @@ internal sealed class LicenseStore(
         IssueLicenseRequest request, IssuanceContext context,
         CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesIssue);
         var now = clock.GetUtcNow();
         var customerName = request.CustomerName?.Trim();
         var edition = request.Edition?.Trim().ToLowerInvariant();
@@ -329,6 +332,7 @@ internal sealed class LicenseStore(
         long? expectedVersion, string? correlationId,
         CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesRevoke);
         if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length < 3)
             return StoreResult<bool>.BadRequest("A revocation reason of at least three characters is required.");
 
@@ -363,6 +367,7 @@ internal sealed class LicenseStore(
         string licenseId, string? reason, string actor, DateTimeOffset now, long expectedVersion,
         string? reference, string? correlationId, CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesCancel);
         if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length < 3)
             return StoreResult<bool>.BadRequest("A cancellation reason of at least three characters is required.");
 
@@ -401,6 +406,7 @@ internal sealed class LicenseStore(
         string licenseId, AmendTermsRequest request, string actor, DateTimeOffset now,
         string? correlationId, CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesUpdate);
         if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length < 3)
             return StoreResult<bool>.BadRequest("An amendment reason of at least three characters is required.");
         var edition = request.Edition?.Trim().ToLowerInvariant();
@@ -451,6 +457,7 @@ internal sealed class LicenseStore(
         string activationId, string? reason, long expectedVersion, string actor, DateTimeOffset now,
         string? correlationId, CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.ActivationsManage);
         if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length < 3)
             return StoreResult<bool>.BadRequest("A deactivation reason of at least three characters is required.");
 

@@ -1,6 +1,6 @@
 @page "/licenses/create"
 @rendermode InteractiveServer
-@attribute [Authorize(Policy = "licenses.issue")]
+@attribute [Authorize(Policy = Permissions.LicensesIssue)]
 @implements IAsyncDisposable
 @inject AdminDataService Data
 @inject ProductCatalogService Products

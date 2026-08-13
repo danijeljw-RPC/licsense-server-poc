@@ -1,5 +1,5 @@
 @page "/status"
-@attribute [Authorize(Policy = "Administrator")]
+@attribute [Authorize(Policy = Permissions.AuditRead)]
 @inject ApplicationDbContext Database
 @inject IWebHostEnvironment Environment
 <PageTitle>System status</PageTitle><div class="page-heading"><div><p class="eyebrow">Readiness</p><h1>System status</h1><p>Non-secret application and database health.</p></div></div>
