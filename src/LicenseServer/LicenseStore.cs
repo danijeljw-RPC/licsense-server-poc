@@ -10,7 +10,10 @@ using SoftwareLicensing;
 
 namespace LicenseServer;
 
-internal sealed class LicenseStore(ApplicationDbContext db)
+internal sealed class LicenseStore(
+    ApplicationDbContext db,
+    LicenseIdAllocator licenseIds,
+    TimeProvider clock)
 {
     private static readonly char[] ActivationAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789".ToCharArray();
     private static readonly HashSet<string> IssuanceEditions = new(StringComparer.Ordinal)
@@ -19,9 +22,10 @@ internal sealed class LicenseStore(ApplicationDbContext db)
     };
 
     public async Task<StoreResult<IssuedLicense>> IssueAsync(
-        IssueLicenseRequest request, string actor, string correlationId, DateTimeOffset now,
+        IssueLicenseRequest request, string actor, string correlationId,
         CancellationToken cancellationToken = default)
     {
+        var now = clock.GetUtcNow();
         var customerName = request.CustomerName?.Trim();
         var product = request.Product?.Trim().ToLowerInvariant();
         var edition = request.Edition?.Trim().ToLowerInvariant();
@@ -36,7 +40,6 @@ internal sealed class LicenseStore(ApplicationDbContext db)
             return StoreResult<IssuedLicense>.BadRequest(error!);
 
         var activationCode = GenerateActivationCode();
-        var licenseId = $"LIC-{now:yyyy}-{now:MMdd}{Convert.ToHexString(RandomNumberGenerator.GetBytes(3))}";
         var metadata = new JsonObject();
         if (request.Metadata is not null)
         {
@@ -44,41 +47,54 @@ internal sealed class LicenseStore(ApplicationDbContext db)
                 metadata[item.Key] = JsonValue.Create(item.Value);
         }
 
-        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-        var license = new LicenseRecord
-        {
-            Id = Guid.NewGuid(), LicenseId = licenseId,
-            Customer = new Customer { Id = Guid.NewGuid(), Name = customerName, CreatedAt = now },
-            ActivationCodeHash = Hash(activationCode), MetadataJson = metadata.ToJsonString(),
-            IssuedAt = now, ExpiresAt = expiry,
-            Entitlements =
-            [
-                new Entitlement
-                {
-                    Id = Guid.NewGuid(), Product = product, Edition = edition, LicenseType = licenseType!,
-                    Seats = request.Seats, UpdatesUntil = request.UpdatesUntil, License = null!
-                }
-            ]
-        };
-        db.Licenses.Add(license);
-        AddAudit(actor, "license.issued", "license", licenseId, "success", new
-        {
-            customer = customerName, product, edition, licenseType, expiresAt = expiry,
-            seats = request.Seats, correlationId
-        }, now);
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         try
         {
+            // PostgreSQL serializes the single upserted counter row for this business date.
+            // Read committed avoids whole-transaction serialization retries while the atomic
+            // statement and unique license index retain concurrency safety. A later rollback
+            // rolls back this allocation with the license, customer, entitlement, and audit row.
+            var licenseId = await licenseIds.AllocateAsync(now, cancellationToken);
+            var license = new LicenseRecord
+            {
+                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Customer = new Customer { Id = Guid.NewGuid(), Name = customerName, CreatedAt = now },
+                ActivationCodeHash = Hash(activationCode), MetadataJson = metadata.ToJsonString(),
+                IssuedAt = now, ExpiresAt = expiry,
+                Entitlements =
+                [
+                    new Entitlement
+                    {
+                        Id = Guid.NewGuid(), Product = product, Edition = edition, LicenseType = licenseType!,
+                        Seats = request.Seats, UpdatesUntil = request.UpdatesUntil, License = null!
+                    }
+                ]
+            };
+            db.Licenses.Add(license);
+            AddAudit(actor, "license.issued", "license", licenseId, "success", new
+            {
+                customer = customerName, product, edition, licenseType, expiresAt = expiry,
+                seats = request.Seats, correlationId
+            }, now);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+
+            return StoreResult<IssuedLicense>.Ok(new IssuedLicense(
+                licenseId, activationCode, metadata,
+                [new IssuedEntitlement(product, edition, licenseType!, request.Seats, expiry)]));
+        }
+        catch (LicenseIdExhaustedException exception)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            db.ChangeTracker.Clear();
+            return StoreResult<IssuedLicense>.Conflict(exception.Message);
         }
         catch (DbUpdateException)
         {
+            await transaction.RollbackAsync(cancellationToken);
+            db.ChangeTracker.Clear();
             return StoreResult<IssuedLicense>.Conflict("The license could not be issued concurrently. Retry the request.");
         }
-
-        return StoreResult<IssuedLicense>.Ok(new IssuedLicense(
-            licenseId, activationCode, metadata,
-            [new IssuedEntitlement(product, edition, licenseType!, request.Seats, expiry)]));
     }
 
     public async Task<StoreResult<ActiveActivation>> ActivateAsync(

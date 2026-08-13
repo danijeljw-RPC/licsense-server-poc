@@ -15,7 +15,11 @@ The signer and validator deliberately share `Licensing.Core`, so their interpret
 
 The public device APIs preserve the `/api/v1/licenses/{licenseId}/activate` and `/api/v1/activations/{activationId}/{validate|refresh|deactivate}` routes. Administrative pages and `/api/v1/admin/*` require the `Administrator` policy. The old `local-poc-admin-key` header has been removed.
 
-Activation and deactivation use serializable database transactions. PostgreSQL enforces one live activation per license with a partial unique index over `LicenseRecordId WHERE DeactivatedAt IS NULL`; `(LicenseRecordId, RequestId)` is also unique for retry idempotency. Activation codes and bearer tokens are SHA-256 hashes at rest. Only an eight-character device-ID suffix is rendered in the UI. Every timestamp is stored in UTC.
+Activation and deactivation use serializable database transactions. Issuance uses a read-committed transaction containing one atomic PostgreSQL counter upsert, the customer, license, entitlement, and audit insert; rollback therefore returns the counter value as well. Counter-row locking makes concurrent allocation safe without retrying serializable transactions, and the unique license-ID index remains the final integrity boundary. `Licensing:IdTimeZone` controls only the business date embedded in the ID and defaults to `Australia/Adelaide`; every real timestamp remains UTC.
+
+Generated IDs have the exact form `LIC-{yyyy}-{MMdd}{value:X6}`. The first daily value is `000001`, the last is `FFFFFF`, and a further issuance receives a clear conflict rather than wrapping or falling back to random data. PostgreSQL and the EF change tracker both reject changes to a persisted ID.
+
+PostgreSQL also enforces one live activation per license with a partial unique index over `LicenseRecordId WHERE DeactivatedAt IS NULL`; `(LicenseRecordId, RequestId)` is unique for retry idempotency. Activation codes and bearer tokens are SHA-256 hashes at rest. Only an eight-character device-ID suffix is rendered in the UI. Every timestamp is stored in UTC.
 
 ### Local development without Docker
 
@@ -37,6 +41,7 @@ $env:SEED_DEFAULT_ADMIN = 'true'
 $env:DEFAULT_ADMIN_EMAIL = 'admin@localhost.com'
 $env:DEFAULT_ADMIN_PASSWORD = 'LocalAdmin!7Kp9-Vx3-Rm8-Qz2'
 $env:SEED_DEMO_LICENSE = 'true'
+$env:Licensing__IdTimeZone = 'Australia/Adelaide'
 $env:Licensing__PrivateKeyPath = (Resolve-Path './keys/license-primary-2026-private.pem')
 $env:Licensing__PublicKeyPath = (Resolve-Path './keys/license-primary-2026-public.pem')
 
@@ -126,7 +131,7 @@ WebAuthn requires a secure browser context. `http://localhost` is the browser-de
 
 Use the left navigation after replacing the seed password:
 
-1. **Licenses** supports search, status filters, sort, pagination, and details. The seeded `LIC-POC-0001` activation code is `POC-DEMO-ACTIVATION-CODE` for development only.
+1. **Licenses** supports search, status filters, sort, pagination, and details. The demo seed receives a generated ID shown in this list; its activation code is `POC-DEMO-ACTIVATION-CODE` for development only.
 2. **Issue license** creates a customer, entitlement, and hashed activation credential. Deliver the original activation code through a separate secure channel because it cannot be recovered.
 3. A license detail page accepts a client-generated 32-byte Base64 activation token and the device's 64-character SHA-256 ID. It issues a downloadable signed response without rendering either secret back to the page.
 4. For an online activation, enter its token and full device ID to refresh the lease and download the refreshed signed file.
@@ -155,7 +160,7 @@ For the final container smoke test:
 ```powershell
 docker compose up --detach --build --wait
 Invoke-WebRequest http://localhost:8080/health/ready
-# Sign in through the UI, replace the seed password, then activate LIC-POC-0001 visually.
+# Sign in through the UI, replace the seed password, then activate the generated demo license visually.
 docker compose down
 ```
 
@@ -234,7 +239,7 @@ dotnet run --project src/LicenseServer --urls http://127.0.0.1:5187
 
 That command is for manually exercising the API. `Test-ActivationFlow.ps1` is self-contained: it builds the solution, starts a separate temporary server on a random local port, runs the flow, stops that server, and removes its temporary files. Stop the manually started server with `Ctrl+C` when finished; it does not need to be running for the test.
 
-The seeded PoC license is `LIC-POC-0001`; its activation code is `POC-DEMO-ACTIVATION-CODE`. It is an intentionally public development credential and must never become a production default.
+The seeded PoC license receives a generated `LIC-YYYY-MMDDXXXXXX` ID; find it on the **Licenses** page. Its activation code is `POC-DEMO-ACTIVATION-CODE`. This is an intentionally public development credential and must never become a production default.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -252,13 +257,13 @@ The service uses PostgreSQL transactions, database uniqueness constraints, ASP.N
 On the offline target machine, create a request file:
 
 ```powershell
-./scripts/New-OfflineActivationRequest.ps1
+./scripts/New-OfflineActivationRequest.ps1 -LicenseId '<generated-demo-id>'
 ```
 
 Move `artifacts/offline-activation-request.json` to an operator-connected machine. The file contains an activation code and bearer token, so transport it securely. The operator posts the unchanged JSON to:
 
 ```text
-POST /api/v1/licenses/LIC-POC-0001/activate
+POST /api/v1/licenses/<generated-demo-id>/activate
 ```
 
 The response contains `signedLicense` as a JSON string; save that string unchanged as a `.license` file and carry it back to the target. Keeping the signed document opaque avoids date/string normalization by intermediary JSON tooling. Signature, product, expiry, and device checks then work with no server connection. Keep the request credentials in OS-protected storage because they are needed to submit a future deactivation. In production, an offline deactivation command should disable local state and create a signed/request-authenticated receipt for the operator to import before transfer. It still cannot force deletion of copied offline files.

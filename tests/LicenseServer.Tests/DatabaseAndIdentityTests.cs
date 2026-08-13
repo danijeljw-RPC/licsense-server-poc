@@ -21,7 +21,7 @@ public sealed class DatabaseAndIdentityTests(PostgresWebFixture fixture)
     {
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        Assert.Single(await db.Database.GetAppliedMigrationsAsync());
+        Assert.Equal(2, (await db.Database.GetAppliedMigrationsAsync()).Count());
         Assert.True(await db.Database.CanConnectAsync());
         await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().InitializeAsync();
         await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().InitializeAsync();
@@ -37,7 +37,7 @@ public sealed class DatabaseAndIdentityTests(PostgresWebFixture fixture)
         Assert.True((await authorization.AuthorizeAsync(administrator, null, "Administrator")).Succeeded);
         Assert.False((await authorization.AuthorizeAsync(regularUser, null, "Administrator")).Succeeded);
         Assert.Equal(1, await db.Users.CountAsync(x => x.NormalizedEmail == admin.NormalizedEmail));
-        Assert.Equal(1, await db.Licenses.CountAsync(x => x.LicenseId == "LIC-POC-0001"));
+        Assert.Equal(1, await db.Licenses.CountAsync(x => x.Customer.ExternalId == "POC-CUSTOMER"));
         Assert.True(await TableExistsAsync(db, "AspNetUserPasskeys"));
     }
 

@@ -113,6 +113,11 @@ try {
         throw "Server did not start.`n$(Get-Content -LiteralPath $stderr -Raw)"
     }
 
+    $demoLicenseId = (docker exec $databaseContainer psql --username license_test --dbname activation_test --tuples-only --no-align --command 'SELECT l."LicenseId" FROM "Licenses" l JOIN "Customers" c ON c."Id" = l."CustomerId" WHERE c."ExternalId" = ''POC-CUSTOMER'';').Trim()
+    if ($demoLicenseId -notmatch '^LIC-[0-9]{4}-[0-9]{4}[A-F0-9]{6}$') {
+        throw "The generated demo license ID could not be read from PostgreSQL: '$demoLicenseId'."
+    }
+
     $loginPage = Invoke-WebRequest -Uri "$serverUrl/Account/Login" -WebSession $adminSession
     $loginToken = [regex]::Match($loginPage.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]+)"').Groups[1].Value
     Invoke-WebRequest -Uri "$serverUrl/Account/Login" -Method Post -WebSession $adminSession -Body @{
@@ -137,7 +142,7 @@ try {
     $device = $deviceJson | ConvertFrom-Json
 
     $firstRequest = New-ActivationRequest $device.DeviceId $device.DeviceName 'online'
-    $first = Invoke-Api '/api/v1/licenses/LIC-POC-0001/activate' $firstRequest
+    $first = Invoke-Api "/api/v1/licenses/$demoLicenseId/activate" $firstRequest
     Assert-Equal 'online activation succeeds' $first.StatusCode 200
     $firstResponse = $first.Content | ConvertFrom-Json
 
@@ -148,7 +153,7 @@ try {
 
     $otherDeviceId = 'A' * 64
     $blockedRequest = New-ActivationRequest $otherDeviceId 'TRANSFER-TARGET' 'online'
-    $blocked = Invoke-Api '/api/v1/licenses/LIC-POC-0001/activate' $blockedRequest
+    $blocked = Invoke-Api "/api/v1/licenses/$demoLicenseId/activate" $blockedRequest
     Assert-Equal 'transfer is blocked before deactivation' $blocked.StatusCode 409
 
     $credential = @{
@@ -164,7 +169,7 @@ try {
     $deactivated = Invoke-Api "/api/v1/activations/$($firstResponse.activationId)/deactivate" $credential
     Assert-Equal 'authenticated deactivation succeeds' $deactivated.StatusCode 200
 
-    $transferred = Invoke-Api '/api/v1/licenses/LIC-POC-0001/activate' $blockedRequest
+    $transferred = Invoke-Api "/api/v1/licenses/$demoLicenseId/activate" $blockedRequest
     Assert-Equal 'activation transfers after deactivation' $transferred.StatusCode 200
     $transferredResponse = $transferred.Content | ConvertFrom-Json
 
@@ -183,7 +188,7 @@ try {
     Invoke-Api "/api/v1/activations/$($transferredResponse.activationId)/deactivate" $transferCredential | Out-Null
 
     $offlineRequest = New-ActivationRequest $device.DeviceId $device.DeviceName 'offline'
-    $offline = Invoke-Api '/api/v1/licenses/LIC-POC-0001/activate' $offlineRequest
+    $offline = Invoke-Api "/api/v1/licenses/$demoLicenseId/activate" $offlineRequest
     Assert-Equal 'offline request receives signed response' $offline.StatusCode 200
     $offlineResponse = $offline.Content | ConvertFrom-Json
     Assert-Equal 'offline licence has no lease cutoff' $null $offlineResponse.leaseExpiresAt
@@ -195,7 +200,7 @@ try {
 
     $csrf = Invoke-RestMethod -Uri "$serverUrl/api/v1/admin/antiforgery" -WebSession $adminSession
     $csrfToken = $csrf.requestToken
-    $revoked = Invoke-WebRequest -Uri "$serverUrl/api/v1/admin/licenses/LIC-POC-0001/revoke" -Method Post -WebSession $adminSession -ContentType 'application/json' -Headers @{ 'X-CSRF-TOKEN' = $csrfToken } -Body (@{ reason = 'integration test' } | ConvertTo-Json) -SkipHttpErrorCheck
+    $revoked = Invoke-WebRequest -Uri "$serverUrl/api/v1/admin/licenses/$demoLicenseId/revoke" -Method Post -WebSession $adminSession -ContentType 'application/json' -Headers @{ 'X-CSRF-TOKEN' = $csrfToken } -Body (@{ reason = 'integration test' } | ConvertTo-Json) -SkipHttpErrorCheck
     if ($revoked.StatusCode -ne 200) { Write-Host "Revocation response: $($revoked.Content)" }
     Assert-Equal 'admin revocation succeeds' $revoked.StatusCode 200
 

@@ -111,14 +111,17 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         catch (JsonException) { return null; }
     }
 
-    public async Task<string> CreateLicenseAsync(CreateLicenseInput input, string actor, CancellationToken cancellationToken = default)
+    public async Task<LicenseStore.IssuedLicense> CreateLicenseAsync(
+        CreateLicenseInput input,
+        string actor,
+        CancellationToken cancellationToken = default)
     {
         var result = await store.IssueAsync(new IssueLicenseRequest(
             input.CustomerName, input.CustomerEmail, input.Product, input.Edition, input.LicenseType,
             input.ExpiresAt, input.Seats, input.UpdatesUntil, null), actor, Guid.NewGuid().ToString("D"),
-            DateTimeOffset.UtcNow, cancellationToken);
+            cancellationToken);
         if (!result.Success) throw new InvalidOperationException(result.Error);
-        return result.Value!.LicenseId;
+        return result.Value!;
     }
 
     public Task<List<AuditView>> GetAuditAsync(int take = 200, CancellationToken cancellationToken = default) =>
@@ -146,7 +149,7 @@ public sealed class CreateLicenseInput
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(200)] public string CustomerName { get; set; } = "";
     [System.ComponentModel.DataAnnotations.EmailAddress, System.ComponentModel.DataAnnotations.StringLength(320)] public string CustomerEmail { get; set; } = "";
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Product { get; set; } = "";
-    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Edition { get; set; } = "professional";
+    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Edition { get; set; } = "business";
     [System.ComponentModel.DataAnnotations.Required] public string LicenseType { get; set; } = "perpetual";
     [System.ComponentModel.DataAnnotations.Range(1, 100000)] public int Seats { get; set; } = 1;
     public DateTimeOffset? ExpiresAt { get; set; }

@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Data;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -8,6 +9,8 @@ public sealed partial class DatabaseInitializer(
     ApplicationDbContext db,
     RoleManager<IdentityRole> roles,
     UserManager<ApplicationUser> users,
+    LicenseIdAllocator licenseIds,
+    TimeProvider clock,
     IConfiguration configuration,
     IWebHostEnvironment environment,
     ILogger<DatabaseInitializer> logger)
@@ -81,6 +84,8 @@ public sealed partial class DatabaseInitializer(
     {
         if (!GetBoolean("SEED_DEMO_LICENSE", environment.IsDevelopment())) return;
 
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+
         var customer = await db.Customers.SingleOrDefaultAsync(x => x.ExternalId == "POC-CUSTOMER", cancellationToken);
         if (customer is null)
         {
@@ -94,16 +99,17 @@ public sealed partial class DatabaseInitializer(
             db.Customers.Add(customer);
         }
 
-        if (!await db.Licenses.AnyAsync(x => x.LicenseId == "LIC-POC-0001", cancellationToken))
+        if (!await db.Licenses.AnyAsync(x => x.Customer.ExternalId == "POC-CUSTOMER", cancellationToken))
         {
+            var now = clock.GetUtcNow();
             db.Licenses.Add(new LicenseRecord
             {
                 Id = Guid.NewGuid(),
-                LicenseId = "LIC-POC-0001",
+                LicenseId = await licenseIds.AllocateAsync(now, cancellationToken),
                 Customer = customer,
                 ActivationCodeHash = LicenseStore.Hash("POC-DEMO-ACTIVATION-CODE"),
                 MetadataJson = new JsonObject { ["purchaseOrder"] = "PO-POC-0001" }.ToJsonString(),
-                IssuedAt = DateTimeOffset.UtcNow,
+                IssuedAt = now,
                 ExpiresAt = LicenseTerms.PerpetualExpiry,
                 Entitlements =
                 [
@@ -136,6 +142,7 @@ public sealed partial class DatabaseInitializer(
         }
 
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private string ResolvePublicKeyPath()
