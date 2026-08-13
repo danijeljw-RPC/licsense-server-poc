@@ -5,7 +5,12 @@ namespace SoftwareLicensing;
 
 public sealed record VerifiedLicense(string KeyId, LicenseData Data);
 
-public sealed class LicenseValidationException(string message) : Exception(message);
+public sealed class LicenseValidationException : Exception
+{
+    public LicenseValidationException() { }
+    public LicenseValidationException(string message) : base(message) { }
+    public LicenseValidationException(string message, Exception innerException) : base(message, innerException) { }
+}
 
 public static class LicenseVerifier
 {
@@ -102,6 +107,7 @@ public static class LicenseVerifier
         DateTimeOffset? currentTimeUtc = null,
         LocalDeviceIdentity? currentDevice = null)
     {
+        ArgumentNullException.ThrowIfNull(verifiedLicense);
         ValidateActivation(verifiedLicense, currentDevice, currentTimeUtc);
 
         var entitlement = verifiedLicense.Data.Entitlements.FirstOrDefault(x =>
@@ -141,6 +147,7 @@ public static class LicenseVerifier
         LocalDeviceIdentity? currentDevice = null,
         DateTimeOffset? currentTimeUtc = null)
     {
+        ArgumentNullException.ThrowIfNull(verifiedLicense);
         var binding = verifiedLicense.Data.DeviceBinding;
         var activation = verifiedLicense.Data.Activation;
 

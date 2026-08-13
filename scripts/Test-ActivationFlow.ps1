@@ -9,6 +9,12 @@ $workDirectory = Join-Path ([IO.Path]::GetTempPath()) ("software-activation-test
 $port = Get-Random -Minimum 51000 -Maximum 59000
 $serverUrl = "http://127.0.0.1:$port"
 $serverProcess = $null
+$databaseContainer = "license-activation-test-" + [Guid]::NewGuid().ToString('N')
+$databasePort = Get-Random -Minimum 49152 -Maximum 50999
+$databasePassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+$adminPassword = 'LocalAdmin!7Kp9-Vx3-Rm8-Qz2'
+$changedAdminPassword = 'ChangedLocalAdmin!8Lp4-Wy6-Sn9-Rt3'
+$adminSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 
 function Assert-Equal {
     param([string] $Name, $Actual, $Expected)
@@ -53,9 +59,32 @@ try {
     $stdout = Join-Path $workDirectory 'server.stdout.log'
     $stderr = Join-Path $workDirectory 'server.stderr.log'
 
+    docker run --detach --name $databaseContainer `
+        --publish "127.0.0.1:${databasePort}:5432" `
+        --env POSTGRES_DB=activation_test `
+        --env POSTGRES_USER=license_test `
+        --env "POSTGRES_PASSWORD=$databasePassword" `
+        --health-cmd 'pg_isready -U license_test -d activation_test' `
+        --health-interval 1s --health-timeout 3s --health-retries 30 `
+        postgres:18-alpine | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not start isolated PostgreSQL.' }
+    foreach ($attempt in 1..40) {
+        if ((docker inspect --format '{{.State.Health.Status}}' $databaseContainer 2>$null) -eq 'healthy') { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if ((docker inspect --format '{{.State.Health.Status}}' $databaseContainer) -ne 'healthy') { throw 'Isolated PostgreSQL did not become healthy.' }
+
     dotnet build (Join-Path $repositoryRoot 'SoftwareLicensing.slnx') --configuration Release --no-restore
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 
+    $env:ConnectionStrings__DefaultConnection = "Host=127.0.0.1;Port=$databasePort;Database=activation_test;Username=license_test;Password=$databasePassword"
+    $env:SEED_DEFAULT_ADMIN = 'true'
+    $env:DEFAULT_ADMIN_EMAIL = 'admin@localhost.com'
+    $env:DEFAULT_ADMIN_PASSWORD = $adminPassword
+    $env:SEED_DEMO_LICENSE = 'true'
+    $env:ASPNETCORE_ENVIRONMENT = 'Development'
+    $env:Licensing__PrivateKeyPath = Join-Path $repositoryRoot 'keys\license-primary-2026-private.pem'
+    $env:Licensing__PublicKeyPath = Join-Path $repositoryRoot 'keys\license-primary-2026-public.pem'
     $serverProcess = Start-Process `
         -FilePath 'dotnet' `
         -ArgumentList @($serverAssembly, '--urls', $serverUrl) `
@@ -79,6 +108,25 @@ try {
     if (-not $ready) {
         throw "Server did not start.`n$(Get-Content -LiteralPath $stderr -Raw)"
     }
+
+    $loginPage = Invoke-WebRequest -Uri "$serverUrl/Account/Login" -WebSession $adminSession
+    $loginToken = [regex]::Match($loginPage.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]+)"').Groups[1].Value
+    Invoke-WebRequest -Uri "$serverUrl/Account/Login" -Method Post -WebSession $adminSession -Body @{
+        '__RequestVerificationToken' = [Net.WebUtility]::HtmlDecode($loginToken)
+        '_handler' = 'login'
+        'Input.Email' = 'admin@localhost.com'
+        'Input.Password' = $adminPassword
+        'Input.RememberMe' = 'false'
+    } | Out-Null
+    $changePage = Invoke-WebRequest -Uri "$serverUrl/Account/Manage/ChangePassword?forced=true" -WebSession $adminSession
+    $changeToken = [regex]::Match($changePage.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]+)"').Groups[1].Value
+    Invoke-WebRequest -Uri "$serverUrl/Account/Manage/ChangePassword?forced=true" -Method Post -WebSession $adminSession -Body @{
+        '__RequestVerificationToken' = [Net.WebUtility]::HtmlDecode($changeToken)
+        '_handler' = 'change-password'
+        'Input.OldPassword' = $adminPassword
+        'Input.NewPassword' = $changedAdminPassword
+        'Input.ConfirmPassword' = $changedAdminPassword
+    } | Out-Null
 
     $deviceJson = & dotnet run --no-build --configuration Release --project $validatorProject -- --device-id
     if ($LASTEXITCODE -ne 0) { throw 'Could not obtain the local device ID.' }
@@ -141,7 +189,10 @@ try {
     & dotnet run --no-build --configuration Release --project $validatorProject -- --license $offlineLicense --product gcexp
     Assert-Equal 'offline device-bound licence validates without server' $LASTEXITCODE 0
 
-    $revoked = Invoke-Api '/api/v1/admin/licenses/LIC-POC-0001/revoke' @{ reason = 'integration test' } 'Post' @{ 'X-Admin-Key' = 'local-poc-admin-key' }
+    $csrf = Invoke-RestMethod -Uri "$serverUrl/api/v1/admin/antiforgery" -WebSession $adminSession
+    $csrfToken = $csrf.requestToken
+    $revoked = Invoke-WebRequest -Uri "$serverUrl/api/v1/admin/licenses/LIC-POC-0001/revoke" -Method Post -WebSession $adminSession -ContentType 'application/json' -Headers @{ 'X-CSRF-TOKEN' = $csrfToken } -Body (@{ reason = 'integration test' } | ConvertTo-Json) -SkipHttpErrorCheck
+    if ($revoked.StatusCode -ne 200) { Write-Host "Revocation response: $($revoked.Content)" }
     Assert-Equal 'admin revocation succeeds' $revoked.StatusCode 200
 
     $offlineCredential = @{
@@ -158,6 +209,7 @@ try {
     Write-Host 'All activation, transfer, revocation, and offline tests passed.' -ForegroundColor Green
 }
 finally {
+    Remove-Item Env:\ConnectionStrings__DefaultConnection,Env:\SEED_DEFAULT_ADMIN,Env:\DEFAULT_ADMIN_EMAIL,Env:\DEFAULT_ADMIN_PASSWORD,Env:\SEED_DEMO_LICENSE,Env:\ASPNETCORE_ENVIRONMENT,Env:\Licensing__PrivateKeyPath,Env:\Licensing__PublicKeyPath -ErrorAction SilentlyContinue
     if ($null -ne $serverProcess) {
         try {
             if (-not $serverProcess.HasExited) {
@@ -189,4 +241,6 @@ finally {
             }
         }
     }
+
+    docker rm --force $databaseContainer 2>$null | Out-Null
 }

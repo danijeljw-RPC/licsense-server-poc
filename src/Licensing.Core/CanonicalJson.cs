@@ -7,6 +7,7 @@ public static class CanonicalJson
 {
     public static byte[] Serialize(JsonNode node)
     {
+        ArgumentNullException.ThrowIfNull(node);
         using var document = JsonDocument.Parse(node.ToJsonString());
         using var stream = new MemoryStream();
 

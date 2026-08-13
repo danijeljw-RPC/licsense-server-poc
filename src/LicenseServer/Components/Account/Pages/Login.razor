@@ -10,6 +10,7 @@
 @inject ILogger<Login> Logger
 @inject NavigationManager NavigationManager
 @inject IdentityRedirectManager RedirectManager
+@inject AuditService Audit
 
 <PageTitle>Log in</PageTitle>
 
@@ -52,21 +53,8 @@
                     <p>
                         <a href="Account/ForgotPassword">Forgot your password?</a>
                     </p>
-                    <p>
-                        <a href="@(NavigationManager.GetUriWithQueryParameters("Account/Register", new Dictionary<string, object?> { ["ReturnUrl"] = ReturnUrl }))">Register as a new user</a>
-                    </p>
-                    <p>
-                        <a href="Account/ResendEmailConfirmation">Resend email confirmation</a>
-                    </p>
                 </div>
             </EditForm>
-        </section>
-    </div>
-    <div class="col-lg-4 col-lg-offset-2">
-        <section>
-            <h3>Use another service to log in.</h3>
-            <hr />
-            <ExternalLoginPicker />
         </section>
     </div>
 </div>
@@ -119,15 +107,19 @@
                 return;
             }
 
-            // This doesn't count login failures towards account lockout
-            // To enable password failures to trigger account lockout, set lockoutOnFailure: true
-            result = await SignInManager.PasswordSignInAsync(Input.Email, Input.Password, Input.RememberMe, lockoutOnFailure: false);
+            result = await SignInManager.PasswordSignInAsync(Input.Email, Input.Password, Input.RememberMe, lockoutOnFailure: true);
         }
 
         if (result.Succeeded)
         {
             Logger.LogInformation("User logged in.");
-            RedirectManager.RedirectTo(ReturnUrl);
+            var user = await UserManager.FindByEmailAsync(Input.Email);
+            if (user is not null)
+                user.LastLoginAt = DateTimeOffset.UtcNow;
+            if (user is not null)
+                await UserManager.UpdateAsync(user);
+            await Audit.RecordAsync(user?.Email ?? Input.Email, "authentication.login", "user", user?.Id ?? "unknown", "success", new { method = string.IsNullOrEmpty(Input.Passkey?.CredentialJson) ? "password" : "passkey" });
+            RedirectManager.RedirectTo(user?.MustChangePassword == true ? "Account/Manage/ChangePassword?forced=true" : ReturnUrl);
         }
         else if (result.RequiresTwoFactor)
         {
@@ -142,6 +134,7 @@
         }
         else
         {
+            await Audit.RecordAsync(Input.Email, "authentication.login", "user", "unknown", "failure", new { lockedOut = result.IsLockedOut });
             errorMessage = "Error: Invalid login attempt.";
         }
     }
@@ -162,4 +155,3 @@
         public PasskeyInputModel? Passkey { get; set; }
     }
 }
-

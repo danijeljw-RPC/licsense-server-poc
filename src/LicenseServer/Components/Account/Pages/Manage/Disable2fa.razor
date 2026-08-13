@@ -6,10 +6,11 @@
 @inject UserManager<ApplicationUser> UserManager
 @inject IdentityRedirectManager RedirectManager
 @inject ILogger<Disable2fa> Logger
+@inject AuditService Audit
 
 <PageTitle>Disable two-factor authentication (2FA)</PageTitle>
 
-<StatusMessage />
+<StatusMessage Message="@message" />
 <h3>Disable two-factor authentication (2FA)</h3>
 
 <div class="alert alert-warning" role="alert">
@@ -23,20 +24,27 @@
 </div>
 
 <div>
-    <form @formname="disable-2fa" @onsubmit="OnSubmitAsync" method="post">
-        <AntiforgeryToken />
+    <EditForm Model="Input" FormName="disable-2fa" OnValidSubmit="OnSubmitAsync" method="post">
+        <DataAnnotationsValidator />
+        <label>Current password<InputText type="password" @bind-Value="Input.Password" autocomplete="current-password" /></label>
+        <ValidationMessage For="@(() => Input.Password)" />
         <button class="btn btn-danger" type="submit">Disable 2FA</button>
-    </form>
+    </EditForm>
 </div>
 
 @code {
     private ApplicationUser? user;
+    private string? message;
+
+    [SupplyParameterFromForm]
+    private InputModel Input { get; set; } = default!;
 
     [CascadingParameter]
     private HttpContext HttpContext { get; set; } = default!;
 
     protected override async Task OnInitializedAsync()
     {
+        Input ??= new();
         user = await UserManager.GetUserAsync(HttpContext.User);
         if (user is null)
         {
@@ -58,6 +66,12 @@
             return;
         }
 
+        if (!await UserManager.CheckPasswordAsync(user, Input.Password))
+        {
+            message = "Error: Current password is incorrect.";
+            return;
+        }
+
         var disable2faResult = await UserManager.SetTwoFactorEnabledAsync(user, false);
         if (!disable2faResult.Succeeded)
         {
@@ -65,11 +79,17 @@
         }
 
         var userId = await UserManager.GetUserIdAsync(user);
+        await Audit.RecordAsync(user.Email ?? userId, "authentication.mfa-disabled", "user", userId, "success");
         Logger.LogInformation("User with ID '{UserId}' has disabled 2fa.", userId);
         RedirectManager.RedirectToWithStatus(
             "Account/Manage/TwoFactorAuthentication",
             "2fa has been disabled. You can reenable 2fa when you setup an authenticator app",
             HttpContext);
     }
-}
 
+    private sealed class InputModel
+    {
+        [System.ComponentModel.DataAnnotations.Required]
+        public string Password { get; set; } = "";
+    }
+}

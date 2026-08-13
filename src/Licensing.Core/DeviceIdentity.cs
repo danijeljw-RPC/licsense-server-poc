@@ -32,9 +32,9 @@ public static class DeviceIdentity
             source);
     }
 
-    public static bool IsValidDeviceId(string value)
+    public static bool IsValidDeviceId(string? value)
     {
-        return value.Length == 64 && value.All(Uri.IsHexDigit);
+        return value is { Length: 64 } && value.All(Uri.IsHexDigit);
     }
 
     private static (string Source, string Value) ReadStableOsIdentifier()

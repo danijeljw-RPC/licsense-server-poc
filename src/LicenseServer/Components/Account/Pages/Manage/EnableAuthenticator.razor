@@ -5,12 +5,14 @@
 @using System.Text
 @using System.Text.Encodings.Web
 @using Microsoft.AspNetCore.Identity
+@using QRCoder
 @using LicenseServer.Data
 
 @inject UserManager<ApplicationUser> UserManager
 @inject UrlEncoder UrlEncoder
 @inject IdentityRedirectManager RedirectManager
 @inject ILogger<EnableAuthenticator> Logger
+@inject AuditService Audit
 
 <PageTitle>Configure authenticator app</PageTitle>
 
@@ -36,10 +38,8 @@ else
                 </p>
             </li>
             <li>
-                <p>Scan the QR Code or enter this key <kbd>@sharedKey</kbd> into your two factor authenticator app. Spaces and casing do not matter.</p>
-                <div class="alert alert-info">Learn how to <a href="https://go.microsoft.com/fwlink/?Linkid=852423">enable QR code generation</a>.</div>
-                <div></div>
-                <div data-url="@authenticatorUri"></div>
+                <p>Scan the QR code or enter this key <kbd>@sharedKey</kbd> into your authenticator app. Spaces and casing do not matter.</p>
+                <div class="authenticator-qr" aria-label="Authenticator setup QR code">@qrCode</div>
             </li>
             <li>
                 <p>
@@ -72,6 +72,7 @@ else
     private ApplicationUser? user;
     private string? sharedKey;
     private string? authenticatorUri;
+    private MarkupString qrCode;
     private IEnumerable<string>? recoveryCodes;
 
     [CascadingParameter]
@@ -116,6 +117,7 @@ else
 
         await UserManager.SetTwoFactorEnabledAsync(user, true);
         var userId = await UserManager.GetUserIdAsync(user);
+        await Audit.RecordAsync(user.Email ?? userId, "authentication.mfa-enabled", "user", userId, "success");
         Logger.LogInformation("User with ID '{UserId}' has enabled 2FA with an authenticator app.", userId);
 
         message = "Your authenticator app has been verified.";
@@ -144,6 +146,8 @@ else
 
         var email = await UserManager.GetEmailAsync(user);
         authenticatorUri = GenerateQrCodeUri(email!, unformattedKey!);
+        using var qrData = QRCodeGenerator.GenerateQrCode(authenticatorUri, QRCodeGenerator.ECCLevel.Q);
+        qrCode = new MarkupString(new SvgQRCode(qrData).GetGraphic(4));
     }
 
     private string FormatKey(string unformattedKey)
@@ -168,7 +172,7 @@ else
         return string.Format(
             CultureInfo.InvariantCulture,
             AuthenticatorUriFormat,
-            UrlEncoder.Encode("Microsoft.AspNetCore.Identity.UI"),
+            UrlEncoder.Encode("LicenseServer"),
             UrlEncoder.Encode(email),
             unformattedKey);
     }
@@ -182,4 +186,3 @@ else
         public string Code { get; set; } = "";
     }
 }
-

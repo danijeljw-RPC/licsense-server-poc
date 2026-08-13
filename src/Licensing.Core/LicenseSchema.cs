@@ -36,7 +36,12 @@ public sealed record LicenseData(
     IReadOnlyList<ProductEntitlement> Entitlements,
     JsonObject Json);
 
-public sealed class LicenseSchemaException(string message) : Exception(message);
+public sealed class LicenseSchemaException : Exception
+{
+    public LicenseSchemaException() { }
+    public LicenseSchemaException(string message) : base(message) { }
+    public LicenseSchemaException(string message, Exception innerException) : base(message, innerException) { }
+}
 
 public static class LicenseSchema
 {
@@ -67,6 +72,7 @@ public static class LicenseSchema
 
     public static LicenseData Parse(JsonObject license)
     {
+        ArgumentNullException.ThrowIfNull(license);
         EnsureUnambiguousNames(license, "licence");
         EnsureOnlyAllowedFields(license, LicenseFields, "licence");
 
@@ -385,7 +391,7 @@ public static class LicenseSchema
 
     private static bool HasExplicitOffset(string value)
     {
-        if (value.EndsWith("Z", StringComparison.OrdinalIgnoreCase))
+        if (value.EndsWith('Z') || value.EndsWith('z'))
             return true;
 
         if (value.Length < 6)

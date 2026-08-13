@@ -1,0 +1,77 @@
+name: license-server
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-license_server}
+      POSTGRES_USER: ${POSTGRES_USER:-license_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - license-postgres:/var/lib/postgresql
+    user: postgres
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    networks:
+      - backend
+
+  app:
+    image: license-server-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Container
+      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=${POSTGRES_DB:-license_server};Username=${POSTGRES_USER:-license_app};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SEED_DEFAULT_ADMIN: ${SEED_DEFAULT_ADMIN:-true}
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@localhost.com}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:?Set DEFAULT_ADMIN_PASSWORD in .env}
+      SEED_DEMO_LICENSE: ${SEED_DEMO_LICENSE:-true}
+      RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-false}
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - license-data-protection:/var/lib/licenseserver/data-protection
+      - ${LICENSE_SIGNING_KEY_PATH:?Set LICENSE_SIGNING_KEY_PATH in .env}:/run/secrets/license-signing-key.pem:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health/ready"]
+      interval: 5s
+      timeout: 4s
+      retries: 24
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    networks:
+      - backend
+
+volumes:
+  license-postgres:
+  license-data-protection:
+
+networks:
+  backend:
+    # PostgreSQL is not published; the app still needs host ingress and production HTTPS proxying.
+    internal: false

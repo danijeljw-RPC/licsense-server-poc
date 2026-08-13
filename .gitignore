@@ -4,3 +4,13 @@ artifacts/
 server-data/
 keys/*-private.pem
 licenses/*.license
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+data-protection-keys/
+postgres-data/
+TestResults/
+coverage/

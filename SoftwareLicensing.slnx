@@ -5,4 +5,7 @@
     <Project Path="src/LicenseValidator/LicenseValidator.csproj" />
     <Project Path="src/Licensing.Core/Licensing.Core.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LicenseServer.Tests/LicenseServer.Tests.csproj" />
+  </Folder>
 </Solution>

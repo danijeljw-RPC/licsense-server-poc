@@ -15,6 +15,8 @@ namespace Microsoft.AspNetCore.Routing;
 
 internal static class IdentityComponentsEndpointRouteBuilderExtensions
 {
+    private static readonly Action<ILogger, string, Exception?> LogPersonalDataRequest =
+        LoggerMessage.Define<string>(LogLevel.Information, new EventId(2001, "PersonalDataRequested"), "User with ID '{UserId}' asked for their personal data.");
     // These endpoints are required by the Identity Razor components defined in the /Components/Account/Pages directory of this project.
     public static IEndpointConventionBuilder MapAdditionalIdentityEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -123,7 +125,7 @@ internal static class IdentityComponentsEndpointRouteBuilderExtensions
             }
 
             var userId = await userManager.GetUserIdAsync(user);
-            downloadLogger.LogInformation("User with ID '{UserId}' asked for their personal data.", userId);
+            LogPersonalDataRequest(downloadLogger, userId, null);
 
             // Only include personal data for download
             var personalData = new Dictionary<string, string>();
@@ -150,4 +152,3 @@ internal static class IdentityComponentsEndpointRouteBuilderExtensions
         return accountGroup;
     }
 }
-

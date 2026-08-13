@@ -1,0 +1,12 @@
+<nav aria-label="Primary navigation">
+    <AuthorizeView Policy="Administrator">
+        <Authorized>
+            <NavLink href="/" Match="NavLinkMatch.All">Overview</NavLink>
+            <NavLink href="/licenses">Licenses</NavLink>
+            <NavLink href="/licenses/create">Issue license</NavLink>
+            <NavLink href="/offline">Offline issuance</NavLink>
+            <NavLink href="/audit">Audit trail</NavLink>
+            <NavLink href="/status">System status</NavLink>
+        </Authorized>
+    </AuthorizeView>
+</nav>

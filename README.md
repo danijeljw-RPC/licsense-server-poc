@@ -5,9 +5,165 @@ This repository is a proof-of-concept foundation for issuing one signed licence 
 - `Licensing.Core` is the shared licence contract, schema validation, and canonical JSON implementation.
 - `LicenseGenerator` generates ECDSA P-256 keys and signs schema-valid licence data.
 - `LicenseValidator` verifies signatures using public keys compiled into the application, validates the schema, and enforces product rules.
-- `LicenseServer` is a dependency-free ASP.NET Core mock service for activation, leases, deactivation, transfer, and revocation.
+- `LicenseServer` is a .NET 10 Blazor Web App and PostgreSQL-backed licensing service with ASP.NET Core Identity, MFA, passkeys, administration, activation, leases, transfer, and revocation.
 
 The signer and validator deliberately share `Licensing.Core`, so their interpretation of a licence cannot drift independently.
+
+## LicenseServer architecture and administration
+
+`LicenseServer` combines static server-rendered Blazor pages with narrowly scoped interactive support for Identity passkeys. EF Core and Npgsql persist customers, licenses, entitlements, activation history, signing-key metadata, ASP.NET Core Identity users/roles/passkeys, revocations, and append-only audit events in PostgreSQL. API request contracts remain separate from database entities.
+
+The public device APIs preserve the `/api/v1/licenses/{licenseId}/activate` and `/api/v1/activations/{activationId}/{validate|refresh|deactivate}` routes. Administrative pages and `/api/v1/admin/*` require the `Administrator` policy. The old `local-poc-admin-key` header has been removed.
+
+Activation and deactivation use serializable database transactions. PostgreSQL enforces one live activation per license with a partial unique index over `LicenseRecordId WHERE DeactivatedAt IS NULL`; `(LicenseRecordId, RequestId)` is also unique for retry idempotency. Activation codes and bearer tokens are SHA-256 hashes at rest. Only an eight-character device-ID suffix is rendered in the UI. Every timestamp is stored in UTC.
+
+### Local development without Docker
+
+Install .NET 10 and PostgreSQL 18 (PostgreSQL 16 or newer is also suitable), then create a development database and role using your normal PostgreSQL administration tool. One exact `psql` example is:
+
+```powershell
+psql -U postgres -c "CREATE ROLE license_app LOGIN PASSWORD 'replace-this-local-password';"
+psql -U postgres -c "CREATE DATABASE license_server OWNER license_app;"
+```
+
+Restore the repository-local tools and packages, provide secrets through the process environment, and run the server:
+
+```powershell
+dotnet tool restore --configfile NuGet.Config
+dotnet restore SoftwareLicensing.slnx --configfile NuGet.Config
+
+$env:ConnectionStrings__DefaultConnection = 'Host=localhost;Port=5432;Database=license_server;Username=license_app;Password=replace-this-local-password'
+$env:SEED_DEFAULT_ADMIN = 'true'
+$env:DEFAULT_ADMIN_EMAIL = 'admin@localhost.com'
+$env:DEFAULT_ADMIN_PASSWORD = 'LocalAdmin!7Kp9-Vx3-Rm8-Qz2'
+$env:SEED_DEMO_LICENSE = 'true'
+$env:Licensing__PrivateKeyPath = (Resolve-Path './keys/license-primary-2026-private.pem')
+$env:Licensing__PublicKeyPath = (Resolve-Path './keys/license-primary-2026-public.pem')
+
+dotnet run --project src/LicenseServer/LicenseServer.csproj --urls http://localhost:5080
+```
+
+Migrations run safely and idempotently during startup under a PostgreSQL advisory lock. To manage them explicitly:
+
+```powershell
+dotnet ef migrations add DescriptiveMigrationName --project src/LicenseServer --startup-project src/LicenseServer
+dotnet ef database update --project src/LicenseServer --startup-project src/LicenseServer
+dotnet ef migrations list --project src/LicenseServer --startup-project src/LicenseServer
+```
+
+Open [http://localhost:5080](http://localhost:5080). The development-only initial account is `admin@localhost.com` with password `LocalAdmin!7Kp9-Vx3-Rm8-Qz2`. The first successful login is forced directly to password replacement before any administrative page or API can be used. Never use these credentials outside a disposable local environment.
+
+Seeding happens only when `SEED_DEFAULT_ADMIN=true` and no matching email exists. Override `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_PASSWORD` before the first start. Passwords are processed only through ASP.NET Core Identity and are never logged. For local-PoC forgotten-password recovery, set `RESET_ADMIN_PASSWORD=true` and `DEFAULT_ADMIN_PASSWORD` to a new temporary value for exactly one restart, immediately return `RESET_ADMIN_PASSWORD=false`, and replace that temporary password at the forced login screen. Production must use a real verified email delivery implementation or an operator-controlled account-recovery process.
+
+### Docker Compose
+
+The app image is multi-stage and runs as the .NET image's non-root user. PostgreSQL runs as `postgres`; its port is not published. The app root filesystem is read-only, capabilities are dropped, `no-new-privileges` is set, only port 8080 is published, and explicit volumes hold PostgreSQL and Data Protection keys. The development PEM signing key is mounted read-only and is excluded from image layers.
+
+```powershell
+Copy-Item .env.example .env
+# Edit .env: replace POSTGRES_PASSWORD and DEFAULT_ADMIN_PASSWORD.
+# LICENSE_SIGNING_KEY_PATH must resolve to the existing development private PEM.
+
+docker compose config
+docker compose build
+docker compose up --detach --wait
+docker compose ps
+```
+
+Convenience scripts perform the same startup with daemon checks, Compose validation,
+health waiting, and clearer Docker Desktop/WSL diagnostics. They build directly through
+the Docker engine and then start Compose with `--no-build`, avoiding the Compose Bake
+context-metadata locking race seen on some Docker Desktop installations:
+
+```powershell
+./docker-up.ps1
+```
+
+```bash
+sh ./docker-up.sh
+```
+
+If WSL reports that `/var/run/docker.sock` does not exist, start Docker Desktop and
+enable **Settings → Resources → WSL integration** for that distribution. Apply the
+change, run `wsl --shutdown` from Windows PowerShell, then reopen WSL. Until integration
+is enabled, the shell scripts can use Docker Desktop's `docker.exe` automatically when
+Windows interoperability is available.
+
+Open [http://localhost:8080](http://localhost:8080), or the `APP_PORT` selected in `.env`. `depends_on` waits for PostgreSQL health, and application readiness includes a database connectivity check. Startup has no arbitrary sleeps.
+
+Stop containers without deleting persistent data:
+
+```powershell
+docker compose down
+# or: ./docker-down.ps1
+# Linux/WSL: sh ./docker-down.sh
+```
+
+Reset only this development stack (destructive to its database, users, audit data, and cookies):
+
+```powershell
+docker compose down
+docker volume rm license-server_license-postgres license-server_license-data-protection
+# equivalent scripted reset: ./docker-down.ps1 -RemoveVolumes
+```
+
+On Linux/WSL, the equivalent scripted reset is
+`REMOVE_VOLUMES=true sh ./docker-down.sh`. Normal down-script runs preserve both volumes.
+
+Do not add `--volumes` to routine shutdown commands. The exact volume prefix can be confirmed with `docker volume ls` if Compose was started under a different project name.
+
+### MFA and passkeys
+
+After login, open **Security**:
+
+- **Two-factor authentication** → **Add authenticator app** displays a local QR code and manual setup key, verifies the first TOTP, and then shows ten one-time recovery codes. The same area regenerates recovery codes; disabling 2FA or resetting the authenticator requires password reauthentication. Store recovery codes offline.
+- **Passkeys** registers, names, lists, renames, and removes WebAuthn credentials. .NET 10 Identity performs challenge creation, attestation, assertion validation, counter handling, and PostgreSQL public-credential storage. The server never receives private passkey material.
+- The login screen supports password, TOTP challenge, recovery-code challenge, and passkey authentication. Five failed password attempts trigger a 15-minute lockout.
+
+WebAuthn requires a secure browser context. `http://localhost` is the browser-defined local-development exception. Deploy behind HTTPS everywhere else, preserve the public host and scheme through trusted forwarded headers, persist Data Protection keys, and set cookie secure policy to `Always` at the TLS boundary.
+
+### Visual licensing workflows
+
+Use the left navigation after replacing the seed password:
+
+1. **Licenses** supports search, status filters, sort, pagination, and details. The seeded `LIC-POC-0001` activation code is `POC-DEMO-ACTIVATION-CODE` for development only.
+2. **Issue license** creates a customer, entitlement, and hashed activation credential. Deliver the original activation code through a separate secure channel because it cannot be recovered.
+3. A license detail page accepts a client-generated 32-byte Base64 activation token and the device's 64-character SHA-256 ID. It issues a downloadable signed response without rendering either secret back to the page.
+4. For an online activation, enter its token and full device ID to refresh the lease and download the refreshed signed file.
+5. To transfer, use **Deactivate / transfer** first. A second device receives HTTP 409 until authenticated deactivation succeeds; the page makes this ordering explicit.
+6. **Revoke license** requires a reason and confirmation. Revocation prevents online validation and lease refresh. It cannot recall an offline file already in the field.
+7. **Offline issuance** imports JSON created by `scripts/New-OfflineActivationRequest.ps1`, validates it, and downloads the signed `.license` response. The imported token and full device ID are cleared and never displayed.
+8. **Audit trail** shows actor, action, target, UTC timestamp, result, and non-secret context. **System status** and `/health/ready` show aggregate readiness without secrets.
+
+### Tests
+
+Run the complete suite from PowerShell with Docker available:
+
+```powershell
+dotnet restore SoftwareLicensing.slnx --configfile NuGet.Config
+dotnet build SoftwareLicensing.slnx --configuration Release
+./scripts/Test-LicenseFlow.ps1
+./scripts/Test-ActivationFlow.ps1
+./scripts/Test-DatabaseAndAuth.ps1
+docker build --tag license-server:test .
+```
+
+`Test-DatabaseAndAuth.ps1` creates a uniquely named PostgreSQL test container, runs migration, seed-idempotency, authorization, forced-password, TOTP/recovery-code, passkey-service, activation/conflict/refresh/transfer/revocation/offline-signature tests, and removes the container in `finally`. `Test-ActivationFlow.ps1` also starts its own isolated PostgreSQL database and LicenseServer process; it does **not** need or use a manually launched server. Both scripts clean up their temporary processes and files unless their explicit keep switch is used.
+
+For the final container smoke test:
+
+```powershell
+docker compose up --detach --build --wait
+Invoke-WebRequest http://localhost:8080/health/ready
+# Sign in through the UI, replace the seed password, then activate LIC-POC-0001 visually.
+docker compose down
+```
+
+### Security boundaries and production work
+
+The development private key is intentionally mounted as a file for this PoC. Production must replace `LicenseEnvelopeSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database passwords and TLS keys in a secret manager or orchestrator secrets, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, configure real recovery email, add rate limiting and monitoring, and back up both PostgreSQL and signing-key metadata.
+
+Signed license JSON provides authenticity, not confidentiality. Do not put secrets or unnecessary personal information in it. Device IDs remain spoofable software identifiers rather than hardware proof. Offline files cannot receive immediate revocation, and system-clock rollback remains a concern unless the client periodically obtains trusted server time. Passkey credentials in PostgreSQL are public keys and counters; private credentials remain in the user's authenticator.
 
 ## Recommended device and transfer model
 
@@ -68,17 +224,17 @@ available -> active on device A -> deactivated -> active on device B
 
 For a real product, offer separate policies rather than claiming identical guarantees: `online` (short renewable lease and prompt revocation), `offline` (long or no lease with weaker revocation), and possibly a customer-specific air-gapped lease duration.
 
-## Mock activation API
+## Activation API
 
 Run the local service:
 
 ```powershell
-dotnet run --project src/LicenseServer -- --urls http://127.0.0.1:5187
+dotnet run --project src/LicenseServer --urls http://127.0.0.1:5187
 ```
 
 That command is for manually exercising the API. `Test-ActivationFlow.ps1` is self-contained: it builds the solution, starts a separate temporary server on a random local port, runs the flow, stops that server, and removes its temporary files. Stop the manually started server with `Ctrl+C` when finished; it does not need to be running for the test.
 
-The seeded PoC licence is `LIC-POC-0001`; its activation code is `POC-DEMO-ACTIVATION-CODE`. The local admin key is `local-poc-admin-key`. These are intentionally public demo credentials and must never become production defaults.
+The seeded PoC license is `LIC-POC-0001`; its activation code is `POC-DEMO-ACTIVATION-CODE`. It is an intentionally public development credential and must never become a production default.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -86,10 +242,10 @@ The seeded PoC licence is `LIC-POC-0001`; its activation code is `POC-DEMO-ACTIV
 | `POST /api/v1/activations/{activationId}/validate` | Check current server state. |
 | `POST /api/v1/activations/{activationId}/refresh` | Issue a fresh signed online lease. |
 | `POST /api/v1/activations/{activationId}/deactivate` | Authenticate deactivation and make the licence transferable. |
-| `GET /api/v1/admin/licenses/{licenseId}` | Inspect state; requires `X-Admin-Key`. |
-| `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires `X-Admin-Key`. |
+| `GET /api/v1/admin/licenses/{licenseId}` | Inspect state; requires an authenticated Administrator cookie. |
+| `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires Administrator authorization and an antiforgery token. |
 
-This service deliberately uses an in-memory store so the PoC has no package or database dependency. Its locking and state transitions are realistic, but a production service must replace it with transactional durable storage, unique constraints, an audit log, customer/operator authentication, rate limiting, secret management, and a KMS/HSM signing boundary. The web process loads a development PEM only for this PoC.
+The service uses PostgreSQL transactions, database uniqueness constraints, ASP.NET Core Identity, and immutable audit records. The web process loads a mounted development PEM only for this PoC; move signing behind a KMS/HSM boundary before production.
 
 ### Offline issuance
 
@@ -347,7 +503,7 @@ Add only the public PEM to [`src/Licensing.Core/TrustedPublicKeys.cs`](src/Licen
 
 The generator also uses this trust map to verify that the selected private key matches `--key-id`. This prevents an operator from issuing an unusable licence with the correct ID but the wrong private key.
 
-Production private keys should be held in a managed KMS/HSM or isolated signing service. The future API should ask that service to sign; it should not load PEM private keys into a public web process.
+Production private keys should be held in a managed KMS/HSM or isolated signing service. Replace the current signer so it asks that service to sign and never loads PEM private keys into a public web process.
 
 ## Sign a licence
 
@@ -389,13 +545,12 @@ dotnet run --project src/LicenseValidator -- --license licenses/customer.license
 
 Exit codes are `0` for success, `1` for an invalid/expired/not-covered licence request, and `2` for arguments or runtime errors.
 
-## Production-server evolution
+## Further production hardening
 
 This format is a good offline signed entitlement, but a commercial licensing service needs additional controls:
 
-- Persist customers, products, entitlements, licences, signing-key metadata, issuance events, and revocations in a transactional database.
-- Generate `licenseId` server-side and make issuance idempotent so retries cannot create accidental duplicates.
-- Keep an immutable audit trail of who issued, changed, renewed, revoked, and downloaded a licence.
+- Generate `licenseId` server-side and make administrative issuance requests idempotent so retries cannot create accidental duplicates.
+- Export immutable audit records to retention-locked security storage and alert on suspicious authentication or issuance activity.
 - Define controlled vocabularies for product codes, editions, and licence types in server data rather than trusting arbitrary operator input.
 - Model renewals and upgrades as new signed licence versions. Never mutate an already issued signed file.
 - Publish signed revocation lists or require periodic online lease renewal where prompt revocation matters.
