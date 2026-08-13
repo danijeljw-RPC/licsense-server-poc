@@ -1,0 +1,6 @@
+**/bin/
+**/obj/
+artifacts/
+server-data/
+keys/*-private.pem
+licenses/*.license
