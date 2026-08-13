@@ -83,12 +83,16 @@ jobs:
         include:
           - name: Licence signing and validation
             script: Test-LicenseFlow.ps1
+            test_filter: ''
             needs_secondary_key: true
           - name: Database and authentication
             script: Test-DatabaseAndAuth.ps1
+            # Phase0Roadmap is an intentional-red executable specification.
+            test_filter: Suite=Baseline
             needs_secondary_key: false
           - name: Activation, transfer, and revocation
             script: Test-ActivationFlow.ps1
+            test_filter: ''
             needs_secondary_key: false
 
     steps:
@@ -135,8 +139,19 @@ jobs:
       - name: Run ${{ matrix.name }} tests
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/ci-logs | Out-Null
-          & "./scripts/${{ matrix.script }}" 2>&1 |
+          $scriptArguments = @{}
+          $testFilter = '${{ matrix.test_filter }}'
+          if (-not [string]::IsNullOrWhiteSpace($testFilter)) {
+            $scriptArguments.TestFilter = $testFilter
+          }
+
+          & "./scripts/${{ matrix.script }}" @scriptArguments 2>&1 |
             Tee-Object -FilePath "artifacts/ci-logs/${{ matrix.script }}.log"
+
+          # A successful script can leave LASTEXITCODE non-zero after testing an
+          # expected native-command failure. GitHub's pwsh wrapper exits with that
+          # stale value, so clear it only after the script completes successfully.
+          $global:LASTEXITCODE = 0
 
       - name: Remove ephemeral signing keys
         if: always()
