@@ -1,0 +1,173 @@
+name: .NET CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+# A superseded push or PR run should not consume runner time.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Keep the automatic token read-only. This workflow only checks out source.
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_NOLOGO: true
+  NUGET_XMLDOC_MODE: skip
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+  SOLUTION: SoftwareLicensing.slnx
+  CONFIGURATION: Release
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      - name: Restore locked dependencies
+        run: dotnet restore $env:SOLUTION --configfile NuGet.Config --locked-mode
+
+      - name: Build solution
+        run: dotnet build $env:SOLUTION --configuration $env:CONFIGURATION --no-restore
+
+      - name: Publish LicenseServer
+        run: >-
+          dotnet publish src/LicenseServer/LicenseServer.csproj
+          --configuration $env:CONFIGURATION
+          --no-build
+          --no-restore
+          --output artifacts/publish
+          -p:UseAppHost=false
+
+      - name: Upload published server
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: license-server-${{ github.sha }}
+          path: artifacts/publish
+          if-no-files-found: error
+          retention-days: 14
+
+  test:
+    name: Test / ${{ matrix.name }}
+    # Repository secrets are deliberately unavailable to pull requests from forks.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Licence signing and validation
+            script: Test-LicenseFlow.ps1
+            needs_secondary_key: true
+          - name: Database and authentication
+            script: Test-DatabaseAndAuth.ps1
+            needs_secondary_key: false
+          - name: Activation, transfer, and revocation
+            script: Test-ActivationFlow.ps1
+            needs_secondary_key: false
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      - name: Restore locked dependencies
+        run: dotnet restore $env:SOLUTION --configfile NuGet.Config --locked-mode
+
+      - name: Materialize ephemeral test signing keys
+        env:
+          PRIMARY_PRIVATE_KEY: ${{ secrets.LICENSE_PRIMARY_2026_PRIVATE_PEM }}
+          SECONDARY_PRIVATE_KEY: ${{ secrets.LICENSE_SECONDARY_2026_PRIVATE_PEM }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRIMARY_PRIVATE_KEY)) {
+            throw 'Repository secret LICENSE_PRIMARY_2026_PRIVATE_PEM is required.'
+          }
+          if ('${{ matrix.needs_secondary_key }}' -eq 'true' -and
+              [string]::IsNullOrWhiteSpace($env:SECONDARY_PRIVATE_KEY)) {
+            throw 'Repository secret LICENSE_SECONDARY_2026_PRIVATE_PEM is required for the licence-flow test.'
+          }
+
+          Set-Content `
+            -LiteralPath keys/license-primary-2026-private.pem `
+            -Value $env:PRIMARY_PRIVATE_KEY.Trim() `
+            -Encoding utf8NoBOM
+
+          if (-not [string]::IsNullOrWhiteSpace($env:SECONDARY_PRIVATE_KEY)) {
+            Set-Content `
+              -LiteralPath keys/license-secondary-2026-private.pem `
+              -Value $env:SECONDARY_PRIVATE_KEY.Trim() `
+              -Encoding utf8NoBOM
+          }
+
+      - name: Run ${{ matrix.name }} tests
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/ci-logs | Out-Null
+          & "./scripts/${{ matrix.script }}" 2>&1 |
+            Tee-Object -FilePath "artifacts/ci-logs/${{ matrix.script }}.log"
+
+      - name: Remove ephemeral signing keys
+        if: always()
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue `
+            keys/license-primary-2026-private.pem, `
+            keys/license-secondary-2026-private.pem
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-log-${{ matrix.script }}-${{ github.run_attempt }}
+          path: artifacts/ci-logs
+          if-no-files-found: warn
+          retention-days: 14
+
+  container:
+    name: Build container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build production Docker image
+        env:
+          IMAGE_TAG: license-server:${{ github.sha }}
+        run: |
+          docker build --pull --tag $env:IMAGE_TAG .
+          docker image inspect $env:IMAGE_TAG | Out-Null
