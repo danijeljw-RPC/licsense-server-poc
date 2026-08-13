@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS restore
+# Keep the container SDK aligned with the exact version required by global.json.
+FROM mcr.microsoft.com/dotnet/sdk:10.0.301 AS restore
 WORKDIR /src
 COPY Directory.Build.props Directory.Packages.props global.json NuGet.Config SoftwareLicensing.slnx ./
 COPY src/Licensing.Core/Licensing.Core.csproj src/Licensing.Core/packages.lock.json src/Licensing.Core/

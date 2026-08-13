@@ -37,6 +37,8 @@ public sealed record RevokeRequest(bool Confirmed, string? Reason, long? Version
 
 public sealed record CancelRequest(bool Confirmed, string? Reason, long Version, string? Reference = null);
 
+public sealed record AdminDeactivateRequest(bool Confirmed, string? Reason, long Version);
+
 public sealed record AmendTermsRequest(
     DateTimeOffset? ExpiresAt,
     int? Seats,

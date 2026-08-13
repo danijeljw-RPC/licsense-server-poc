@@ -373,6 +373,38 @@ internal sealed class LicenseStore(ApplicationDbContext db)
         return StoreResult<bool>.Ok(true);
     }
 
+    public async Task<StoreResult<bool>> AdminDeactivateAsync(
+        string activationId, string? reason, long expectedVersion, string actor, DateTimeOffset now,
+        string? correlationId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length < 3)
+            return StoreResult<bool>.BadRequest("A deactivation reason of at least three characters is required.");
+
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        var activation = await db.Activations.Include(x => x.License)
+            .SingleOrDefaultAsync(x => x.ActivationId == activationId, cancellationToken);
+        if (activation is null) return StoreResult<bool>.NotFound("Activation was not found.");
+        if (activation.License.Version != expectedVersion)
+            return StoreResult<bool>.Conflict("The license was changed by another operation. Reload and retry.");
+        if (activation.DeactivatedAt is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return StoreResult<bool>.Ok(true);
+        }
+
+        activation.DeactivatedAt = now;
+        db.Entry(activation.License).Property(x => x.Version).IsModified = true;
+        AddAudit(actor, "activation.admin-deactivated", "activation", activationId, "success", new
+        {
+            licenseId = activation.License.LicenseId, reason = reason.Trim(),
+            old = new { deactivatedAt = (DateTimeOffset?)null }, @new = new { deactivatedAt = now },
+            version = activation.License.Version + 1, correlationId
+        }, now);
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return StoreResult<bool>.Ok(true);
+    }
+
     public async Task<JsonObject> CreateLicenseAsync(
         ActiveActivation activation,
         DateTimeOffset issuedAt,

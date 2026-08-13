@@ -85,14 +85,18 @@ try {
     $env:ASPNETCORE_ENVIRONMENT = 'Development'
     $env:Licensing__PrivateKeyPath = Join-Path $repositoryRoot 'keys\license-primary-2026-private.pem'
     $env:Licensing__PublicKeyPath = Join-Path $repositoryRoot 'keys\license-primary-2026-public.pem'
-    $serverProcess = Start-Process `
-        -FilePath 'dotnet' `
-        -ArgumentList @($serverAssembly, '--urls', $serverUrl) `
-        -WorkingDirectory $repositoryRoot `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr `
-        -WindowStyle Hidden `
-        -PassThru
+    $startProcessArguments = @{
+        FilePath = 'dotnet'
+        ArgumentList = @($serverAssembly, '--urls', $serverUrl)
+        WorkingDirectory = $repositoryRoot
+        RedirectStandardOutput = $stdout
+        RedirectStandardError = $stderr
+        PassThru = $true
+    }
+    if ($IsWindows) {
+        $startProcessArguments.WindowStyle = 'Hidden'
+    }
+    $serverProcess = Start-Process @startProcessArguments
 
     $ready = $false
     foreach ($attempt in 1..40) {
