@@ -100,14 +100,20 @@ internal sealed class StripeBillingPolicyProcessor(
         {
             customer = new LicenseServer.Data.Customer
             {
-                Id = Guid.NewGuid(), Name = snapshot.CustomerName.Trim(), Email = normalizedEmail!,
-                NormalizedEmail = normalizedEmail!, CreatedAt = clock.GetUtcNow()
+                Id = Guid.NewGuid(),
+                Name = snapshot.CustomerName.Trim(),
+                Email = normalizedEmail!,
+                NormalizedEmail = normalizedEmail!,
+                CreatedAt = clock.GetUtcNow()
             };
             db.Customers.Add(customer);
             db.StripeCustomerMappings.Add(new StripeCustomerMapping
             {
-                Id = Guid.NewGuid(), StripeCustomerId = snapshot.CustomerId, Customer = customer,
-                CustomerId = customer.Id, CreatedAt = clock.GetUtcNow()
+                Id = Guid.NewGuid(),
+                StripeCustomerId = snapshot.CustomerId,
+                Customer = customer,
+                CustomerId = customer.Id,
+                CreatedAt = clock.GetUtcNow()
             });
             await db.SaveChangesAsync(cancellationToken);
         }
@@ -120,30 +126,50 @@ internal sealed class StripeBillingPolicyProcessor(
 
         var contract = new BillingContract
         {
-            Id = Guid.NewGuid(), CustomerId = customer.Id, Customer = customer,
-            ProductDefinitionId = mapped.Product!.Id, ProductDefinition = mapped.Product,
-            Status = "active", LicenseType = mapped.Price!.LicenseType, Edition = mapped.Price.Edition,
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            Customer = customer,
+            ProductDefinitionId = mapped.Product!.Id,
+            ProductDefinition = mapped.Product,
+            Status = "active",
+            LicenseType = mapped.Price!.LicenseType,
+            Edition = mapped.Price.Edition,
             Seats = snapshot.Seats > 0 ? snapshot.Seats : mapped.Price.Seats,
-            CurrentPeriodEnd = snapshot.CurrentPeriodEnd, CreatedAt = clock.GetUtcNow(), UpdatedAt = clock.GetUtcNow()
+            CurrentPeriodEnd = snapshot.CurrentPeriodEnd,
+            CreatedAt = clock.GetUtcNow(),
+            UpdatedAt = clock.GetUtcNow()
         };
         var order = new LicenseOrder
         {
-            Id = Guid.NewGuid(), BillingContract = contract, BillingContractId = contract.Id,
-            Customer = customer, CustomerId = customer.Id, ProductDefinition = mapped.Product,
-            ProductDefinitionId = mapped.Product.Id, Kind = "purchase", Status = "paid",
-            CreatedAt = clock.GetUtcNow(), UpdatedAt = clock.GetUtcNow()
+            Id = Guid.NewGuid(),
+            BillingContract = contract,
+            BillingContractId = contract.Id,
+            Customer = customer,
+            CustomerId = customer.Id,
+            ProductDefinition = mapped.Product,
+            ProductDefinitionId = mapped.Product.Id,
+            Kind = "purchase",
+            Status = "paid",
+            CreatedAt = clock.GetUtcNow(),
+            UpdatedAt = clock.GetUtcNow()
         };
         db.BillingContracts.Add(contract);
         db.LicenseOrders.Add(order);
         db.StripeSubscriptionMappings.Add(new StripeSubscriptionMapping
         {
-            Id = Guid.NewGuid(), StripeSubscriptionId = snapshot.SubscriptionId,
-            BillingContract = contract, BillingContractId = contract.Id, CreatedAt = clock.GetUtcNow()
+            Id = Guid.NewGuid(),
+            StripeSubscriptionId = snapshot.SubscriptionId,
+            BillingContract = contract,
+            BillingContractId = contract.Id,
+            CreatedAt = clock.GetUtcNow()
         });
         db.StripeCheckoutSessionMappings.Add(new StripeCheckoutSessionMapping
         {
-            Id = Guid.NewGuid(), StripeCheckoutSessionId = snapshot.CheckoutSessionId,
-            LicenseOrder = order, LicenseOrderId = order.Id, CreatedAt = clock.GetUtcNow()
+            Id = Guid.NewGuid(),
+            StripeCheckoutSessionId = snapshot.CheckoutSessionId,
+            LicenseOrder = order,
+            LicenseOrderId = order.Id,
+            CreatedAt = clock.GetUtcNow()
         });
         await db.SaveChangesAsync(cancellationToken);
 
@@ -168,7 +194,10 @@ internal sealed class StripeBillingPolicyProcessor(
             $"billing:purchase:{snapshot.CheckoutSessionId}", cancellationToken);
         db.AuditRecords.Add(Audit(snapshot, "billing.purchase-completed", contract.Id, new
         {
-            customerId = customer.Id, productId = mapped.Product.Id, orderId = order.Id, licenseId = license.LicenseId
+            customerId = customer.Id,
+            productId = mapped.Product.Id,
+            orderId = order.Id,
+            licenseId = license.LicenseId
         }));
         await db.SaveChangesAsync(cancellationToken);
         return Completed();
@@ -216,18 +245,32 @@ internal sealed class StripeBillingPolicyProcessor(
         contract.UpdatedAt = clock.GetUtcNow();
         var order = new LicenseOrder
         {
-            Id = Guid.NewGuid(), BillingContractId = contract.Id, BillingContract = contract,
-            CustomerId = contract.CustomerId, Customer = contract.Customer,
-            ProductDefinitionId = contract.ProductDefinitionId, ProductDefinition = product,
-            LicenseRecordId = contract.LicenseRecordId, License = contract.License,
-            Kind = "renewal", Status = "paid", CreatedAt = clock.GetUtcNow(), UpdatedAt = clock.GetUtcNow()
+            Id = Guid.NewGuid(),
+            BillingContractId = contract.Id,
+            BillingContract = contract,
+            CustomerId = contract.CustomerId,
+            Customer = contract.Customer,
+            ProductDefinitionId = contract.ProductDefinitionId,
+            ProductDefinition = product,
+            LicenseRecordId = contract.LicenseRecordId,
+            License = contract.License,
+            Kind = "renewal",
+            Status = "paid",
+            CreatedAt = clock.GetUtcNow(),
+            UpdatedAt = clock.GetUtcNow()
         };
         db.LicenseOrders.Add(order);
         db.StripeInvoiceMappings.Add(new StripeInvoiceMapping
         {
-            Id = Guid.NewGuid(), StripeInvoiceId = snapshot.InvoiceId, LicenseOrder = order, LicenseOrderId = order.Id,
-            BillingContract = contract, BillingContractId = contract.Id, AppliedPeriodEnd = expiry,
-            AppliedEventId = snapshot.EventId, CreatedAt = clock.GetUtcNow()
+            Id = Guid.NewGuid(),
+            StripeInvoiceId = snapshot.InvoiceId,
+            LicenseOrder = order,
+            LicenseOrderId = order.Id,
+            BillingContract = contract,
+            BillingContractId = contract.Id,
+            AppliedPeriodEnd = expiry,
+            AppliedEventId = snapshot.EventId,
+            CreatedAt = clock.GetUtcNow()
         });
         await emails.QueueAsync(new TransactionalEmail(
                 EmailTemplates.RenewalReceipt, contract.Customer!.Email,
@@ -235,7 +278,9 @@ internal sealed class StripeBillingPolicyProcessor(
             $"billing:renewal:{snapshot.InvoiceId}", cancellationToken);
         db.AuditRecords.Add(Audit(snapshot, "billing.renewal-paid", contract.Id, new
         {
-            orderId = order.Id, licenseId = contract.License.LicenseId, periodEnd = expiry
+            orderId = order.Id,
+            licenseId = contract.License.LicenseId,
+            periodEnd = expiry
         }));
         await db.SaveChangesAsync(cancellationToken);
         return Completed();
@@ -259,7 +304,8 @@ internal sealed class StripeBillingPolicyProcessor(
                 grace, snapshot.EventId, "license.billing-grace-entered", cancellationToken);
             db.AuditRecords.Add(Audit(snapshot, "billing.payment-failed", contract.Id, new
             {
-                licenseId = contract.License.LicenseId, graceUntil = grace
+                licenseId = contract.License.LicenseId,
+                graceUntil = grace
             }));
         }
         await emails.QueueAsync(new TransactionalEmail(
@@ -295,8 +341,11 @@ internal sealed class StripeBillingPolicyProcessor(
         contract.UpdatedAt = clock.GetUtcNow();
         db.AuditRecords.Add(Audit(snapshot, "billing.subscription-changed", contract.Id, new
         {
-            productId = product.Id, contract.Edition, contract.Seats,
-            contract.CancelAtPeriodEnd, paidThrough = contract.CurrentPeriodEnd
+            productId = product.Id,
+            contract.Edition,
+            contract.Seats,
+            contract.CancelAtPeriodEnd,
+            paidThrough = contract.CurrentPeriodEnd
         }));
         await db.SaveChangesAsync(cancellationToken);
         return Completed();
@@ -310,7 +359,8 @@ internal sealed class StripeBillingPolicyProcessor(
         contract.UpdatedAt = clock.GetUtcNow();
         db.AuditRecords.Add(Audit(snapshot, "billing.subscription-deleted", contract.Id, new
         {
-            paidThrough = contract.CurrentPeriodEnd, licenseId = contract.License?.LicenseId
+            paidThrough = contract.CurrentPeriodEnd,
+            licenseId = contract.License?.LicenseId
         }));
         await db.SaveChangesAsync(cancellationToken);
         return Completed();
@@ -335,7 +385,8 @@ internal sealed class StripeBillingPolicyProcessor(
         contract.UpdatedAt = clock.GetUtcNow();
         db.AuditRecords.Add(Audit(snapshot, auditAction, contract.Id, new
         {
-            action = configuredAction, licenseId = contract.License.LicenseId
+            action = configuredAction,
+            licenseId = contract.License.LicenseId
         }));
         await db.SaveChangesAsync(cancellationToken);
         return Completed();
@@ -343,12 +394,22 @@ internal sealed class StripeBillingPolicyProcessor(
 
     private async Task<BillingContract?> ContractAsync(BillingSnapshot snapshot, CancellationToken cancellationToken)
     {
-        if (snapshot.SubscriptionId is null) return null;
-        return await db.StripeSubscriptionMappings
+        if (snapshot.SubscriptionId is not null)
+        {
+            return await db.StripeSubscriptionMappings
+                .Include(item => item.BillingContract).ThenInclude(item => item.Customer)
+                .Include(item => item.BillingContract).ThenInclude(item => item.ProductDefinition)
+                .Include(item => item.BillingContract).ThenInclude(item => item.License)
+                .Where(item => item.StripeSubscriptionId == snapshot.SubscriptionId)
+                .Select(item => item.BillingContract)
+                .SingleOrDefaultAsync(cancellationToken);
+        }
+        if (snapshot.InvoiceId is null) return null;
+        return await db.StripeInvoiceMappings
             .Include(item => item.BillingContract).ThenInclude(item => item.Customer)
             .Include(item => item.BillingContract).ThenInclude(item => item.ProductDefinition)
             .Include(item => item.BillingContract).ThenInclude(item => item.License)
-            .Where(item => item.StripeSubscriptionId == snapshot.SubscriptionId)
+            .Where(item => item.StripeInvoiceId == snapshot.InvoiceId)
             .Select(item => item.BillingContract)
             .SingleOrDefaultAsync(cancellationToken);
     }
@@ -381,8 +442,11 @@ internal sealed class StripeBillingPolicyProcessor(
 
     private AuditRecord Audit(BillingSnapshot snapshot, string action, Guid contractId, object context) => new()
     {
-        Actor = "billing:stripe", Action = action, TargetType = "billing_contract",
-        TargetId = contractId.ToString("D"), Result = "success",
+        Actor = "billing:stripe",
+        Action = action,
+        TargetType = "billing_contract",
+        TargetId = contractId.ToString("D"),
+        Result = "success",
         ContextJson = JsonSerializer.Serialize(new { providerEventId = snapshot.EventId, business = context }),
         TimestampUtc = clock.GetUtcNow()
     };
@@ -414,15 +478,22 @@ internal sealed class StripeCurrentStateFetcher : IStripeCurrentStateFetcher
     public async Task<string?> FetchAsync(string objectType, string objectId, CancellationToken cancellationToken = default)
     {
         if (client is null) return null;
-        object value = objectType switch
+        StripeEntity value = objectType switch
         {
             "subscription" => await client.V1.Subscriptions.GetAsync(objectId, cancellationToken: cancellationToken),
             "invoice" => await client.V1.Invoices.GetAsync(objectId, cancellationToken: cancellationToken),
-            "checkout.session" => await client.V1.Checkout.Sessions.GetAsync(objectId, cancellationToken: cancellationToken),
+            "checkout.session" => await client.V1.Checkout.Sessions.GetAsync(objectId,
+                new Stripe.Checkout.SessionGetOptions
+                {
+                    Expand = ["line_items", "subscription"]
+                }, cancellationToken: cancellationToken),
             "customer" => await client.V1.Customers.GetAsync(objectId, cancellationToken: cancellationToken),
+            "charge" => await client.V1.Charges.GetAsync(objectId, cancellationToken: cancellationToken),
+            "dispute" => await client.V1.Disputes.GetAsync(objectId,
+                new DisputeGetOptions { Expand = ["charge"] }, cancellationToken: cancellationToken),
             _ => throw new InvalidOperationException("Unsupported Stripe object reconciliation type.")
         };
-        return JsonSerializer.Serialize(value);
+        return value.ToJson();
     }
 }
 
@@ -446,13 +517,24 @@ internal sealed class StripeBillingStateProvider(
         return Parse(row, value);
     }
 
-    private static BillingSnapshot? Parse(WebhookInbox row, JsonElement value)
+    internal static BillingSnapshot? Parse(WebhookInbox row, JsonElement value)
     {
-        var customer = String(value, "customer");
-        var subscription = String(value, "subscription") ?? (value.TryGetProperty("object", out var type) && type.GetString() == "subscription" ? String(value, "id") : null);
-        var invoice = value.TryGetProperty("object", out var objectType) && objectType.GetString() == "invoice" ? String(value, "id") : null;
-        var checkout = value.TryGetProperty("object", out objectType) && objectType.GetString() == "checkout.session" ? String(value, "id") : null;
-        var periodEnd = Unix(value, "current_period_end") ?? Unix(value, "period_end");
+        var line = FirstData(value, "line_items") ?? FirstData(value, "lines") ?? FirstData(value, "items");
+        var price = line is { } lineValue ? Property(lineValue, "price") : null;
+        var priceDetails = line is { } currentLine ? Path(currentLine, "pricing", "price_details") : null;
+        var subscriptionValue = Property(value, "subscription");
+        var customer = StringOrId(value, "customer")
+            ?? (ObjectIs(value, "customer") ? String(value, "id") : null);
+        var subscription = StringOrId(value, "subscription")
+            ?? StringOrId(Path(value, "parent", "subscription_details"), "subscription")
+            ?? (ObjectIs(value, "subscription") ? String(value, "id") : null);
+        var invoice = ObjectIs(value, "invoice") ? String(value, "id") : StringOrId(value, "invoice");
+        invoice ??= StringOrId(Property(value, "charge"), "invoice");
+        var checkout = ObjectIs(value, "checkout.session") ? String(value, "id") : null;
+        var periodEnd = Unix(value, "current_period_end") ?? Unix(value, "period_end")
+            ?? Unix(subscriptionValue, "current_period_end")
+            ?? Unix(Path(line, "period"), "end")
+            ?? Unix(line, "current_period_end");
         var kind = row.EventType switch
         {
             "checkout.session.completed" => BillingEventKind.PurchaseCompleted,
@@ -465,31 +547,103 @@ internal sealed class StripeBillingStateProvider(
             _ => null
         };
         return kind is null ? null : new BillingSnapshot(
-            row.ProviderEventId, kind, customer, String(value, "customer_name"), String(value, "customer_email"),
-            String(value, "product"), String(value, "price"), subscription, checkout, invoice, periodEnd,
-            Bool(value, "cancel_at_period_end"), Int(value, "quantity") ?? 1);
+            row.ProviderEventId, kind, customer,
+            String(value, "customer_name") ?? String(Path(value, "customer_details"), "name"),
+            String(value, "customer_email") ?? String(Path(value, "customer_details"), "email"),
+            StringOrId(price, "product") ?? String(priceDetails, "product") ?? StringOrId(value, "product"),
+            ElementId(price) ?? String(priceDetails, "price") ?? StringOrId(value, "price"),
+            subscription, checkout, invoice, periodEnd,
+            Bool(value, "cancel_at_period_end") || Bool(subscriptionValue, "cancel_at_period_end"),
+            Int(line, "quantity") ?? Int(value, "quantity") ?? 1);
     }
 
-    private static bool NeedsCurrentState(string eventType, JsonElement value) =>
-        eventType is "checkout.session.completed" or "invoice.paid" or "invoice.payment_failed"
-        && (!value.TryGetProperty("customer", out _) || !value.TryGetProperty("subscription", out _));
+    private static bool NeedsCurrentState(string eventType, JsonElement value)
+    {
+        var row = new WebhookInbox
+        {
+            Provider = "stripe",
+            ProviderEventId = "state-check",
+            EventType = eventType,
+            Category = "state-check",
+            ProtectedPayload = "unused",
+            Status = BillingInboxStatus.Categorized
+        };
+        var snapshot = Parse(row, value);
+        return eventType switch
+        {
+            "checkout.session.completed" => snapshot is null || snapshot.CustomerId is null
+                || snapshot.CustomerName is null || snapshot.CustomerEmail is null
+                || snapshot.SubscriptionId is null || snapshot.ProductId is null
+                || snapshot.PriceId is null || snapshot.CurrentPeriodEnd is null,
+            "invoice.paid" => snapshot is null || snapshot.CustomerId is null
+                || snapshot.SubscriptionId is null || snapshot.InvoiceId is null
+                || snapshot.ProductId is null || snapshot.PriceId is null
+                || snapshot.CurrentPeriodEnd is null,
+            "invoice.payment_failed" => snapshot is null || snapshot.SubscriptionId is null
+                || snapshot.InvoiceId is null,
+            "charge.refunded" or "charge.dispute.created" => snapshot is null
+                || (snapshot.SubscriptionId is null && snapshot.InvoiceId is null),
+            _ => false
+        };
+    }
 
     private static string ObjectType(string eventType) => eventType switch
     {
         "checkout.session.completed" => "checkout.session",
         "invoice.paid" or "invoice.payment_failed" => "invoice",
+        "charge.refunded" => "charge",
+        "charge.dispute.created" => "dispute",
         _ => "subscription"
     };
 
+    private static bool ObjectIs(JsonElement value, string objectType) =>
+        value.ValueKind == JsonValueKind.Object && String(value, "object") == objectType;
+    private static JsonElement? Property(JsonElement value, string name) =>
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var property) ? property : null;
+    private static JsonElement? Property(JsonElement? value, string name) =>
+        value is { } element ? Property(element, name) : null;
+    private static JsonElement? Path(JsonElement? value, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            value = Property(value, name);
+            if (value is null) return null;
+        }
+        return value;
+    }
+    private static JsonElement? FirstData(JsonElement value, string collectionName)
+    {
+        var data = Path(value, collectionName, "data");
+        return data is { ValueKind: JsonValueKind.Array } && data.Value.GetArrayLength() > 0
+            ? data.Value[0] : null;
+    }
+    private static string? ElementId(JsonElement? value) => value switch
+    {
+        { ValueKind: JsonValueKind.String } element => element.GetString(),
+        { ValueKind: JsonValueKind.Object } element => String(element, "id"),
+        _ => null
+    };
+    private static string? StringOrId(JsonElement value, string name) => ElementId(Property(value, name));
+    private static string? StringOrId(JsonElement? value, string name) => ElementId(Property(value, name));
     private static string? String(JsonElement value, string name) =>
-        value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String ? property.GetString() : null;
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var property)
+            && property.ValueKind == JsonValueKind.String ? property.GetString() : null;
+    private static string? String(JsonElement? value, string name) =>
+        value is { } element ? String(element, name) : null;
     private static bool Bool(JsonElement value, string name) =>
-        value.TryGetProperty(name, out var property) && property.ValueKind is JsonValueKind.True or JsonValueKind.False && property.GetBoolean();
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var property)
+            && property.ValueKind is JsonValueKind.True or JsonValueKind.False && property.GetBoolean();
+    private static bool Bool(JsonElement? value, string name) => value is { } element && Bool(element, name);
     private static int? Int(JsonElement value, string name) =>
-        value.TryGetProperty(name, out var property) && property.TryGetInt32(out var number) ? number : null;
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var property)
+            && property.TryGetInt32(out var number) ? number : null;
+    private static int? Int(JsonElement? value, string name) => value is { } element ? Int(element, name) : null;
     private static DateTimeOffset? Unix(JsonElement value, string name) =>
-        value.TryGetProperty(name, out var property) && property.TryGetInt64(out var seconds)
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var property)
+            && property.TryGetInt64(out var seconds)
             ? DateTimeOffset.FromUnixTimeSeconds(seconds) : null;
+    private static DateTimeOffset? Unix(JsonElement? value, string name) =>
+        value is { } element ? Unix(element, name) : null;
 }
 
 internal sealed class StripeBillingEventProcessor(IServiceScopeFactory scopes) : IBillingEventProcessor

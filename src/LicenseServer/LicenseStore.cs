@@ -59,9 +59,15 @@ internal sealed class LicenseStore(
         var licenseId = await licenseIds.AllocateAsync(now, cancellationToken);
         var license = new LicenseRecord
         {
-            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerId = customer.Id, Customer = customer,
-            ActivationCodeHash = activationHash.Value, ActivationCodeHashVersion = activationHash.Version,
-            MetadataJson = metadata.ToJsonString(), IssuedAt = now, ExpiresAt = expiry,
+            Id = Guid.NewGuid(),
+            LicenseId = licenseId,
+            CustomerId = customer.Id,
+            Customer = customer,
+            ActivationCodeHash = activationHash.Value,
+            ActivationCodeHashVersion = activationHash.Version,
+            MetadataJson = metadata.ToJsonString(),
+            IssuedAt = now,
+            ExpiresAt = expiry,
             Entitlements =
             [
                 new Entitlement
@@ -75,8 +81,14 @@ internal sealed class LicenseStore(
         db.Licenses.Add(license);
         AddAudit(context.Actor, "license.issued", "license", licenseId, "success", new
         {
-            customerId = customer.Id, productId = product.Id, product = product.Code, edition, licenseType,
-            expiresAt = expiry, seats = request.Seats, correlationId = context.CorrelationId
+            customerId = customer.Id,
+            productId = product.Id,
+            product = product.Code,
+            edition,
+            licenseType,
+            expiresAt = expiry,
+            seats = request.Seats,
+            correlationId = context.CorrelationId
         }, now);
         await db.SaveChangesAsync(cancellationToken);
         return StoreResult<IssuedLicense>.Ok(new IssuedLicense(
@@ -112,7 +124,8 @@ internal sealed class LicenseStore(
         db.Entry(license).Property(item => item.Version).IsModified = true;
         AddAudit("billing:stripe", action, "license", license.LicenseId, "success", new
         {
-            eventId, old,
+            eventId,
+            old,
             @new = new { expiresAt = expiry, product = product.Code, edition, seats },
             correlationId = eventId
         }, clock.GetUtcNow());
@@ -183,16 +196,21 @@ internal sealed class LicenseStore(
             var activationHash = activationCodeHasher.Hash(activationCode);
             var license = new LicenseRecord
             {
-                Id = Guid.NewGuid(), LicenseId = licenseId,
+                Id = Guid.NewGuid(),
+                LicenseId = licenseId,
                 Customer = new Customer
                 {
-                    Id = Guid.NewGuid(), Name = customerName,
-                    Email = customerEmail, NormalizedEmail = customerEmail, CreatedAt = now
+                    Id = Guid.NewGuid(),
+                    Name = customerName,
+                    Email = customerEmail,
+                    NormalizedEmail = customerEmail,
+                    CreatedAt = now
                 },
                 ActivationCodeHash = activationHash.Value,
                 ActivationCodeHashVersion = activationHash.Version,
                 MetadataJson = metadata.ToJsonString(),
-                IssuedAt = now, ExpiresAt = expiry,
+                IssuedAt = now,
+                ExpiresAt = expiry,
                 Entitlements =
                 [
                     new Entitlement
@@ -206,8 +224,14 @@ internal sealed class LicenseStore(
             db.Licenses.Add(license);
             AddAudit(context.Actor, "license.issued", "license", licenseId, "success", new
             {
-                customer = customerName, productId = product.Id, product = product.Code, edition, licenseType, expiresAt = expiry,
-                seats = request.Seats, correlationId = context.CorrelationId
+                customer = customerName,
+                productId = product.Id,
+                product = product.Code,
+                edition,
+                licenseType,
+                expiresAt = expiry,
+                seats = request.Seats,
+                correlationId = context.CorrelationId
             }, now);
             var issued = new IssuedLicense(
                 licenseId, activationCode, metadata,
@@ -449,8 +473,10 @@ internal sealed class LicenseStore(
         AddAudit(actor, "license.revoked", "license", licenseId, "success", new
         {
             reason = license.RevocationReason,
-            old = new { revokedAt = (DateTimeOffset?)null }, @new = new { revokedAt = now },
-            version = license.Version + 1, correlationId
+            old = new { revokedAt = (DateTimeOffset?)null },
+            @new = new { revokedAt = now },
+            version = license.Version + 1,
+            correlationId
         }, now);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -487,9 +513,12 @@ internal sealed class LicenseStore(
             ? null : reference.Trim()[..Math.Min(reference.Trim().Length, 200)];
         AddAudit(actor, "license.cancelled", "license", licenseId, "success", new
         {
-            reason = license.CancellationReason, reference = license.CancellationReference,
-            old = new { cancelledAt = (DateTimeOffset?)null }, @new = new { cancelledAt = now },
-            version = license.Version + 1, correlationId
+            reason = license.CancellationReason,
+            reference = license.CancellationReference,
+            old = new { cancelledAt = (DateTimeOffset?)null },
+            @new = new { cancelledAt = now },
+            version = license.Version + 1,
+            correlationId
         }, now);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -539,8 +568,11 @@ internal sealed class LicenseStore(
         db.Entry(license).Property(x => x.Version).IsModified = true;
         AddAudit(actor, "license.terms-amended", "license", licenseId, "success", new
         {
-            old, @new = new { expiresAt = license.ExpiresAt, entitlement.Seats, entitlement.UpdatesUntil, entitlement.Edition },
-            reason = request.Reason.Trim(), version = license.Version + 1, correlationId
+            old,
+            @new = new { expiresAt = license.ExpiresAt, entitlement.Seats, entitlement.UpdatesUntil, entitlement.Edition },
+            reason = request.Reason.Trim(),
+            version = license.Version + 1,
+            correlationId
         }, now);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -599,9 +631,12 @@ internal sealed class LicenseStore(
         db.Entry(activation.License).Property(x => x.Version).IsModified = true;
         AddAudit(actor, "activation.admin-deactivated", "activation", activationId, "success", new
         {
-            licenseId = activation.License.LicenseId, reason = reason.Trim(),
-            old = new { deactivatedAt = (DateTimeOffset?)null }, @new = new { deactivatedAt = now },
-            version = activation.License.Version + 1, correlationId
+            licenseId = activation.License.LicenseId,
+            reason = reason.Trim(),
+            old = new { deactivatedAt = (DateTimeOffset?)null },
+            @new = new { deactivatedAt = now },
+            version = activation.License.Version + 1,
+            correlationId
         }, now);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

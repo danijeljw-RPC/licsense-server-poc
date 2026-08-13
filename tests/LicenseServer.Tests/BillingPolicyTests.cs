@@ -2,12 +2,112 @@ using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 
 namespace LicenseServer.Tests;
 
 [Collection(PostgresTestSuite.Name)]
 public sealed class BillingPolicyTests(PostgresWebFixture fixture)
 {
+    [Fact]
+    [Trait("ExpectedGreenStage", "15")]
+    public void CurrentStripeCheckoutStateUsesNestedContactAndLineItemPricing()
+    {
+        var row = new WebhookInbox
+        {
+            Provider = "stripe",
+            ProviderEventId = "evt_nested",
+            EventType = "checkout.session.completed",
+            Category = "purchase",
+            ProtectedPayload = "unused",
+            Status = BillingInboxStatus.Categorized
+        };
+        using var document = JsonDocument.Parse("""
+        {
+          "id": "cs_nested",
+          "object": "checkout.session",
+          "customer": "cus_nested",
+          "customer_details": {
+            "name": "Nested Buyer",
+            "email": "nested@example.com"
+          },
+          "subscription": "sub_nested",
+          "line_items": {
+            "data": [
+              {
+                "quantity": 3,
+                "price": {
+                  "id": "price_nested",
+                  "product": "prod_nested"
+                }
+              }
+            ]
+          }
+        }
+        """);
+
+        var snapshot = StripeBillingStateProvider.Parse(row, document.RootElement);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal("cus_nested", snapshot.CustomerId);
+        Assert.Equal("Nested Buyer", snapshot.CustomerName);
+        Assert.Equal("nested@example.com", snapshot.CustomerEmail);
+        Assert.Equal("prod_nested", snapshot.ProductId);
+        Assert.Equal("price_nested", snapshot.PriceId);
+        Assert.Equal("sub_nested", snapshot.SubscriptionId);
+        Assert.Equal("cs_nested", snapshot.CheckoutSessionId);
+        Assert.Equal(3, snapshot.Seats);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "15")]
+    public void CurrentStripeInvoiceStateUsesDahliaParentAndPricingFields()
+    {
+        var row = new WebhookInbox
+        {
+            Provider = "stripe",
+            ProviderEventId = "evt_invoice_nested",
+            EventType = "invoice.paid",
+            Category = "renewal",
+            ProtectedPayload = "unused",
+            Status = BillingInboxStatus.Categorized
+        };
+        using var document = JsonDocument.Parse("""
+        {
+          "id": "in_nested",
+          "object": "invoice",
+          "customer": "cus_nested",
+          "parent": {
+            "subscription_details": { "subscription": "sub_nested" }
+          },
+          "lines": {
+            "data": [
+              {
+                "quantity": 5,
+                "period": { "end": 1798761600 },
+                "pricing": {
+                  "price_details": {
+                    "price": "price_nested",
+                    "product": "prod_nested"
+                  }
+                }
+              }
+            ]
+          }
+        }
+        """);
+
+        var snapshot = StripeBillingStateProvider.Parse(row, document.RootElement);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal("sub_nested", snapshot.SubscriptionId);
+        Assert.Equal("in_nested", snapshot.InvoiceId);
+        Assert.Equal("prod_nested", snapshot.ProductId);
+        Assert.Equal("price_nested", snapshot.PriceId);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1798761600), snapshot.CurrentPeriodEnd);
+        Assert.Equal(5, snapshot.Seats);
+    }
+
     [Fact]
     [Trait("ExpectedGreenStage", "15")]
     public async Task CompletedPurchaseIssuesExactlyOneMappedLicenseAndEncryptedEmail()
@@ -157,7 +257,22 @@ public sealed class BillingPolicyTests(PostgresWebFixture fixture)
         var processor = scope.ServiceProvider.GetRequiredService<StripeBillingPolicyProcessor>();
         var purchase = Purchase(marker);
         await processor.ApplyAsync(purchase);
-        await processor.ApplyAsync(purchase with { Kind = kind, EventId = $"evt_review_{marker}" });
+        var invoiceId = $"in_review_{marker}";
+        await processor.ApplyAsync(purchase with
+        {
+            Kind = BillingEventKind.RenewalPaid,
+            EventId = $"evt_paid_{marker}",
+            InvoiceId = invoiceId,
+            CheckoutSessionId = null
+        });
+        await processor.ApplyAsync(purchase with
+        {
+            Kind = kind,
+            EventId = $"evt_review_{marker}",
+            SubscriptionId = null,
+            InvoiceId = invoiceId,
+            CheckoutSessionId = null
+        });
 
         db.ChangeTracker.Clear();
         var contract = await ContractAsync(db, marker);
@@ -191,11 +306,18 @@ public sealed class BillingPolicyTests(PostgresWebFixture fixture)
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             db.WebhookInbox.Add(new WebhookInbox
             {
-                Id = Guid.NewGuid(), Provider = "stripe", ProviderEventId = $"evt_ops_{marker}",
-                EventType = "invoice.paid", Category = "renewal", ProviderObjectId = $"in_ops_{marker}",
-                ProtectedPayload = "protected-immutable", Status = BillingInboxStatus.Quarantined,
-                NextAttemptAt = DateTimeOffset.UtcNow, ProviderCreatedAt = DateTimeOffset.UtcNow,
-                ReceivedAt = DateTimeOffset.UtcNow, LastErrorCode = "unknown_price_mapping"
+                Id = Guid.NewGuid(),
+                Provider = "stripe",
+                ProviderEventId = $"evt_ops_{marker}",
+                EventType = "invoice.paid",
+                Category = "renewal",
+                ProviderObjectId = $"in_ops_{marker}",
+                ProtectedPayload = "protected-immutable",
+                Status = BillingInboxStatus.Quarantined,
+                NextAttemptAt = DateTimeOffset.UtcNow,
+                ProviderCreatedAt = DateTimeOffset.UtcNow,
+                ReceivedAt = DateTimeOffset.UtcNow,
+                LastErrorCode = "unknown_price_mapping"
             });
             await db.SaveChangesAsync();
         }
@@ -212,13 +334,20 @@ public sealed class BillingPolicyTests(PostgresWebFixture fixture)
     {
         db.StripeProductMappings.Add(new StripeProductMapping
         {
-            Id = Guid.NewGuid(), StripeProductId = $"prod_{marker}", ProductDefinitionId = RoadmapTestSupport.KnownProductId,
+            Id = Guid.NewGuid(),
+            StripeProductId = $"prod_{marker}",
+            ProductDefinitionId = RoadmapTestSupport.KnownProductId,
             CreatedAt = DateTimeOffset.UtcNow
         });
         db.StripePriceMappings.Add(new StripePriceMapping
         {
-            Id = Guid.NewGuid(), StripePriceId = $"price_{marker}", ProductDefinitionId = RoadmapTestSupport.KnownProductId,
-            Edition = "corporate", LicenseType = "subscription", Seats = 2, CreatedAt = DateTimeOffset.UtcNow
+            Id = Guid.NewGuid(),
+            StripePriceId = $"price_{marker}",
+            ProductDefinitionId = RoadmapTestSupport.KnownProductId,
+            Edition = "corporate",
+            LicenseType = "subscription",
+            Seats = 2,
+            CreatedAt = DateTimeOffset.UtcNow
         });
         await db.SaveChangesAsync();
     }

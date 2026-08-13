@@ -239,7 +239,7 @@ if (ephemeralDevelopmentPepper)
 else if (string.IsNullOrWhiteSpace(configuredPepper))
 {
     throw new InvalidOperationException(
-        "ActivationCodes:Pepper is required outside Development. Supply at least 32 random bytes as Base64 through secret configuration (for example ActivationCodes__Pepper)." );
+        "ActivationCodes:Pepper is required outside Development. Supply at least 32 random bytes as Base64 through secret configuration (for example ActivationCodes__Pepper).");
 }
 else
 {
