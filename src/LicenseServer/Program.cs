@@ -4,6 +4,7 @@ using LicenseServer.Components.Account;
 using LicenseServer.Data;
 using LicenseServer.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Antiforgery;
@@ -87,6 +88,8 @@ builder.Services.AddIdentityCore<ApplicationUser>(options =>
     .AddSignInManager()
     .AddClaimsPrincipalFactory<MfaUserClaimsPrincipalFactory>()
     .AddDefaultTokenProviders();
+builder.Services.Configure<DataProtectionTokenProviderOptions>(options =>
+    options.TokenLifespan = TimeSpan.FromMinutes(15));
 
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
 builder.Services.AddOptions<LicensingOptions>()
@@ -131,6 +134,8 @@ builder.Services.AddScoped<LicenseStore>();
 builder.Services.AddScoped<AdminDataService>();
 builder.Services.AddScoped<ProductCatalogService>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<UserAdministrationService>();
+builder.Services.AddScoped<IOwnedCredentialRevoker, NullOwnedCredentialRevoker>();
 builder.Services.AddSingleton<LicenseEnvelopeSigner>();
 builder.Services.AddScoped<DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
@@ -190,6 +195,17 @@ app.Use(async (context, next) =>
     {
         var users = context.RequestServices.GetRequiredService<UserManager<ApplicationUser>>();
         var user = await users.GetUserAsync(context.User);
+        if (user is { IsEnabled: false } || user?.AccountType == ApplicationUser.ServiceAccountType)
+        {
+            await context.SignOutAsync(IdentityConstants.ApplicationScheme);
+            if (context.Request.Path.StartsWithSegments("/api"))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+            context.Response.Redirect("/Account/Login");
+            return;
+        }
         if (user?.MustChangePassword == true)
         {
             if (context.Request.Path.StartsWithSegments("/api"))
@@ -273,6 +289,54 @@ adminApi.MapGet("/licenses/{licenseId}", async (string licenseId, AdminDataServi
 adminApi.MapGet("/products", async (string? search, ProductCatalogService catalog, CancellationToken ct) =>
     Results.Ok(await catalog.SearchAsync(search, ct)))
     .RequireAuthorization(Permissions.ProductsRead);
+adminApi.MapGet("/users", async (string? search, UserAdministrationService service, CancellationToken ct) =>
+    Results.Ok(await service.SearchAsync(search, ct)))
+    .RequireAuthorization(Permissions.UsersRead);
+adminApi.MapPost("/users", async (
+    CreateUserRequest request, UserAdministrationService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try
+    {
+        var actor = context.User.Identity?.Name ?? "unknown";
+        var baseUri = new Uri($"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/");
+        return string.Equals(request.AccountType, ApplicationUser.ServiceAccountType, StringComparison.OrdinalIgnoreCase)
+            ? Results.Created("/api/v1/admin/users", await service.CreateServiceAccountAsync(
+                new CreateServiceAccountRequest(request.Email, request.Roles), actor, ct))
+            : Results.Created("/api/v1/admin/users", await service.InviteHumanAsync(
+                new InviteUserRequest(request.Email, request.Roles), actor, baseUri, ct));
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["user"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.UsersManage);
+adminApi.MapPatch("/users/{userId}", async (
+    string userId, UpdateUserRequest request, UserAdministrationService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try
+    {
+        var actor = context.User.Identity?.Name ?? "unknown";
+        UserMutationResult? result = null;
+        if (request.Roles is not null)
+            result = await service.ReplaceRolesAsync(userId, request.Roles, actor, ct);
+        if (request.IsEnabled is not null)
+            result = await service.SetEnabledAsync(userId, request.IsEnabled.Value, actor, ct);
+        if (request.ForcePasswordReset)
+        {
+            var baseUri = new Uri($"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/");
+            return Results.Ok(await service.InitiatePasswordResetAsync(userId, actor, baseUri, ct));
+        }
+        return result is null ? Results.NoContent() : Results.Ok(result);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["user"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.UsersManage);
 adminApi.MapPost("/products", async (
     CreateProductRequest request, ProductCatalogService catalog, IAntiforgery antiforgery,
     HttpContext context, CancellationToken ct) =>

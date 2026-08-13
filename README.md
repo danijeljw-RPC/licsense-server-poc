@@ -139,6 +139,21 @@ Production requires an MFA-authenticated Identity principal for `users.manage`, 
 
 WebAuthn requires a secure browser context. `http://localhost` is the browser-defined local-development exception. Deploy behind HTTPS everywhere else, preserve the public host and scheme through trusted forwarded headers, persist Data Protection keys, and set cookie secure policy to `Always` at the TLS boundary.
 
+### Operator and service-account administration
+
+`/settings/users` requires `users.read`; invitations, enable/disable, role changes,
+and forced password setup require `users.manage` plus the configured high-risk MFA
+gate. Human operators receive a 15-minute Identity password-setup token and an
+administrator never selects their password. Service accounts have no password, MFA,
+passkey, or browser-login credentials and exist only to own scoped automation keys.
+
+PostgreSQL serializes System Administrator disable/demotion operations so concurrent
+requests cannot remove the final enabled administrator. Disabling an identity changes
+its security stamp, rejects subsequent requests, calls the owned-credential revocation
+hook, and writes a secret-free audit event. Until transactional email is enabled in
+stage 12, Development shows a newly generated setup link once; Production refuses to
+reveal it and requires configured delivery.
+
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:

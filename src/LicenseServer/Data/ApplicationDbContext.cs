@@ -87,6 +87,13 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<AuditRecord>().HasIndex(x => x.TimestampUtc);
         builder.Entity<AuditRecord>().Property(x => x.Actor).HasMaxLength(256);
         builder.Entity<AuditRecord>().Property(x => x.Action).HasMaxLength(100);
+        builder.Entity<ApplicationUser>().Property(x => x.AccountType).HasMaxLength(20)
+            .HasDefaultValue(ApplicationUser.HumanAccountType);
+        builder.Entity<ApplicationUser>().Property(x => x.IsEnabled).HasDefaultValue(true);
+        builder.Entity<ApplicationUser>().Property(x => x.DisabledBy).HasMaxLength(256);
+        builder.Entity<ApplicationUser>().HasIndex(x => new { x.AccountType, x.IsEnabled });
+        builder.Entity<ApplicationUser>().ToTable(table => table.HasCheckConstraint(
+            "CK_AspNetUsers_AccountType", "\"AccountType\" IN ('human', 'service')"));
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

@@ -3,4 +3,5 @@
     <AuthorizeView Policy="@Permissions.LicensesIssue"><Authorized><NavLink href="/licenses/create">Issue license</NavLink><NavLink href="/offline">Offline issuance</NavLink></Authorized></AuthorizeView>
     <AuthorizeView Policy="@Permissions.ProductsRead"><Authorized><NavLink href="/products">Products</NavLink></Authorized></AuthorizeView>
     <AuthorizeView Policy="@Permissions.AuditRead"><Authorized><NavLink href="/audit">Audit trail</NavLink><NavLink href="/status">System status</NavLink></Authorized></AuthorizeView>
+    <AuthorizeView Policy="@Permissions.UsersRead"><Authorized><NavLink href="/settings/users">Users</NavLink></Authorized></AuthorizeView>
 </nav>
