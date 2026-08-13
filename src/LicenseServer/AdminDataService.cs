@@ -68,7 +68,8 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         {
             "customer" => query.OrderBy(x => x.Customer.Name).ThenBy(x => x.LicenseId),
             "oldest" => query.OrderBy(x => x.IssuedAt),
-            _ => query.OrderByDescending(x => x.IssuedAt)
+            "licenseid" => query.OrderBy(x => x.LicenseId),
+            _ => query.OrderByDescending(x => x.IssuedAt).ThenBy(x => x.LicenseId)
         };
         var count = await query.CountAsync(cancellationToken);
         var rows = await query.Skip((page - 1) * pageSize).Take(pageSize)
@@ -137,10 +138,81 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         return result.Value!;
     }
 
-    public async Task<List<AuditView>> GetAuditAsync(int take = 200, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<CustomerView>> SearchCustomersAsync(
+        string? search,
+        int take = 50,
+        CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.CustomersRead);
+        var query = db.Customers.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            var normalized = term.ToLowerInvariant();
+            query = query.Where(customer =>
+                EF.Functions.ILike(customer.Name, $"%{term}%")
+                || customer.NormalizedEmail.Contains(normalized)
+                || (customer.ExternalId != null && EF.Functions.ILike(customer.ExternalId, $"%{term}%")));
+        }
+
+        return await query.OrderBy(customer => customer.Name).ThenBy(customer => customer.Id)
+            .Take(Math.Clamp(take, 1, 100))
+            .Select(customer => new CustomerView(
+                customer.Id, customer.Name, customer.Email, customer.ExternalId,
+                customer.CreatedAt, customer.Licenses.Count))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<CustomerView> UpdateCustomerAsync(
+        Guid customerId,
+        UpdateCustomerRequest request,
+        string actor,
+        CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.CustomersManage);
+        var customer = await db.Customers.SingleOrDefaultAsync(item => item.Id == customerId, cancellationToken)
+            ?? throw new InvalidOperationException("Customer was not found.");
+        var name = request.Name?.Trim();
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 200)
+            throw new InvalidOperationException("Customer name is required and must not exceed 200 characters.");
+        if (!CustomerEmails.TryNormalize(request.Email, out var email, out var error))
+            throw new InvalidOperationException(error);
+
+        var old = new { customer.Name, customer.Email };
+        customer.Name = name;
+        customer.Email = request.Email!.Trim();
+        customer.NormalizedEmail = email;
+        db.AuditRecords.Add(new AuditRecord
+        {
+            Actor = actor,
+            Action = "customer.updated",
+            TargetType = "customer",
+            TargetId = customer.Id.ToString("D"),
+            Result = "success",
+            ContextJson = JsonSerializer.Serialize(new { old, @new = new { customer.Name, customer.Email } }),
+            TimestampUtc = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync(cancellationToken);
+        return new CustomerView(customer.Id, customer.Name, customer.Email, customer.ExternalId,
+            customer.CreatedAt, await db.Licenses.CountAsync(item => item.CustomerId == customer.Id, cancellationToken));
+    }
+
+    public async Task<List<AuditView>> GetAuditAsync(
+        string? action = null,
+        string? actor = null,
+        string? targetType = null,
+        string? targetId = null,
+        int take = 200,
+        CancellationToken cancellationToken = default)
     {
         await permissions.RequireAsync(Permissions.AuditRead);
-        return await db.AuditRecords.AsNoTracking().OrderByDescending(x => x.TimestampUtc).Take(Math.Clamp(take, 1, 500))
+        var query = db.AuditRecords.AsNoTracking().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(action)) query = query.Where(item => item.Action == action);
+        if (!string.IsNullOrWhiteSpace(actor)) query = query.Where(item => item.Actor == actor);
+        if (!string.IsNullOrWhiteSpace(targetType)) query = query.Where(item => item.TargetType == targetType);
+        if (!string.IsNullOrWhiteSpace(targetId)) query = query.Where(item => item.TargetId == targetId);
+        return await query.OrderByDescending(x => x.TimestampUtc).ThenByDescending(x => x.Id)
+            .Take(Math.Clamp(take, 1, 500))
             .Select(x => new AuditView(x.Actor, x.Action, x.TargetType, x.TargetId, x.Result, x.TimestampUtc, x.ContextJson))
             .ToListAsync(cancellationToken);
     }
@@ -148,6 +220,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
 
 public sealed record DashboardView(int Total, int Available, int Active, int Expired, int Revoked, int Online, int Offline, int LeasesApproachingExpiry, IReadOnlyList<AuditView> RecentAudit);
 public sealed record AuditView(string Actor, string Action, string TargetType, string TargetId, string Result, DateTimeOffset TimestampUtc, string ContextJson);
+public sealed record CustomerView(Guid Id, string Name, string Email, string? ExternalId, DateTimeOffset CreatedAt, int LicenseCount);
 public sealed record LicenseListView(string LicenseId, string Customer, string Status, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt, string? DeviceSuffix);
 public sealed record PagedLicenses(IReadOnlyList<LicenseListView> Items, int Page, int PageSize, int Total) { public int TotalPages => Math.Max(1, (int)Math.Ceiling((double)Total / PageSize)); }
 public sealed record EntitlementView(string Product, string Edition, string LicenseType, int Seats, DateOnly? UpdatesUntil);

@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.OpenApi;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
 
@@ -19,6 +20,33 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+builder.Services.AddOpenApi("v1", options =>
+{
+    options.AddDocumentTransformer((document, _, _) =>
+    {
+        document.Info.Title = "License Server Administration API";
+        document.Info.Description = "Versioned administration surface. Mutation endpoints require action-specific permissions, antiforgery for cookie clients, correlation IDs, and documented optimistic concurrency. Activation codes are returned only once. Offline license files already downloaded cannot be recalled.";
+        document.Components ??= new OpenApiComponents();
+        document.Components.SecuritySchemes = new Dictionary<string, IOpenApiSecurityScheme>
+        {
+            ["IdentityCookie"] = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.ApiKey,
+                In = ParameterLocation.Cookie,
+                Name = "LicenseServer.Auth",
+                Description = "ASP.NET Core Identity operator session. Mutations also require X-CSRF-TOKEN."
+            },
+            ["ApiKeyBearer"] = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.Http,
+                Scheme = "bearer",
+                BearerFormat = "lic_live API credential",
+                Description = "Scoped service-account credential. Permissions are constrained to the stored API-key scopes."
+            }
+        };
+        return Task.CompletedTask;
+    });
+});
 builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityRedirectManager>();
@@ -209,6 +237,20 @@ if (ephemeralDevelopmentPepper)
     logEphemeralPepper(app.Logger, null);
 }
 
+app.Use(async (context, next) =>
+{
+    const string header = "X-Correlation-ID";
+    var supplied = context.Request.Headers[header].FirstOrDefault();
+    var correlationId = !string.IsNullOrWhiteSpace(supplied)
+                        && supplied.Length <= 128
+                        && supplied.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.' or ':')
+        ? supplied
+        : context.TraceIdentifier;
+    context.TraceIdentifier = correlationId;
+    context.Response.Headers[header] = correlationId;
+    await next();
+});
+
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
@@ -283,6 +325,7 @@ app.Use(async (context, next) =>
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnonymous();
 app.MapHealthChecks("/health/ready");
 app.MapGet("/health", () => Results.Redirect("/health/ready")).AllowAnonymous();
+app.MapOpenApi().AllowAnonymous();
 
 app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
     string licenseId, ActivateRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>
@@ -336,15 +379,46 @@ adminApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) 
     var tokens = antiforgery.GetAndStoreTokens(context);
     return Results.Ok(new { requestToken = tokens.RequestToken });
 });
-adminApi.MapGet("/licenses/{licenseId}", async (string licenseId, AdminDataService data, CancellationToken ct) =>
-    await data.GetLicenseAsync(licenseId, ct) is { } item ? Results.Ok(item) : Results.NotFound())
+adminApi.MapGet("/licenses/{licenseId}", async (
+    string licenseId, AdminDataService data, HttpContext context, CancellationToken ct) =>
+{
+    var item = await data.GetLicenseAsync(licenseId, ct);
+    if (item is null) return Results.NotFound();
+    context.Response.Headers.ETag = $"\"{item.Version}\"";
+    return Results.Ok(item);
+})
     .RequireAuthorization(Permissions.LicensesRead);
+adminApi.MapGet("/licenses", async (
+    string? search, string? status, string? sort, int? page, int? pageSize,
+    AdminDataService data, CancellationToken ct) =>
+    Results.Ok(await data.SearchLicensesAsync(search, status, sort, page ?? 1, pageSize ?? 20, ct)))
+    .RequireAuthorization(Permissions.LicensesRead)
+    .WithDescription("Returns a stably sorted, bounded page of safe license summary DTOs. pageSize is clamped to 5-100.");
 adminApi.MapGet("/products", async (string? search, ProductCatalogService catalog, CancellationToken ct) =>
     Results.Ok(await catalog.SearchAsync(search, ct)))
     .RequireAuthorization(Permissions.ProductsRead);
 adminApi.MapGet("/users", async (string? search, UserAdministrationService service, CancellationToken ct) =>
     Results.Ok(await service.SearchAsync(search, ct)))
     .RequireAuthorization(Permissions.UsersRead);
+adminApi.MapGet("/customers", async (string? search, int? take, AdminDataService data, CancellationToken ct) =>
+    Results.Ok(await data.SearchCustomersAsync(search, take ?? 50, ct)))
+    .RequireAuthorization(Permissions.CustomersRead);
+adminApi.MapPatch("/customers/{customerId:guid}", async (
+    Guid customerId, UpdateCustomerRequest request, AdminDataService data, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { return Results.Ok(await data.UpdateCustomerAsync(customerId, request, context.User.Identity?.Name ?? "unknown", ct)); }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["customer"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.CustomersManage);
+adminApi.MapGet("/audit", async (
+    string? action, string? actor, string? targetType, string? targetId, int? take,
+    AdminDataService data, CancellationToken ct) =>
+    Results.Ok(await data.GetAuditAsync(action, actor, targetType, targetId, take ?? 200, ct)))
+    .RequireAuthorization(Permissions.AuditRead);
 adminApi.MapGet("/api-keys", async (
     string? ownerUserId, ApiCredentialService service, HttpContext context, CancellationToken ct) =>
 {
@@ -507,6 +581,29 @@ adminApi.MapPost("/licenses/{licenseId}/terms", async (
     return result.Success ? Results.Ok(new { licenseId, status = "amended" }) : Problem(result);
 }).RequireAuthorization(Permissions.LicensesUpdate)
   .WithDescription("Amends expiry, seats, or update coverage with optimistic concurrency. Online checks observe changes immediately; previously downloaded offline files cannot be recalled.");
+adminApi.MapPatch("/licenses/{licenseId}/terms", async (
+    string licenseId, AmendTermsRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    if (!TryReadIfMatch(context.Request, out var ifMatch) || ifMatch != request.Version)
+        return Results.Problem(title: "License state conflict", detail: "If-Match must contain the current quoted license version and agree with the request version.", statusCode: StatusCodes.Status409Conflict);
+    var result = await store.AmendTermsAsync(
+        licenseId, request, context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
+        context.TraceIdentifier, ct);
+    return result.Success ? Results.Ok(new { licenseId, status = "amended" }) : Problem(result);
+}).RequireAuthorization(Permissions.LicensesUpdate)
+  .WithDescription("Patches controlled license terms. Requires If-Match with the ETag returned by license detail and an antiforgery token for cookie sessions.");
+
+adminApi.MapPost("/licenses/{licenseId}/activation-code/rotate", async (
+    string licenseId, RotateActivationCodeRequest request, LicenseStore store, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await store.RotateActivationCodeAsync(
+        licenseId, request.Version, context.User.Identity?.Name ?? "unknown", context.TraceIdentifier, ct);
+    return result.Success ? Results.Ok(result.Value) : Problem(result);
+}).RequireAuthorization(Permissions.LicensesUpdate)
+  .WithDescription("Replaces the stored activation-code hash and returns the new plaintext code exactly once in this response.");
 
 adminApi.MapPost("/activations/{activationId}/deactivate", async (
     string activationId, AdminDeactivateRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
@@ -612,6 +709,12 @@ static IResult IssueProblem(StoreResult<LicenseStore.IssuedLicense> result) =>
 static bool PostedConfirmation(IFormCollection form) =>
     string.Equals(form["Confirmed"], "true", StringComparison.OrdinalIgnoreCase)
     || string.Equals(form["Confirmed"], "on", StringComparison.OrdinalIgnoreCase);
+
+static bool TryReadIfMatch(HttpRequest request, out long version)
+{
+    var value = request.Headers.IfMatch.FirstOrDefault()?.Trim();
+    return long.TryParse(value?.Trim('"'), out version);
+}
 
 static IResult LifecycleRedirect(string licenseId, string key, string? value) =>
     Results.Redirect($"/licenses/{Uri.EscapeDataString(licenseId)}?{key}={Uri.EscapeDataString(value ?? "Request failed.")}");

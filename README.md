@@ -171,6 +171,24 @@ a stricter IP partition. Configure `ApiCredentials__Pepper` outside source contr
 an independent Base64 value containing at least 32 random bytes. Development can use an
 ephemeral pepper, but its keys intentionally stop working after restart.
 
+### Versioned administration API
+
+The `/api/v1/admin` surface exposes the same authorization policies and domain services
+as the operator UI. Its route inventory covers bounded license search and detail,
+one-product issuance, terms updates, cancellation, revocation, activation-code rotation,
+operator deactivation, products, customers, users, API credentials, and filtered audit.
+Mutation responses never serialize EF entities; generated activation codes are returned
+only by issuance or rotation and PostgreSQL retains only their versioned HMAC digest.
+
+License detail returns a quoted numeric `ETag`. `PATCH` terms requests must send that
+value in `If-Match` and in the versioned request DTO. Cookie sessions require
+`X-CSRF-TOKEN`; scoped bearer credentials do not use cookie antiforgery. Issuance accepts
+`Idempotency-Key` and binds its encrypted, expiring replay result to the authenticated
+principal and canonical request fingerprint. All API responses carry `X-Correlation-ID`.
+The generated OpenAPI 3.1 document is available at `/openapi/v1.json` and describes both
+Identity-cookie and API-key bearer authentication, concurrency, pagination, one-time
+secrets, and the offline recall limitation.
+
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:

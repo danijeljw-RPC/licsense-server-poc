@@ -60,6 +60,8 @@ public sealed record IssueLicenseRequest(
 
 public sealed record CreateProductRequest(string? Code, string? DisplayName, string? Description);
 public sealed record UpdateProductRequest(string? DisplayName, string? Description, bool? IsActive);
+public sealed record UpdateCustomerRequest(string? Name, string? Email);
+public sealed record RotateActivationCodeRequest(long Version);
 
 public sealed record InviteUserRequest(string? Email, IReadOnlyList<string>? Roles);
 public sealed record CreateServiceAccountRequest(string? Email, IReadOnlyList<string>? Roles);
