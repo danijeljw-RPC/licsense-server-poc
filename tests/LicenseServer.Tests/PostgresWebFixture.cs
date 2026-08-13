@@ -1,13 +1,22 @@
 using LicenseServer.Data;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
+using System.Security.Claims;
+using System.Text.Encodings.Web;
 
 namespace LicenseServer.Tests;
 
 public sealed class PostgresWebFixture : IAsyncLifetime
 {
+    private readonly List<WebApplicationFactory<Program>> authenticatedFactories = [];
     public WebApplicationFactory<Program> Factory { get; private set; } = null!;
+    public SecretCaptureLoggerProvider CapturedLogs { get; } = new();
 
     public async Task InitializeAsync()
     {
@@ -34,10 +43,39 @@ public sealed class PostgresWebFixture : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        foreach (var factory in authenticatedFactories)
+            await factory.DisposeAsync();
         await Factory.DisposeAsync();
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", null);
         Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", null);
         Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", null);
+    }
+
+    public HttpClient CreateAuthenticatedClient(bool administrator, params string[] permissions)
+    {
+        var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = TestAuthenticationHandler.SchemeName;
+                    options.DefaultChallengeScheme = TestAuthenticationHandler.SchemeName;
+                    options.DefaultForbidScheme = TestAuthenticationHandler.SchemeName;
+                })
+                .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(TestAuthenticationHandler.SchemeName, _ => { });
+            services.AddSingleton<ILoggerProvider>(CapturedLogs);
+        }));
+        authenticatedFactories.Add(factory);
+        var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            HandleCookies = true,
+            BaseAddress = new Uri("https://localhost")
+        });
+        if (administrator)
+            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.RoleHeader, DatabaseInitializer.AdministratorRole);
+        foreach (var permission in permissions)
+            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.PermissionHeader, permission);
+        return client;
     }
 
     private sealed class LicenseServerFactory(string connectionString) : WebApplicationFactory<Program>
@@ -55,6 +93,50 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["Security:UseHttpsRedirection"] = "false"
             }));
         }
+    }
+}
+
+public sealed class TestAuthenticationHandler(
+    IOptionsMonitor<AuthenticationSchemeOptions> options,
+    ILoggerFactory logger,
+    UrlEncoder encoder)
+    : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+{
+    public const string SchemeName = "Phase0Test";
+    public const string RoleHeader = "X-Test-Role";
+    public const string PermissionHeader = "X-Test-Permission";
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, "phase0-test-operator"),
+            new(ClaimTypes.Name, "phase0-test-operator")
+        };
+        claims.AddRange(Request.Headers[RoleHeader].Select(value => new Claim(ClaimTypes.Role, value!)));
+        claims.AddRange(Request.Headers[PermissionHeader].Select(value => new Claim("permission", value!)));
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
+        return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName)));
+    }
+}
+
+public sealed class SecretCaptureLoggerProvider : ILoggerProvider
+{
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> messages = new();
+    public IReadOnlyCollection<string> Messages => messages.ToArray();
+    public ILogger CreateLogger(string categoryName) => new CaptureLogger(messages, categoryName);
+    public void Clear() { while (messages.TryDequeue(out _)) { } }
+    public void Dispose() { }
+
+    private sealed class CaptureLogger(
+        System.Collections.Concurrent.ConcurrentQueue<string> messages,
+        string category) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            messages.Enqueue($"{category}: {formatter(state, exception)} {exception}");
     }
 }
 

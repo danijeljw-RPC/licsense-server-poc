@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([switch] $KeepContainer)
+param(
+    [switch] $KeepContainer,
+    [string] $TestFilter
+)
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
@@ -28,8 +31,18 @@ try {
     if (-not $healthy) { throw "PostgreSQL did not become healthy.`n$(docker logs $containerName 2>&1)" }
 
     $env:TEST_POSTGRES_CONNECTION = "Host=127.0.0.1;Port=$port;Database=license_tests;Username=license_test;Password=$password"
-    dotnet test (Join-Path $repositoryRoot 'tests\LicenseServer.Tests\LicenseServer.Tests.csproj') --configuration Release --no-restore -p:AnalysisMode=Recommended
-    if ($LASTEXITCODE -ne 0) { throw 'Database and authentication tests failed.' }
+    $testArguments = @(
+        'test',
+        (Join-Path $repositoryRoot 'tests\LicenseServer.Tests\LicenseServer.Tests.csproj'),
+        '--configuration', 'Release',
+        '--no-restore',
+        '-p:AnalysisMode=Recommended'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($TestFilter)) {
+        $testArguments += @('--filter', $TestFilter)
+    }
+    & dotnet @testArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Selected tests failed.' }
 }
 finally {
     Remove-Item Env:\TEST_POSTGRES_CONNECTION -ErrorAction SilentlyContinue

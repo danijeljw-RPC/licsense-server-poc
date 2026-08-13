@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Authorization;
 namespace LicenseServer.Tests;
 
 [Collection(PostgresTestSuite.Name)]
+[Trait("Suite", "Baseline")]
 public sealed class DatabaseAndIdentityTests(PostgresWebFixture fixture)
 {
     [Fact]

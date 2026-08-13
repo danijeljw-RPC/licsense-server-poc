@@ -8,6 +8,7 @@ using SoftwareLicensing;
 namespace LicenseServer.Tests;
 
 [Collection(PostgresTestSuite.Name)]
+[Trait("Suite", "Baseline")]
 public sealed class LicensingFlowTests(PostgresWebFixture fixture)
 {
     [Fact]
