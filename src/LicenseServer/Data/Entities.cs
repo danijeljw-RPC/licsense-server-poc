@@ -113,6 +113,19 @@ public sealed class EmailDeliveryEvent
     public DateTimeOffset ReceivedAt { get; set; }
 }
 
+public sealed class CustomerAccessChallenge
+{
+    public Guid Id { get; set; }
+    public Guid CustomerId { get; set; }
+    public Customer Customer { get; set; } = null!;
+    public required byte[] TokenHash { get; set; }
+    public required byte[] IdentifierHash { get; set; }
+    public required byte[] RemoteAddressHash { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? ConsumedAt { get; set; }
+}
+
 public sealed class Entitlement
 {
     public Guid Id { get; set; }

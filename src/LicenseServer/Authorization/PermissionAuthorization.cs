@@ -51,6 +51,11 @@ internal static class PermissionAuthorizationExtensions
                 Permissions.UsersManage,
                 enforceMfa));
         });
+        authorization.AddPolicy("CustomerPortal", policy =>
+        {
+            policy.RequireAuthenticatedUser();
+            policy.RequireClaim("session_kind", "customer");
+        });
         services.AddSingleton<IAuthorizationHandler, PermissionAuthorizationHandler>();
         services.AddHttpContextAccessor();
         services.AddScoped<PermissionGuard>();

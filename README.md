@@ -214,6 +214,28 @@ delivery/bounce/complaint updates are operational only, and webhooks never mutat
 license. The worker deletes terminal outbox rows and delivery events after the 30-day
 retention deadline; logs contain only outbox IDs, template names, and recipient hashes.
 
+### Passwordless customer access
+
+`/customer/access` always gives the same response whether or not a normalized email and
+optional license ID match. Valid matches queue a 32-byte random magic-link token through
+the transactional email outbox; PostgreSQL stores only its SHA-256 hash, hashed email/IP
+rate-limit identifiers, a 12-minute expiry, and its atomic consumption timestamp. The
+token is never an activation code and cannot be used twice.
+`CustomerPortal__PublicBaseUrl` supplies the public HTTPS origin for emailed links.
+
+Successful consumption clears any prior customer cookie before issuing a non-sliding,
+30-minute `LicenseServer.Customer` session. This scheme is separate from operator
+Identity and API credentials and contains only a customer ID plus a customer-session
+marker. The read-only portal and `/api/v1/customer` queries always include that customer
+ID in the database predicate, return 404 for another customer's license, and expose only
+status, product, edition, seats, expiry (`Never` for perpetual), activation state, and a
+redacted device suffix. Activation credentials/hashes, full device identifiers, signed
+metadata, audits, and operator controls are never projected.
+
+Customer logout requires antiforgery and clears only the customer session. Device
+deactivation, contact-email changes, and renewal mutations are deliberately unavailable;
+future sensitive operations must begin with a fresh email challenge.
+
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:

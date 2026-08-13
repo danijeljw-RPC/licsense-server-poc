@@ -15,6 +15,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public DbSet<ApiCredential> ApiCredentials => Set<ApiCredential>();
     public DbSet<EmailOutboxMessage> EmailOutbox => Set<EmailOutboxMessage>();
     public DbSet<EmailDeliveryEvent> EmailDeliveryEvents => Set<EmailDeliveryEvent>();
+    public DbSet<CustomerAccessChallenge> CustomerAccessChallenges => Set<CustomerAccessChallenge>();
     public DbSet<Entitlement> Entitlements => Set<Entitlement>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<SigningKeyRecord> SigningKeys => Set<SigningKeyRecord>();
@@ -103,6 +104,12 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<EmailDeliveryEvent>().Property(item => item.ProviderEventId).HasMaxLength(256);
         builder.Entity<EmailDeliveryEvent>().Property(item => item.ProviderMessageId).HasMaxLength(256);
         builder.Entity<EmailDeliveryEvent>().Property(item => item.EventType).HasMaxLength(100);
+        builder.Entity<CustomerAccessChallenge>().HasIndex(item => item.TokenHash).IsUnique();
+        builder.Entity<CustomerAccessChallenge>().HasIndex(item => new { item.IdentifierHash, item.CreatedAt });
+        builder.Entity<CustomerAccessChallenge>().HasIndex(item => new { item.RemoteAddressHash, item.CreatedAt });
+        builder.Entity<CustomerAccessChallenge>().HasIndex(item => item.ExpiresAt);
+        builder.Entity<CustomerAccessChallenge>().HasOne(item => item.Customer).WithMany()
+            .HasForeignKey(item => item.CustomerId).OnDelete(DeleteBehavior.Cascade);
         builder.Entity<Entitlement>().HasIndex(x => x.LicenseRecordId).IsUnique();
         builder.Entity<Entitlement>().HasOne(x => x.ProductDefinition).WithMany(x => x.Entitlements)
             .HasForeignKey(x => x.ProductDefinitionId).OnDelete(DeleteBehavior.Restrict);
