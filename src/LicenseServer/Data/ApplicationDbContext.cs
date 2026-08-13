@@ -23,9 +23,29 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<LicenseRecord>().HasIndex(x => x.LicenseId).IsUnique();
         builder.Entity<LicenseRecord>().Property(x => x.LicenseId).HasMaxLength(100);
         builder.Entity<LicenseRecord>().Property(x => x.Version).IsConcurrencyToken();
+        builder.Entity<LicenseRecord>().Property(x => x.RevocationReason).HasMaxLength(500);
+        builder.Entity<LicenseRecord>().Property(x => x.CancellationReason).HasMaxLength(500);
+        builder.Entity<LicenseRecord>().Property(x => x.RevokedBy).HasMaxLength(256);
+        builder.Entity<LicenseRecord>().Property(x => x.CancelledBy).HasMaxLength(256);
+        builder.Entity<LicenseRecord>().Property(x => x.CancellationReference).HasMaxLength(200);
+        builder.Entity<LicenseRecord>().HasIndex(x => x.ExpiresAt);
+        builder.Entity<LicenseRecord>().Property(x => x.ExpirySubMicrosecondTicks).HasDefaultValue(0);
+        builder.Entity<LicenseRecord>().HasIndex(x => x.CancelledAt);
+        builder.Entity<LicenseRecord>().HasIndex(x => x.RevokedAt);
+        builder.Entity<LicenseRecord>().ToTable(table => table.HasCheckConstraint(
+            "CK_Licenses_TerminalState",
+            "NOT (\"CancelledAt\" IS NOT NULL AND \"RevokedAt\" IS NOT NULL)"));
+        builder.Entity<LicenseRecord>().ToTable(table => table.HasCheckConstraint(
+            "CK_Licenses_ExpiryPrecision",
+            "\"ExpirySubMicrosecondTicks\" BETWEEN 0 AND 9"));
         builder.Entity<LicenseRecord>().HasMany(x => x.Entitlements).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Cascade);
         builder.Entity<LicenseRecord>().HasMany(x => x.Activations).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<Entitlement>().HasIndex(x => new { x.LicenseRecordId, x.Product }).IsUnique();
+        builder.Entity<Entitlement>().ToTable(table =>
+        {
+            table.HasCheckConstraint("CK_Entitlements_LicenseType", "\"LicenseType\" IN ('perpetual', 'subscription', 'evaluation')");
+            table.HasCheckConstraint("CK_Entitlements_Seats", "\"Seats\" > 0");
+        });
         builder.Entity<Activation>().HasIndex(x => x.ActivationId).IsUnique();
         builder.Entity<Activation>().HasIndex(x => new { x.LicenseRecordId, x.RequestId }).IsUnique();
         builder.Entity<Activation>().HasIndex(x => x.LicenseRecordId).IsUnique().HasFilter("\"DeactivatedAt\" IS NULL");
@@ -39,6 +59,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         GuardImmutableAudit();
+        NormalizeExpiryPrecision();
         TouchVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
@@ -46,6 +67,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         GuardImmutableAudit();
+        NormalizeExpiryPrecision();
         TouchVersions();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
@@ -60,5 +82,17 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     {
         foreach (var entry in ChangeTracker.Entries<LicenseRecord>().Where(x => x.State == EntityState.Modified))
             entry.Entity.Version++;
+    }
+
+    private void NormalizeExpiryPrecision()
+    {
+        foreach (var entry in ChangeTracker.Entries<LicenseRecord>()
+                     .Where(x => x.Entity.ExpiresAt is not null
+                         && (x.State == EntityState.Added || x.Property(y => y.ExpiresAt).IsModified)))
+        {
+            var utc = entry.Entity.ExpiresAt!.Value.ToUniversalTime();
+            entry.Entity.ExpirySubMicrosecondTicks = (int)(utc.Ticks % 10);
+            entry.Entity.ExpiresAt = new DateTimeOffset(utc.Ticks - utc.Ticks % 10, TimeSpan.Zero);
+        }
     }
 }

@@ -33,4 +33,24 @@ public sealed record DeactivationResponse(
     string Status,
     DateTimeOffset DeactivatedAt);
 
-public sealed record RevokeRequest(string? Reason);
+public sealed record RevokeRequest(bool Confirmed, string? Reason, long? Version);
+
+public sealed record CancelRequest(bool Confirmed, string? Reason, long Version, string? Reference = null);
+
+public sealed record AmendTermsRequest(
+    DateTimeOffset? ExpiresAt,
+    int? Seats,
+    DateOnly? UpdatesUntil,
+    string? Reason,
+    long Version);
+
+public sealed record IssueLicenseRequest(
+    string? CustomerName,
+    string? CustomerEmail,
+    string? Product,
+    string? Edition,
+    string? LicenseType,
+    DateTimeOffset? ExpiresAt,
+    int Seats,
+    DateOnly? UpdatesUntil,
+    IReadOnlyDictionary<string, object?>? Metadata);

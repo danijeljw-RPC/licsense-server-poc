@@ -104,6 +104,7 @@ public sealed partial class DatabaseInitializer(
                 ActivationCodeHash = LicenseStore.Hash("POC-DEMO-ACTIVATION-CODE"),
                 MetadataJson = new JsonObject { ["purchaseOrder"] = "PO-POC-0001" }.ToJsonString(),
                 IssuedAt = DateTimeOffset.UtcNow,
+                ExpiresAt = LicenseTerms.PerpetualExpiry,
                 Entitlements =
                 [
                     new Entitlement

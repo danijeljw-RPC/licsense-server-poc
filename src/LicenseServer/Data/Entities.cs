@@ -19,8 +19,14 @@ public sealed class LicenseRecord
     public string MetadataJson { get; set; } = "{}";
     public DateTimeOffset IssuedAt { get; set; }
     public DateTimeOffset? ExpiresAt { get; set; }
+    public int ExpirySubMicrosecondTicks { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
     public string? RevocationReason { get; set; }
+    public string? RevokedBy { get; set; }
+    public DateTimeOffset? CancelledAt { get; set; }
+    public string? CancellationReason { get; set; }
+    public string? CancelledBy { get; set; }
+    public string? CancellationReference { get; set; }
     public long Version { get; set; }
     public List<Entitlement> Entitlements { get; set; } = [];
     public List<Activation> Activations { get; set; } = [];

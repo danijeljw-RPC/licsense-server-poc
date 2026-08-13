@@ -194,12 +194,46 @@ adminApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) 
 });
 adminApi.MapGet("/licenses/{licenseId}", async (string licenseId, AdminDataService data, CancellationToken ct) =>
     await data.GetLicenseAsync(licenseId, ct) is { } item ? Results.Ok(item) : Results.NotFound());
+adminApi.MapPost("/licenses", async (
+    IssueLicenseRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
+{
+    var result = await store.IssueAsync(
+        request, context.User.Identity?.Name ?? "unknown", context.TraceIdentifier, DateTimeOffset.UtcNow, ct);
+    return result.Success
+        ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
+        : Problem(result);
+}).WithDescription("Issues one license transactionally. Online lifecycle changes are immediate; previously downloaded offline files cannot be recalled.");
 adminApi.MapPost("/licenses/{licenseId}/revoke", async (
     string licenseId, RevokeRequest request, LicenseStore store, HttpContext httpContext, CancellationToken ct) =>
 {
-    var result = await store.RevokeAsync(licenseId, request.Reason, httpContext.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow, ct);
+    if (!request.Confirmed)
+        return Results.Problem(title: "Invalid request", detail: "Explicit revocation confirmation is required.", statusCode: 400);
+    var result = await store.RevokeAsync(
+        licenseId, request.Reason, httpContext.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
+        request.Version, httpContext.TraceIdentifier, ct);
     return result.Success ? Results.Ok(new { licenseId, status = "revoked" }) : Problem(result);
-}).WithMetadata(new RequireAntiforgeryTokenAttribute(true));
+}).WithMetadata(new RequireAntiforgeryTokenAttribute(true))
+  .WithDescription("Revocation is terminal and immediately blocks online checks. Previously downloaded offline files cannot be recalled.");
+adminApi.MapPost("/licenses/{licenseId}/cancel", async (
+    string licenseId, CancelRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
+{
+    if (!request.Confirmed)
+        return Results.Problem(title: "Invalid request", detail: "Explicit cancellation confirmation is required.", statusCode: 400);
+    var result = await store.CancelAsync(
+        licenseId, request.Reason, context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
+        request.Version, request.Reference, context.TraceIdentifier, ct);
+    return result.Success ? Results.Ok(new { licenseId, status = "cancelled" }) : Problem(result);
+}).WithMetadata(new RequireAntiforgeryTokenAttribute(true))
+  .WithDescription("Cancels a never-activated license. Cancellation is terminal; previously downloaded offline files cannot be recalled.");
+adminApi.MapPost("/licenses/{licenseId}/terms", async (
+    string licenseId, AmendTermsRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
+{
+    var result = await store.AmendTermsAsync(
+        licenseId, request, context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
+        context.TraceIdentifier, ct);
+    return result.Success ? Results.Ok(new { licenseId, status = "amended" }) : Problem(result);
+}).WithMetadata(new RequireAntiforgeryTokenAttribute(true))
+  .WithDescription("Amends expiry, seats, or update coverage with optimistic concurrency. Online checks observe changes immediately; previously downloaded offline files cannot be recalled.");
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>().AddInteractiveServerRenderMode();
