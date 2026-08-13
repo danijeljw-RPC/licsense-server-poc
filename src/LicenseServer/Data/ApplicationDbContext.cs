@@ -13,6 +13,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public DbSet<LicenseRecord> Licenses => Set<LicenseRecord>();
     public DbSet<IssuanceIdempotencyRecord> IssuanceIdempotencyRecords => Set<IssuanceIdempotencyRecord>();
     public DbSet<ApiCredential> ApiCredentials => Set<ApiCredential>();
+    public DbSet<EmailOutboxMessage> EmailOutbox => Set<EmailOutboxMessage>();
+    public DbSet<EmailDeliveryEvent> EmailDeliveryEvents => Set<EmailDeliveryEvent>();
     public DbSet<Entitlement> Entitlements => Set<Entitlement>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<SigningKeyRecord> SigningKeys => Set<SigningKeyRecord>();
@@ -84,6 +86,23 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             .HasForeignKey(x => x.OwnerUserId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<ApiCredential>().ToTable(table => table.HasCheckConstraint(
             "CK_ApiCredentials_Lifecycle", "\"ExpiresAt\" IS NULL OR \"ExpiresAt\" > \"CreatedAt\""));
+        builder.Entity<EmailOutboxMessage>().ToTable("EmailOutbox");
+        builder.Entity<EmailOutboxMessage>().HasIndex(item => item.IdempotencyHash).IsUnique();
+        builder.Entity<EmailOutboxMessage>().HasIndex(item => new { item.Status, item.NextAttemptAt });
+        builder.Entity<EmailOutboxMessage>().HasIndex(item => item.ProviderMessageId);
+        builder.Entity<EmailOutboxMessage>().HasIndex(item => item.RetainUntil);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.TemplateName).HasMaxLength(100);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.RecipientHash).HasMaxLength(64);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.Status).HasMaxLength(20);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.ProviderMessageId).HasMaxLength(256);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.LastErrorCode).HasMaxLength(100);
+        builder.Entity<EmailOutboxMessage>().ToTable("EmailOutbox", table => table.HasCheckConstraint(
+            "CK_EmailOutbox_Status", "\"Status\" IN ('pending','leased','retry','sent','delivered','bounced','complained','failed','uncertain')"));
+        builder.Entity<EmailDeliveryEvent>().HasIndex(item => item.ProviderEventId).IsUnique();
+        builder.Entity<EmailDeliveryEvent>().HasIndex(item => item.ProviderMessageId);
+        builder.Entity<EmailDeliveryEvent>().Property(item => item.ProviderEventId).HasMaxLength(256);
+        builder.Entity<EmailDeliveryEvent>().Property(item => item.ProviderMessageId).HasMaxLength(256);
+        builder.Entity<EmailDeliveryEvent>().Property(item => item.EventType).HasMaxLength(100);
         builder.Entity<Entitlement>().HasIndex(x => x.LicenseRecordId).IsUnique();
         builder.Entity<Entitlement>().HasOne(x => x.ProductDefinition).WithMany(x => x.Entitlements)
             .HasForeignKey(x => x.ProductDefinitionId).OnDelete(DeleteBehavior.Restrict);

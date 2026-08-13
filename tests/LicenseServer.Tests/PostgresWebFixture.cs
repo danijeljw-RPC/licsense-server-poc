@@ -17,6 +17,7 @@ namespace LicenseServer.Tests;
 
 public sealed class PostgresWebFixture : IAsyncLifetime
 {
+    internal const string MailerSendWebhookSecret = "stage12-mailersend-webhook-secret-with-32-bytes";
     private readonly List<WebApplicationFactory<Program>> authenticatedFactories = [];
     private string? temporaryKeyDirectory;
     private string? originalTrustedPublicKey;
@@ -145,6 +146,8 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["DEFAULT_ADMIN_PASSWORD"] = DatabaseInitializer.DefaultPassword,
                 ["ActivationCodes:Pepper"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
                 ["ApiCredentials:Pepper"] = "HyQjIiEgHx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwY=",
+                ["Email:WorkerEnabled"] = "false",
+                ["MailerSend:WebhookSecret"] = MailerSendWebhookSecret,
                 ["Security:UseHttpsRedirection"] = "false",
                 ["Security:RequireMfaForHighRiskPermissions"] = "true",
                 ["RateLimits:AdminPermitLimit"] = "5000"

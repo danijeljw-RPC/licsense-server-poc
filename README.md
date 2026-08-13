@@ -189,6 +189,31 @@ The generated OpenAPI 3.1 document is available at `/openapi/v1.json` and descri
 Identity-cookie and API-key bearer authentication, concurrency, pagination, one-time
 secrets, and the offline recall limitation.
 
+### Durable transactional email
+
+Transactional messages are inserted into PostgreSQL `EmailOutbox` through the
+provider-neutral sender and encrypted with ASP.NET Core Data Protection. The template
+registry covers purchase/activation, renewal reminder and receipt, payment failure,
+invoice, operator invitation, Identity confirmation/recovery, and customer magic-link
+messages. An idempotency digest uniquely suppresses duplicate queue requests; recipient
+addresses and template models exist only inside the protected payload.
+
+The hosted worker claims bounded batches with `FOR UPDATE SKIP LOCKED`, commits its
+short lease before calling MailerSend, and records the provider message ID, attempts,
+next attempt, and final status. Explicit throttling/server failures use bounded
+exponential retries. Ambiguous timeouts or network failures enter `uncertain` for
+operator reconciliation because the provider send API does not define an idempotency
+contract. Development without a token uses a redacted capture transport; non-Development
+startup requires `MailerSend__ApiToken`, `MailerSend__FromEmail`, and
+`MailerSend__WebhookSecret`. `MailerSend__FromName` is optional and
+`Email__WorkerEnabled` controls processing.
+
+`POST /api/v1/webhooks/mailersend` verifies the hexadecimal `Signature` as a fixed-time
+HMAC-SHA-256 over the raw request body before parsing. Provider event IDs are unique,
+delivery/bounce/complaint updates are operational only, and webhooks never mutate a
+license. The worker deletes terminal outbox rows and delivery events after the 30-day
+retention deadline; logs contain only outbox IDs, template names, and recipient hashes.
+
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:

@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.OpenApi;
 using System.Security.Claims;
+using System.Text;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -130,7 +131,29 @@ builder.Services.AddIdentityCore<ApplicationUser>(options =>
 builder.Services.Configure<DataProtectionTokenProviderOptions>(options =>
     options.TokenLifespan = TimeSpan.FromMinutes(15));
 
-builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+builder.Services.Configure<MailerSendOptions>(builder.Configuration.GetSection("MailerSend"));
+builder.Services.Configure<EmailWorkerOptions>(options =>
+    options.Enabled = builder.Configuration.GetValue("Email:WorkerEnabled", true));
+builder.Services.AddScoped<TransactionalEmailSender>();
+builder.Services.AddScoped<ITransactionalEmailSender>(services => services.GetRequiredService<TransactionalEmailSender>());
+builder.Services.AddScoped<IEmailSender<ApplicationUser>, TransactionalIdentityEmailSender>();
+builder.Services.AddScoped<EmailOutboxProcessor>();
+builder.Services.AddScoped<MailerSendWebhookService>();
+builder.Services.AddHostedService<EmailOutboxWorker>();
+var mailerSendToken = builder.Configuration["MailerSend:ApiToken"];
+var mailerSendFrom = builder.Configuration["MailerSend:FromEmail"];
+if (!builder.Environment.IsDevelopment()
+    && (string.IsNullOrWhiteSpace(mailerSendToken)
+        || string.IsNullOrWhiteSpace(mailerSendFrom)
+        || string.IsNullOrWhiteSpace(builder.Configuration["MailerSend:WebhookSecret"])))
+{
+    throw new InvalidOperationException("MailerSend:ApiToken, MailerSend:FromEmail, and MailerSend:WebhookSecret are required outside Development.");
+}
+if (string.IsNullOrWhiteSpace(mailerSendToken))
+    builder.Services.AddSingleton<IEmailTransport, DevelopmentEmailTransport>();
+else
+    builder.Services.AddHttpClient<IEmailTransport, MailerSendEmailTransport>(client =>
+        client.BaseAddress = new Uri("https://api.mailersend.com/"));
 builder.Services.AddOptions<LicensingOptions>()
     .BindConfiguration("Licensing");
 builder.Services.AddOptions<ActivationCodeOptions>()
@@ -326,6 +349,16 @@ app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnony
 app.MapHealthChecks("/health/ready");
 app.MapGet("/health", () => Results.Redirect("/health/ready")).AllowAnonymous();
 app.MapOpenApi().AllowAnonymous();
+app.MapPost("/api/v1/webhooks/mailersend", async (
+    HttpRequest request, MailerSendWebhookService webhooks, CancellationToken ct) =>
+{
+    using var reader = new StreamReader(request.Body, Encoding.UTF8);
+    var body = await reader.ReadToEndAsync(ct);
+    return await webhooks.HandleAsync(body, request.Headers["Signature"].FirstOrDefault(), ct)
+        ? Results.NoContent()
+        : Results.Problem(title: "Invalid webhook signature", statusCode: StatusCodes.Status401Unauthorized);
+}).AllowAnonymous().DisableAntiforgery().RequireRateLimiting("device-api")
+  .WithDescription("Accepts MailerSend delivery events only after fixed-time HMAC-SHA256 verification over the raw request body. Events never change license state.");
 
 app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
     string licenseId, ActivateRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>

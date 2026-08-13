@@ -1,5 +1,7 @@
 using System.Data;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using LicenseServer.Authorization;
 using LicenseServer.Data;
@@ -26,6 +28,7 @@ internal sealed class UserAdministrationService(
     RoleManager<IdentityRole> roles,
     PermissionGuard permissions,
     IOwnedCredentialRevoker credentialRevoker,
+    ITransactionalEmailSender emailSender,
     TimeProvider clock,
     IWebHostEnvironment environment)
 {
@@ -56,8 +59,7 @@ internal sealed class UserAdministrationService(
         CancellationToken cancellationToken = default)
     {
         await permissions.RequireAsync(Permissions.UsersManage);
-        if (!environment.IsDevelopment())
-            throw new InvalidOperationException("Operator invitations require the transactional email sender outside Development.");
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         var email = ValidateEmail(request.Email);
         await EnsureEmailAvailableAsync(email);
         var requestedRoles = await ValidateRolesAsync(request.Roles);
@@ -78,8 +80,13 @@ internal sealed class UserAdministrationService(
         var code = WebEncoders.Base64UrlEncode(System.Text.Encoding.UTF8.GetBytes(token));
         var callback = new Uri(applicationBaseUri,
             $"Account/ResetPassword?code={Uri.EscapeDataString(code)}&email={Uri.EscapeDataString(email)}");
+        await emailSender.QueueAsync(new TransactionalEmail(
+                EmailTemplates.OperatorInvitation, email,
+                new Dictionary<string, string> { ["actionUrl"] = callback.AbsoluteUri }),
+            $"operator-invite:{user.Id}:{HashForIdempotency(code)}", cancellationToken);
         await AuditAsync(actor, "user.invited", user.Id, new { accountType = user.AccountType, roles = requestedRoles }, cancellationToken);
-        return new UserInviteResult(await ProjectAsync(user), callback.AbsoluteUri);
+        await transaction.CommitAsync(cancellationToken);
+        return new UserInviteResult(await ProjectAsync(user), environment.IsDevelopment() ? callback.AbsoluteUri : null);
     }
 
     public async Task<UserMutationResult> CreateServiceAccountAsync(
@@ -177,8 +184,7 @@ internal sealed class UserAdministrationService(
         CancellationToken cancellationToken = default)
     {
         await permissions.RequireAsync(Permissions.UsersManage);
-        if (!environment.IsDevelopment())
-            throw new InvalidOperationException("Password reset delivery requires the transactional email sender outside Development.");
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         var user = await users.FindByIdAsync(userId) ?? throw new InvalidOperationException("User was not found.");
         if (user.AccountType != ApplicationUser.HumanAccountType)
             throw new InvalidOperationException("Service accounts cannot receive password reset links.");
@@ -187,8 +193,13 @@ internal sealed class UserAdministrationService(
         var code = WebEncoders.Base64UrlEncode(System.Text.Encoding.UTF8.GetBytes(token));
         var callback = new Uri(applicationBaseUri,
             $"Account/ResetPassword?code={Uri.EscapeDataString(code)}&email={Uri.EscapeDataString(email)}");
+        await emailSender.QueueAsync(new TransactionalEmail(
+                EmailTemplates.IdentityPasswordRecovery, email,
+                new Dictionary<string, string> { ["actionUrl"] = callback.AbsoluteUri }),
+            $"operator-password-reset:{user.Id}:{HashForIdempotency(code)}", cancellationToken);
         await AuditAsync(actor, "user.password-reset-initiated", user.Id, new { accountType = user.AccountType }, cancellationToken);
-        return new UserInviteResult(await ProjectAsync(user), callback.AbsoluteUri);
+        await transaction.CommitAsync(cancellationToken);
+        return new UserInviteResult(await ProjectAsync(user), environment.IsDevelopment() ? callback.AbsoluteUri : null);
     }
 
     private async Task<UserView> ProjectAsync(ApplicationUser user)
@@ -278,6 +289,9 @@ internal sealed class UserAdministrationService(
         if (result.Succeeded) return;
         throw new InvalidOperationException($"Unable to {operation}: {string.Join("; ", result.Errors.Select(error => error.Code))}");
     }
+
+    private static string HashForIdempotency(string value) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 }
 
 public sealed record UserView(

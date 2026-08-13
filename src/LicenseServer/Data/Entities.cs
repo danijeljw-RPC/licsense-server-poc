@@ -83,6 +83,36 @@ public sealed class ApiCredential
     public Guid? ReplacedByCredentialId { get; set; }
 }
 
+public sealed class EmailOutboxMessage
+{
+    public Guid Id { get; set; }
+    public required string TemplateName { get; set; }
+    public int TemplateVersion { get; set; }
+    public required string RecipientHash { get; set; }
+    public required string ProtectedPayload { get; set; }
+    public required byte[] IdempotencyHash { get; set; }
+    public required string Status { get; set; }
+    public int AttemptCount { get; set; }
+    public DateTimeOffset NextAttemptAt { get; set; }
+    public Guid? LeaseId { get; set; }
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
+    public string? ProviderMessageId { get; set; }
+    public string? LastErrorCode { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? SentAt { get; set; }
+    public DateTimeOffset RetainUntil { get; set; }
+}
+
+public sealed class EmailDeliveryEvent
+{
+    public Guid Id { get; set; }
+    public required string ProviderEventId { get; set; }
+    public string? ProviderMessageId { get; set; }
+    public required string EventType { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+    public DateTimeOffset ReceivedAt { get; set; }
+}
+
 public sealed class Entitlement
 {
     public Guid Id { get; set; }

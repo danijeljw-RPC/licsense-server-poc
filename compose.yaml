@@ -46,6 +46,10 @@ services:
       Licensing__IdTimeZone: ${LICENSE_ID_TIME_ZONE:-Australia/Adelaide}
       ActivationCodes__Pepper: ${ACTIVATION_CODE_PEPPER:?Set ACTIVATION_CODE_PEPPER in .env}
       ApiCredentials__Pepper: ${API_CREDENTIAL_PEPPER:?Set API_CREDENTIAL_PEPPER in .env}
+      MailerSend__ApiToken: ${MAILERSEND_API_TOKEN:?Set MAILERSEND_API_TOKEN in .env}
+      MailerSend__FromEmail: ${MAILERSEND_FROM_EMAIL:?Set MAILERSEND_FROM_EMAIL in .env}
+      MailerSend__FromName: ${MAILERSEND_FROM_NAME:-License Server}
+      MailerSend__WebhookSecret: ${MAILERSEND_WEBHOOK_SECRET:?Set MAILERSEND_WEBHOOK_SECRET in .env}
       RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-false}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
     ports:
