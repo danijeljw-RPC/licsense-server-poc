@@ -453,6 +453,34 @@ internal sealed class LicenseStore(
         return StoreResult<bool>.Ok(true);
     }
 
+    public async Task<StoreResult<RotatedActivationCode>> RotateActivationCodeAsync(
+        string licenseId,
+        long expectedVersion,
+        string actor,
+        string? correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.LicensesUpdate);
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        var license = await LockedLicenseAsync(licenseId, cancellationToken);
+        if (license is null) return StoreResult<RotatedActivationCode>.NotFound("License was not found.");
+        if (license.Version != expectedVersion)
+            return StoreResult<RotatedActivationCode>.Conflict("The license was changed by another operation. Reload and retry.");
+        if (license.CancelledAt is not null || license.RevokedAt is not null)
+            return StoreResult<RotatedActivationCode>.Conflict("The activation code cannot be rotated after cancellation or revocation.");
+
+        var code = activationCodeGenerator.Generate();
+        var hash = activationCodeHasher.Hash(code);
+        license.ActivationCodeHash = hash.Value;
+        license.ActivationCodeHashVersion = hash.Version;
+        db.Entry(license).Property(item => item.Version).IsModified = true;
+        AddAudit(actor, "license.activation-code-rotated", "license", licenseId, "success",
+            new { version = license.Version + 1, correlationId }, clock.GetUtcNow());
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return StoreResult<RotatedActivationCode>.Ok(new RotatedActivationCode(licenseId, code, license.Version));
+    }
+
     public async Task<StoreResult<bool>> AdminDeactivateAsync(
         string activationId, string? reason, long expectedVersion, string actor, DateTimeOffset now,
         string? correlationId, CancellationToken cancellationToken = default)
@@ -683,6 +711,8 @@ internal sealed class LicenseStore(
     internal sealed record IssuedLicense(
         string LicenseId, string ActivationCode, JsonObject Metadata,
         IReadOnlyList<IssuedEntitlement> Entitlements);
+
+    internal sealed record RotatedActivationCode(string LicenseId, string ActivationCode, long Version);
 
     private sealed record IssuanceIdempotencyIdentity(
         string PrincipalId, byte[] KeyHash, byte[] RequestHash);

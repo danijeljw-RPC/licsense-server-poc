@@ -139,6 +139,103 @@ Production requires an MFA-authenticated Identity principal for `users.manage`, 
 
 WebAuthn requires a secure browser context. `http://localhost` is the browser-defined local-development exception. Deploy behind HTTPS everywhere else, preserve the public host and scheme through trusted forwarded headers, persist Data Protection keys, and set cookie secure policy to `Always` at the TLS boundary.
 
+### Operator and service-account administration
+
+`/settings/users` requires `users.read`; invitations, enable/disable, role changes,
+and forced password setup require `users.manage` plus the configured high-risk MFA
+gate. Human operators receive a 15-minute Identity password-setup token and an
+administrator never selects their password. Service accounts have no password, MFA,
+passkey, or browser-login credentials and exist only to own scoped automation keys.
+
+PostgreSQL serializes System Administrator disable/demotion operations so concurrent
+requests cannot remove the final enabled administrator. Disabling an identity changes
+its security stamp, rejects subsequent requests, calls the owned-credential revocation
+hook, and writes a secret-free audit event. Until transactional email is enabled in
+stage 12, Development shows a newly generated setup link once; Production refuses to
+reveal it and requires configured delivery.
+
+### Scoped API credentials
+
+`/settings/api-keys` creates bearer credentials in the form
+`lic_live_<public-id>_<secret>`. The 32-byte secret is displayed once; PostgreSQL keeps
+only its versioned HMAC-SHA-256 digest, public ID, last four characters, owner, scopes,
+and lifecycle timestamps. Human-owned keys require an expiry. Rotation creates a new
+secret and revokes the old key atomically; revocation and owner disablement take effect
+on the next request.
+
+Bearer authentication is selected only by `Authorization: Bearer` and maps key scopes
+to the existing permission policies. It never reads cookies and does not use
+antiforgery; cookie-authenticated mutations still require a valid antiforgery token.
+Bearer admin traffic is rate-limited by owner and IP, while anonymous device routes use
+a stricter IP partition. Configure `ApiCredentials__Pepper` outside source control with
+an independent Base64 value containing at least 32 random bytes. Development can use an
+ephemeral pepper, but its keys intentionally stop working after restart.
+
+### Versioned administration API
+
+The `/api/v1/admin` surface exposes the same authorization policies and domain services
+as the operator UI. Its route inventory covers bounded license search and detail,
+one-product issuance, terms updates, cancellation, revocation, activation-code rotation,
+operator deactivation, products, customers, users, API credentials, and filtered audit.
+Mutation responses never serialize EF entities; generated activation codes are returned
+only by issuance or rotation and PostgreSQL retains only their versioned HMAC digest.
+
+License detail returns a quoted numeric `ETag`. `PATCH` terms requests must send that
+value in `If-Match` and in the versioned request DTO. Cookie sessions require
+`X-CSRF-TOKEN`; scoped bearer credentials do not use cookie antiforgery. Issuance accepts
+`Idempotency-Key` and binds its encrypted, expiring replay result to the authenticated
+principal and canonical request fingerprint. All API responses carry `X-Correlation-ID`.
+The generated OpenAPI 3.1 document is available at `/openapi/v1.json` and describes both
+Identity-cookie and API-key bearer authentication, concurrency, pagination, one-time
+secrets, and the offline recall limitation.
+
+### Durable transactional email
+
+Transactional messages are inserted into PostgreSQL `EmailOutbox` through the
+provider-neutral sender and encrypted with ASP.NET Core Data Protection. The template
+registry covers purchase/activation, renewal reminder and receipt, payment failure,
+invoice, operator invitation, Identity confirmation/recovery, and customer magic-link
+messages. An idempotency digest uniquely suppresses duplicate queue requests; recipient
+addresses and template models exist only inside the protected payload.
+
+The hosted worker claims bounded batches with `FOR UPDATE SKIP LOCKED`, commits its
+short lease before calling MailerSend, and records the provider message ID, attempts,
+next attempt, and final status. Explicit throttling/server failures use bounded
+exponential retries. Ambiguous timeouts or network failures enter `uncertain` for
+operator reconciliation because the provider send API does not define an idempotency
+contract. Development without a token uses a redacted capture transport; non-Development
+startup requires `MailerSend__ApiToken`, `MailerSend__FromEmail`, and
+`MailerSend__WebhookSecret`. `MailerSend__FromName` is optional and
+`Email__WorkerEnabled` controls processing.
+
+`POST /api/v1/webhooks/mailersend` verifies the hexadecimal `Signature` as a fixed-time
+HMAC-SHA-256 over the raw request body before parsing. Provider event IDs are unique,
+delivery/bounce/complaint updates are operational only, and webhooks never mutate a
+license. The worker deletes terminal outbox rows and delivery events after the 30-day
+retention deadline; logs contain only outbox IDs, template names, and recipient hashes.
+
+### Passwordless customer access
+
+`/customer/access` always gives the same response whether or not a normalized email and
+optional license ID match. Valid matches queue a 32-byte random magic-link token through
+the transactional email outbox; PostgreSQL stores only its SHA-256 hash, hashed email/IP
+rate-limit identifiers, a 12-minute expiry, and its atomic consumption timestamp. The
+token is never an activation code and cannot be used twice.
+`CustomerPortal__PublicBaseUrl` supplies the public HTTPS origin for emailed links.
+
+Successful consumption clears any prior customer cookie before issuing a non-sliding,
+30-minute `LicenseServer.Customer` session. This scheme is separate from operator
+Identity and API credentials and contains only a customer ID plus a customer-session
+marker. The read-only portal and `/api/v1/customer` queries always include that customer
+ID in the database predicate, return 404 for another customer's license, and expose only
+status, product, edition, seats, expiry (`Never` for perpetual), activation state, and a
+redacted device suffix. Activation credentials/hashes, full device identifiers, signed
+metadata, audits, and operator controls are never projected.
+
+Customer logout requires antiforgery and clears only the customer session. Device
+deactivation, contact-email changes, and renewal mutations are deliberately unavailable;
+future sensitive operations must begin with a fresh email challenge.
+
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:

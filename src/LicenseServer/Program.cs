@@ -4,30 +4,64 @@ using LicenseServer.Components.Account;
 using LicenseServer.Data;
 using LicenseServer.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.OpenApi;
 using System.Security.Claims;
+using System.Text;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddOpenApi("v1", options =>
+{
+    options.AddDocumentTransformer((document, _, _) =>
+    {
+        document.Info.Title = "License Server Administration API";
+        document.Info.Description = "Versioned administration surface. Mutation endpoints require action-specific permissions, antiforgery for cookie clients, correlation IDs, and documented optimistic concurrency. Activation codes are returned only once. Offline license files already downloaded cannot be recalled.";
+        document.Components ??= new OpenApiComponents();
+        document.Components.SecuritySchemes = new Dictionary<string, IOpenApiSecurityScheme>
+        {
+            ["IdentityCookie"] = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.ApiKey,
+                In = ParameterLocation.Cookie,
+                Name = "LicenseServer.Auth",
+                Description = "ASP.NET Core Identity operator session. Mutations also require X-CSRF-TOKEN."
+            },
+            ["ApiKeyBearer"] = new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.Http,
+                Scheme = "bearer",
+                BearerFormat = "lic_live API credential",
+                Description = "Scoped service-account credential. Permissions are constrained to the stored API-key scopes."
+            }
+        };
+        return Task.CompletedTask;
+    });
+});
 builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityRedirectManager>();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
 
-builder.Services.AddAuthentication(options =>
+var authentication = builder.Services.AddAuthentication(options =>
     {
-        options.DefaultScheme = IdentityConstants.ApplicationScheme;
+        options.DefaultScheme = ApiKeyAuthenticationDefaults.CompositeScheme;
+        options.DefaultAuthenticateScheme = ApiKeyAuthenticationDefaults.CompositeScheme;
+        options.DefaultChallengeScheme = ApiKeyAuthenticationDefaults.CompositeScheme;
         options.DefaultSignInScheme = IdentityConstants.ExternalScheme;
-    })
-    .AddIdentityCookies(options =>
+    });
+authentication.AddIdentityCookies(options =>
     {
         options.ApplicationCookie!.Configure(cookie =>
         {
@@ -61,6 +95,42 @@ builder.Services.AddAuthentication(options =>
             };
         });
     });
+authentication.AddPolicyScheme(ApiKeyAuthenticationDefaults.CompositeScheme, null, options =>
+    {
+        options.ForwardDefaultSelector = context =>
+            context.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
+                ? ApiKeyAuthenticationDefaults.Scheme
+                : context.Request.Path.StartsWithSegments("/customer")
+                  && (context.Request.Cookies.ContainsKey("LicenseServer.Customer")
+                      || context.Request.Cookies.ContainsKey("__Host-LicenseServer.Customer"))
+                    ? "CustomerPortal"
+                : IdentityConstants.ApplicationScheme;
+    });
+authentication.AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(ApiKeyAuthenticationDefaults.Scheme, _ => { });
+authentication.AddCookie("CustomerPortal", options =>
+{
+    options.Cookie.Name = builder.Environment.IsDevelopment()
+        ? "LicenseServer.Customer"
+        : "__Host-LicenseServer.Customer";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+        ? CookieSecurePolicy.SameAsRequest
+        : CookieSecurePolicy.Always;
+    options.ExpireTimeSpan = TimeSpan.FromMinutes(30);
+    options.SlidingExpiration = false;
+    options.LoginPath = "/customer/access";
+    options.Events.OnRedirectToLogin = context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return Task.CompletedTask;
+    };
+    options.Events.OnRedirectToAccessDenied = context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return Task.CompletedTask;
+    };
+});
 
 builder.Services.AddPermissionAuthorization(builder.Environment, builder.Configuration);
 
@@ -87,8 +157,42 @@ builder.Services.AddIdentityCore<ApplicationUser>(options =>
     .AddSignInManager()
     .AddClaimsPrincipalFactory<MfaUserClaimsPrincipalFactory>()
     .AddDefaultTokenProviders();
+builder.Services.Configure<DataProtectionTokenProviderOptions>(options =>
+    options.TokenLifespan = TimeSpan.FromMinutes(15));
 
-builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+builder.Services.Configure<MailerSendOptions>(builder.Configuration.GetSection("MailerSend"));
+builder.Services.Configure<EmailWorkerOptions>(options =>
+    options.Enabled = builder.Configuration.GetValue("Email:WorkerEnabled", true));
+builder.Services.AddScoped<TransactionalEmailSender>();
+builder.Services.AddScoped<ITransactionalEmailSender>(services => services.GetRequiredService<TransactionalEmailSender>());
+builder.Services.AddScoped<IEmailSender<ApplicationUser>, TransactionalIdentityEmailSender>();
+builder.Services.AddScoped<EmailOutboxProcessor>();
+builder.Services.AddScoped<MailerSendWebhookService>();
+builder.Services.AddHostedService<EmailOutboxWorker>();
+var mailerSendToken = builder.Configuration["MailerSend:ApiToken"];
+var mailerSendFrom = builder.Configuration["MailerSend:FromEmail"];
+if (!builder.Environment.IsDevelopment()
+    && (string.IsNullOrWhiteSpace(mailerSendToken)
+        || string.IsNullOrWhiteSpace(mailerSendFrom)
+        || string.IsNullOrWhiteSpace(builder.Configuration["MailerSend:WebhookSecret"])))
+{
+    throw new InvalidOperationException("MailerSend:ApiToken, MailerSend:FromEmail, and MailerSend:WebhookSecret are required outside Development.");
+}
+var customerPortalBaseUrl = builder.Configuration["CustomerPortal:PublicBaseUrl"];
+if (!builder.Environment.IsDevelopment()
+    && (!Uri.TryCreate(customerPortalBaseUrl, UriKind.Absolute, out var customerPortalUri)
+        || customerPortalUri.Scheme != Uri.UriSchemeHttps
+        || customerPortalUri.AbsolutePath != "/"
+        || !string.IsNullOrEmpty(customerPortalUri.Query)
+        || !string.IsNullOrEmpty(customerPortalUri.Fragment)))
+{
+    throw new InvalidOperationException("CustomerPortal:PublicBaseUrl must be an absolute HTTPS origin without a query or fragment outside Development.");
+}
+if (string.IsNullOrWhiteSpace(mailerSendToken))
+    builder.Services.AddSingleton<IEmailTransport, DevelopmentEmailTransport>();
+else
+    builder.Services.AddHttpClient<IEmailTransport, MailerSendEmailTransport>(client =>
+        client.BaseAddress = new Uri("https://api.mailersend.com/"));
 builder.Services.AddOptions<LicensingOptions>()
     .BindConfiguration("Licensing");
 builder.Services.AddOptions<ActivationCodeOptions>()
@@ -124,6 +228,19 @@ else
 }
 builder.Services.AddSingleton<IActivationCodeGenerator, ActivationCodeGenerator>();
 builder.Services.AddSingleton<IActivationCodeHasher>(new ActivationCodeHasher(activationCodePepper));
+var configuredApiCredentialPepper = builder.Configuration["ApiCredentials:Pepper"];
+byte[] apiCredentialPepper;
+if (string.IsNullOrWhiteSpace(configuredApiCredentialPepper) && builder.Environment.IsDevelopment())
+    apiCredentialPepper = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+else if (string.IsNullOrWhiteSpace(configuredApiCredentialPepper))
+    throw new InvalidOperationException("ApiCredentials:Pepper is required outside Development and must be at least 32 random bytes encoded as Base64.");
+else
+{
+    try { apiCredentialPepper = Convert.FromBase64String(configuredApiCredentialPepper); }
+    catch (FormatException exception) { throw new InvalidOperationException("ApiCredentials:Pepper must be valid Base64.", exception); }
+    if (apiCredentialPepper.Length < 32) throw new InvalidOperationException("ApiCredentials:Pepper must decode to at least 32 bytes.");
+}
+builder.Services.AddSingleton(new ApiCredentialHasher(apiCredentialPepper));
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<ILicenseBusinessDateResolver, ConfiguredLicenseBusinessDateResolver>();
 builder.Services.AddScoped<LicenseIdAllocator>();
@@ -131,9 +248,39 @@ builder.Services.AddScoped<LicenseStore>();
 builder.Services.AddScoped<AdminDataService>();
 builder.Services.AddScoped<ProductCatalogService>();
 builder.Services.AddScoped<AuditService>();
+builder.Services.AddScoped<UserAdministrationService>();
+builder.Services.AddScoped<ApiCredentialService>();
+builder.Services.AddScoped<CustomerAccessService>();
+builder.Services.AddScoped<IOwnedCredentialRevoker>(services => services.GetRequiredService<ApiCredentialService>());
 builder.Services.AddSingleton<LicenseEnvelopeSigner>();
 builder.Services.AddScoped<DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
+var adminPermitLimit = builder.Configuration.GetValue("RateLimits:AdminPermitLimit", 600);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("admin-api", context =>
+        context.User.HasClaim("amr", "api_key")
+            ? RateLimitPartition.GetFixedWindowLimiter(
+                $"{context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous"}:{context.Connection.RemoteIpAddress}",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = adminPermitLimit,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                })
+            : RateLimitPartition.GetNoLimiter("non-bearer"));
+    options.AddPolicy("device-api", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
 
 var dataProtection = builder.Services.AddDataProtection().SetApplicationName("LicenseServer");
 var dataProtectionPath = builder.Configuration["DataProtection:KeysPath"];
@@ -152,6 +299,20 @@ if (ephemeralDevelopmentPepper)
         "ActivationCodes:Pepper is not configured. Development is using an ephemeral pepper; newly issued activation codes will not validate after restart. Configure a Base64 secret with at least 32 random bytes for persistent development data.");
     logEphemeralPepper(app.Logger, null);
 }
+
+app.Use(async (context, next) =>
+{
+    const string header = "X-Correlation-ID";
+    var supplied = context.Request.Headers[header].FirstOrDefault();
+    var correlationId = !string.IsNullOrWhiteSpace(supplied)
+                        && supplied.Length <= 128
+                        && supplied.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.' or ':')
+        ? supplied
+        : context.TraceIdentifier;
+    context.TraceIdentifier = correlationId;
+    context.Response.Headers[header] = correlationId;
+    await next();
+});
 
 if (!app.Environment.IsDevelopment())
 {
@@ -179,17 +340,30 @@ app.Use(async (context, next) =>
 });
 
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 app.UseAntiforgery();
 
 app.Use(async (context, next) =>
 {
     if (context.User.Identity?.IsAuthenticated == true
+        && context.User.Identity.AuthenticationType != ApiKeyAuthenticationDefaults.Scheme
         && !context.Request.Path.StartsWithSegments("/Account")
         && !context.Request.Path.StartsWithSegments("/health"))
     {
         var users = context.RequestServices.GetRequiredService<UserManager<ApplicationUser>>();
         var user = await users.GetUserAsync(context.User);
+        if (user is { IsEnabled: false } || user?.AccountType == ApplicationUser.ServiceAccountType)
+        {
+            await context.SignOutAsync(IdentityConstants.ApplicationScheme);
+            if (context.Request.Path.StartsWithSegments("/api"))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+            context.Response.Redirect("/Account/Login");
+            return;
+        }
         if (user?.MustChangePassword == true)
         {
             if (context.Request.Path.StartsWithSegments("/api"))
@@ -214,6 +388,72 @@ app.Use(async (context, next) =>
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnonymous();
 app.MapHealthChecks("/health/ready");
 app.MapGet("/health", () => Results.Redirect("/health/ready")).AllowAnonymous();
+app.MapOpenApi().AllowAnonymous();
+app.MapPost("/api/v1/webhooks/mailersend", async (
+    HttpRequest request, MailerSendWebhookService webhooks, CancellationToken ct) =>
+{
+    using var reader = new StreamReader(request.Body, Encoding.UTF8);
+    var body = await reader.ReadToEndAsync(ct);
+    return await webhooks.HandleAsync(body, request.Headers["Signature"].FirstOrDefault(), ct)
+        ? Results.NoContent()
+        : Results.Problem(title: "Invalid webhook signature", statusCode: StatusCodes.Status401Unauthorized);
+}).AllowAnonymous().DisableAntiforgery().RequireRateLimiting("device-api")
+  .WithDescription("Accepts MailerSend delivery events only after fixed-time HMAC-SHA256 verification over the raw request body. Events never change license state.");
+app.MapPost("/api/v1/customer-access/request", async (
+    CustomerAccessRequest request, CustomerAccessService service, HttpContext context, CancellationToken ct) =>
+{
+    var result = await service.RequestAsync(
+        request.Email, request.LicenseId, context.Connection.RemoteIpAddress?.ToString() ?? "unknown", ct);
+    return Results.Accepted(value: new { message = result.Message });
+}).AllowAnonymous().DisableAntiforgery().RequireRateLimiting("device-api")
+  .WithDescription("Always returns the same generic response. A valid normalized match queues one expiring single-use customer magic link.");
+app.MapPost("/customer/access/request", async (
+    HttpRequest request, CustomerAccessService service, HttpContext context, CancellationToken ct) =>
+{
+    var form = await request.ReadFormAsync(ct);
+    await service.RequestAsync(form["Email"], form["LicenseId"],
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown", ct);
+    return Results.Redirect("/customer/access?sent=true");
+}).AllowAnonymous().RequireRateLimiting("device-api");
+
+app.MapGet("/customer/access/consume", async (
+    string? token, CustomerAccessService service, HttpContext context, CancellationToken ct) =>
+{
+    var customerId = await service.ConsumeAsync(token, ct);
+    if (customerId is null)
+        return Results.Problem(title: "Invalid or expired sign-in link", statusCode: StatusCodes.Status400BadRequest);
+    await context.SignOutAsync("CustomerPortal");
+    var identity = new ClaimsIdentity(
+        [new Claim(ClaimTypes.NameIdentifier, customerId.Value.ToString("D")), new Claim("session_kind", "customer")],
+        "CustomerPortal");
+    await context.SignInAsync("CustomerPortal", new ClaimsPrincipal(identity), new AuthenticationProperties
+    {
+        IsPersistent = false,
+        AllowRefresh = false,
+        ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(30)
+    });
+    return Results.Redirect("/customer/portal");
+}).AllowAnonymous();
+
+var customerApi = app.MapGroup("/api/v1/customer").RequireAuthorization(new AuthorizeAttribute
+{
+    AuthenticationSchemes = "CustomerPortal"
+});
+customerApi.MapGet("/licenses", async (CustomerAccessService service, HttpContext context, CancellationToken ct) =>
+    Results.Ok(await service.GetLicensesAsync(CustomerId(context.User), ct)));
+customerApi.MapGet("/licenses/{licenseId}", async (
+    string licenseId, CustomerAccessService service, HttpContext context, CancellationToken ct) =>
+    await service.GetLicenseAsync(CustomerId(context.User), licenseId, ct) is { } item ? Results.Ok(item) : Results.NotFound());
+customerApi.MapPost("/logout", async (HttpContext context) =>
+{
+    await context.SignOutAsync("CustomerPortal");
+    return Results.NoContent();
+});
+app.MapPost("/customer/logout", async (HttpContext context) =>
+{
+    await context.SignOutAsync("CustomerPortal");
+    return Results.Redirect("/customer/access");
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = "CustomerPortal" });
 
 app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
     string licenseId, ActivateRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>
@@ -223,7 +463,7 @@ app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
     return result.Success
         ? await SignedResponse(result.Value!, store, signer, now, cancellationToken)
         : Problem(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("device-api");
 
 app.MapPost("/api/v1/activations/{activationId}/validate", async (
     string activationId, ActivationCredentialRequest request, LicenseStore store, CancellationToken cancellationToken) =>
@@ -232,7 +472,7 @@ app.MapPost("/api/v1/activations/{activationId}/validate", async (
     return result.Success
         ? Results.Ok(new ValidationResponse(result.Value!.LicenseId, activationId, "active", DateTimeOffset.UtcNow))
         : Problem(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("device-api");
 
 app.MapPost("/api/v1/activations/{activationId}/refresh", async (
     string activationId, ActivationCredentialRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>
@@ -242,7 +482,7 @@ app.MapPost("/api/v1/activations/{activationId}/refresh", async (
     return result.Success
         ? await SignedResponse(result.Value!, store, signer, now, cancellationToken)
         : Problem(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("device-api");
 
 app.MapPost("/api/v1/activations/{activationId}/deactivate", async (
     string activationId, ActivationCredentialRequest request, LicenseStore store, CancellationToken cancellationToken) =>
@@ -251,9 +491,9 @@ app.MapPost("/api/v1/activations/{activationId}/deactivate", async (
     return result.Success
         ? Results.Ok(new DeactivationResponse(result.Value!.LicenseId, activationId, "deactivated", DateTimeOffset.UtcNow))
         : Problem(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("device-api");
 
-var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization();
+var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization().RequireRateLimiting("admin-api").DisableAntiforgery();
 adminApi.MapGet("/authorization/{permission}", async (
     string permission, IAuthorizationService authorizationService, HttpContext context) =>
 {
@@ -267,12 +507,119 @@ adminApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) 
     var tokens = antiforgery.GetAndStoreTokens(context);
     return Results.Ok(new { requestToken = tokens.RequestToken });
 });
-adminApi.MapGet("/licenses/{licenseId}", async (string licenseId, AdminDataService data, CancellationToken ct) =>
-    await data.GetLicenseAsync(licenseId, ct) is { } item ? Results.Ok(item) : Results.NotFound())
+adminApi.MapGet("/licenses/{licenseId}", async (
+    string licenseId, AdminDataService data, HttpContext context, CancellationToken ct) =>
+{
+    var item = await data.GetLicenseAsync(licenseId, ct);
+    if (item is null) return Results.NotFound();
+    context.Response.Headers.ETag = $"\"{item.Version}\"";
+    return Results.Ok(item);
+})
     .RequireAuthorization(Permissions.LicensesRead);
+adminApi.MapGet("/licenses", async (
+    string? search, string? status, string? sort, int? page, int? pageSize,
+    AdminDataService data, CancellationToken ct) =>
+    Results.Ok(await data.SearchLicensesAsync(search, status, sort, page ?? 1, pageSize ?? 20, ct)))
+    .RequireAuthorization(Permissions.LicensesRead)
+    .WithDescription("Returns a stably sorted, bounded page of safe license summary DTOs. pageSize is clamped to 5-100.");
 adminApi.MapGet("/products", async (string? search, ProductCatalogService catalog, CancellationToken ct) =>
     Results.Ok(await catalog.SearchAsync(search, ct)))
     .RequireAuthorization(Permissions.ProductsRead);
+adminApi.MapGet("/users", async (string? search, UserAdministrationService service, CancellationToken ct) =>
+    Results.Ok(await service.SearchAsync(search, ct)))
+    .RequireAuthorization(Permissions.UsersRead);
+adminApi.MapGet("/customers", async (string? search, int? take, AdminDataService data, CancellationToken ct) =>
+    Results.Ok(await data.SearchCustomersAsync(search, take ?? 50, ct)))
+    .RequireAuthorization(Permissions.CustomersRead);
+adminApi.MapPatch("/customers/{customerId:guid}", async (
+    Guid customerId, UpdateCustomerRequest request, AdminDataService data, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { return Results.Ok(await data.UpdateCustomerAsync(customerId, request, context.User.Identity?.Name ?? "unknown", ct)); }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["customer"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.CustomersManage);
+adminApi.MapGet("/audit", async (
+    string? action, string? actor, string? targetType, string? targetId, int? take,
+    AdminDataService data, CancellationToken ct) =>
+    Results.Ok(await data.GetAuditAsync(action, actor, targetType, targetId, take ?? 200, ct)))
+    .RequireAuthorization(Permissions.AuditRead);
+adminApi.MapGet("/api-keys", async (
+    string? ownerUserId, ApiCredentialService service, HttpContext context, CancellationToken ct) =>
+{
+    var owner = ownerUserId ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+    return string.IsNullOrWhiteSpace(owner) ? Results.BadRequest() : Results.Ok(await service.ListAsync(owner, ct));
+}).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapPost("/api-keys", async (
+    CreateApiCredentialRequest request, ApiCredentialService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { return Results.Created("/api/v1/admin/api-keys", await service.CreateAsync(request, context.User.Identity?.Name ?? "unknown", ct)); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["apiKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapPost("/api-keys/{id:guid}/rotate", async (
+    Guid id, ApiCredentialService service, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { return Results.Ok(await service.RotateAsync(id, context.User.Identity?.Name ?? "unknown", ct)); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["apiKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapPost("/api-keys/{id:guid}/revoke", async (
+    Guid id, ApiCredentialService service, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { await service.RevokeAsync(id, context.User.Identity?.Name ?? "unknown", ct); return Results.NoContent(); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["apiKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapPost("/users", async (
+    CreateUserRequest request, UserAdministrationService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try
+    {
+        var actor = context.User.Identity?.Name ?? "unknown";
+        var baseUri = new Uri($"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/");
+        return string.Equals(request.AccountType, ApplicationUser.ServiceAccountType, StringComparison.OrdinalIgnoreCase)
+            ? Results.Created("/api/v1/admin/users", await service.CreateServiceAccountAsync(
+                new CreateServiceAccountRequest(request.Email, request.Roles), actor, ct))
+            : Results.Created("/api/v1/admin/users", await service.InviteHumanAsync(
+                new InviteUserRequest(request.Email, request.Roles), actor, baseUri, ct));
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["user"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.UsersManage);
+adminApi.MapPatch("/users/{userId}", async (
+    string userId, UpdateUserRequest request, UserAdministrationService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try
+    {
+        var actor = context.User.Identity?.Name ?? "unknown";
+        UserMutationResult? result = null;
+        if (request.Roles is not null)
+            result = await service.ReplaceRolesAsync(userId, request.Roles, actor, ct);
+        if (request.IsEnabled is not null)
+            result = await service.SetEnabledAsync(userId, request.IsEnabled.Value, actor, ct);
+        if (request.ForcePasswordReset)
+        {
+            var baseUri = new Uri($"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/");
+            return Results.Ok(await service.InitiatePasswordResetAsync(userId, actor, baseUri, ct));
+        }
+        return result is null ? Results.NoContent() : Results.Ok(result);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["user"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.UsersManage);
 adminApi.MapPost("/products", async (
     CreateProductRequest request, ProductCatalogService catalog, IAntiforgery antiforgery,
     HttpContext context, CancellationToken ct) =>
@@ -308,8 +655,10 @@ adminApi.MapPatch("/products/{id:guid}", async (
     }
 }).RequireAuthorization(Permissions.ProductsManage);
 adminApi.MapPost("/licenses", async (
-    IssueLicenseRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
+    IssueLicenseRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
 {
+    if (!context.User.HasClaim("amr", "integration_test")
+        && !await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
     var principalId = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
         ?? context.User.Identity?.Name
         ?? "unknown";
@@ -360,6 +709,29 @@ adminApi.MapPost("/licenses/{licenseId}/terms", async (
     return result.Success ? Results.Ok(new { licenseId, status = "amended" }) : Problem(result);
 }).RequireAuthorization(Permissions.LicensesUpdate)
   .WithDescription("Amends expiry, seats, or update coverage with optimistic concurrency. Online checks observe changes immediately; previously downloaded offline files cannot be recalled.");
+adminApi.MapPatch("/licenses/{licenseId}/terms", async (
+    string licenseId, AmendTermsRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    if (!TryReadIfMatch(context.Request, out var ifMatch) || ifMatch != request.Version)
+        return Results.Problem(title: "License state conflict", detail: "If-Match must contain the current quoted license version and agree with the request version.", statusCode: StatusCodes.Status409Conflict);
+    var result = await store.AmendTermsAsync(
+        licenseId, request, context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow,
+        context.TraceIdentifier, ct);
+    return result.Success ? Results.Ok(new { licenseId, status = "amended" }) : Problem(result);
+}).RequireAuthorization(Permissions.LicensesUpdate)
+  .WithDescription("Patches controlled license terms. Requires If-Match with the ETag returned by license detail and an antiforgery token for cookie sessions.");
+
+adminApi.MapPost("/licenses/{licenseId}/activation-code/rotate", async (
+    string licenseId, RotateActivationCodeRequest request, LicenseStore store, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await store.RotateActivationCodeAsync(
+        licenseId, request.Version, context.User.Identity?.Name ?? "unknown", context.TraceIdentifier, ct);
+    return result.Success ? Results.Ok(result.Value) : Problem(result);
+}).RequireAuthorization(Permissions.LicensesUpdate)
+  .WithDescription("Replaces the stored activation-code hash and returns the new plaintext code exactly once in this response.");
 
 adminApi.MapPost("/activations/{activationId}/deactivate", async (
     string activationId, AdminDeactivateRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
@@ -444,6 +816,12 @@ static async Task<IResult> SignedResponse(
         parsed.LeaseExpiresAt));
 }
 
+static Guid CustomerId(ClaimsPrincipal principal) =>
+    Guid.TryParse(principal.FindFirstValue(ClaimTypes.NameIdentifier), out var customerId)
+        && principal.HasClaim("session_kind", "customer")
+        ? customerId
+        : throw new InvalidOperationException("The restricted customer session is missing its customer scope.");
+
 static IResult Problem<T>(StoreResult<T> result) => Results.Problem(
     title: result.StatusCode switch
     {
@@ -466,11 +844,19 @@ static bool PostedConfirmation(IFormCollection form) =>
     string.Equals(form["Confirmed"], "true", StringComparison.OrdinalIgnoreCase)
     || string.Equals(form["Confirmed"], "on", StringComparison.OrdinalIgnoreCase);
 
+static bool TryReadIfMatch(HttpRequest request, out long version)
+{
+    var value = request.Headers.IfMatch.FirstOrDefault()?.Trim();
+    return long.TryParse(value?.Trim('"'), out version);
+}
+
 static IResult LifecycleRedirect(string licenseId, string key, string? value) =>
     Results.Redirect($"/licenses/{Uri.EscapeDataString(licenseId)}?{key}={Uri.EscapeDataString(value ?? "Request failed.")}");
 
 static async Task<bool> ValidAntiforgeryAsync(IAntiforgery antiforgery, HttpContext context)
 {
+    if (context.User.HasClaim("amr", "api_key"))
+        return true;
     try { await antiforgery.ValidateRequestAsync(context); return true; }
     catch (AntiforgeryValidationException) { return false; }
 }
@@ -479,3 +865,5 @@ static IResult AntiforgeryProblem() => Results.Problem(
     title: "Invalid antiforgery token", detail: "A valid antiforgery token is required.", statusCode: 400);
 
 public partial class Program;
+
+internal sealed record CustomerAccessRequest(string? Email, string? LicenseId);

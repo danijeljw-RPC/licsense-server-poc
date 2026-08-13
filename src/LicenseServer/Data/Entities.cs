@@ -64,6 +64,68 @@ public sealed class IssuanceIdempotencyRecord
     public DateTimeOffset ExpiresAt { get; set; }
 }
 
+public sealed class ApiCredential
+{
+    public Guid Id { get; set; }
+    public required string PublicId { get; set; }
+    public required string Name { get; set; }
+    public required string OwnerUserId { get; set; }
+    public required ApplicationUser OwnerUser { get; set; }
+    public required byte[] SecretHash { get; set; }
+    public required string HashVersion { get; set; }
+    public required string LastFour { get; set; }
+    public string ScopesJson { get; set; } = "[]";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? LastUsedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public string? RevokedBy { get; set; }
+    public Guid? ReplacedByCredentialId { get; set; }
+}
+
+public sealed class EmailOutboxMessage
+{
+    public Guid Id { get; set; }
+    public required string TemplateName { get; set; }
+    public int TemplateVersion { get; set; }
+    public required string RecipientHash { get; set; }
+    public required string ProtectedPayload { get; set; }
+    public required byte[] IdempotencyHash { get; set; }
+    public required string Status { get; set; }
+    public int AttemptCount { get; set; }
+    public DateTimeOffset NextAttemptAt { get; set; }
+    public Guid? LeaseId { get; set; }
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
+    public string? ProviderMessageId { get; set; }
+    public string? LastErrorCode { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? SentAt { get; set; }
+    public DateTimeOffset RetainUntil { get; set; }
+}
+
+public sealed class EmailDeliveryEvent
+{
+    public Guid Id { get; set; }
+    public required string ProviderEventId { get; set; }
+    public string? ProviderMessageId { get; set; }
+    public required string EventType { get; set; }
+    public DateTimeOffset OccurredAt { get; set; }
+    public DateTimeOffset ReceivedAt { get; set; }
+}
+
+public sealed class CustomerAccessChallenge
+{
+    public Guid Id { get; set; }
+    public Guid CustomerId { get; set; }
+    public Customer Customer { get; set; } = null!;
+    public required byte[] TokenHash { get; set; }
+    public required byte[] IdentifierHash { get; set; }
+    public required byte[] RemoteAddressHash { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? ConsumedAt { get; set; }
+}
+
 public sealed class Entitlement
 {
     public Guid Id { get; set; }

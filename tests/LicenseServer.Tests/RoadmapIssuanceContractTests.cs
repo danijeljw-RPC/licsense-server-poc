@@ -33,7 +33,8 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
             };
             request.Headers.Add("Idempotency-Key", $"phase0-concurrent-{index}");
             using var response = await client.SendAsync(request);
-            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            Assert.True(response.StatusCode == HttpStatusCode.Created,
+                $"Expected 201 but received {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
             var issued = await response.Content.ReadFromJsonAsync<IssueLicenseResultContract>();
             return issued ?? throw new InvalidOperationException("Issuance response was empty.");
         });

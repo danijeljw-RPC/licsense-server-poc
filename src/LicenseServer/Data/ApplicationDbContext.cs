@@ -12,6 +12,10 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public DbSet<ProductDefinition> ProductDefinitions => Set<ProductDefinition>();
     public DbSet<LicenseRecord> Licenses => Set<LicenseRecord>();
     public DbSet<IssuanceIdempotencyRecord> IssuanceIdempotencyRecords => Set<IssuanceIdempotencyRecord>();
+    public DbSet<ApiCredential> ApiCredentials => Set<ApiCredential>();
+    public DbSet<EmailOutboxMessage> EmailOutbox => Set<EmailOutboxMessage>();
+    public DbSet<EmailDeliveryEvent> EmailDeliveryEvents => Set<EmailDeliveryEvent>();
+    public DbSet<CustomerAccessChallenge> CustomerAccessChallenges => Set<CustomerAccessChallenge>();
     public DbSet<Entitlement> Entitlements => Set<Entitlement>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<SigningKeyRecord> SigningKeys => Set<SigningKeyRecord>();
@@ -70,6 +74,42 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<IssuanceIdempotencyRecord>().Property(x => x.ProtectedResult).HasColumnType("text");
         builder.Entity<IssuanceIdempotencyRecord>().HasIndex(x => new { x.PrincipalId, x.KeyHash }).IsUnique();
         builder.Entity<IssuanceIdempotencyRecord>().HasIndex(x => x.ExpiresAt);
+        builder.Entity<ApiCredential>().HasIndex(x => x.PublicId).IsUnique();
+        builder.Entity<ApiCredential>().HasIndex(x => x.OwnerUserId);
+        builder.Entity<ApiCredential>().HasIndex(x => x.ExpiresAt);
+        builder.Entity<ApiCredential>().Property(x => x.PublicId).HasMaxLength(32);
+        builder.Entity<ApiCredential>().Property(x => x.Name).HasMaxLength(200);
+        builder.Entity<ApiCredential>().Property(x => x.HashVersion).HasMaxLength(32);
+        builder.Entity<ApiCredential>().Property(x => x.LastFour).HasMaxLength(4);
+        builder.Entity<ApiCredential>().Property(x => x.RevokedBy).HasMaxLength(256);
+        builder.Entity<ApiCredential>().Property(x => x.ScopesJson).HasColumnType("jsonb");
+        builder.Entity<ApiCredential>().HasOne(x => x.OwnerUser).WithMany()
+            .HasForeignKey(x => x.OwnerUserId).OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<ApiCredential>().ToTable(table => table.HasCheckConstraint(
+            "CK_ApiCredentials_Lifecycle", "\"ExpiresAt\" IS NULL OR \"ExpiresAt\" > \"CreatedAt\""));
+        builder.Entity<EmailOutboxMessage>().ToTable("EmailOutbox");
+        builder.Entity<EmailOutboxMessage>().HasIndex(item => item.IdempotencyHash).IsUnique();
+        builder.Entity<EmailOutboxMessage>().HasIndex(item => new { item.Status, item.NextAttemptAt });
+        builder.Entity<EmailOutboxMessage>().HasIndex(item => item.ProviderMessageId);
+        builder.Entity<EmailOutboxMessage>().HasIndex(item => item.RetainUntil);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.TemplateName).HasMaxLength(100);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.RecipientHash).HasMaxLength(64);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.Status).HasMaxLength(20);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.ProviderMessageId).HasMaxLength(256);
+        builder.Entity<EmailOutboxMessage>().Property(item => item.LastErrorCode).HasMaxLength(100);
+        builder.Entity<EmailOutboxMessage>().ToTable("EmailOutbox", table => table.HasCheckConstraint(
+            "CK_EmailOutbox_Status", "\"Status\" IN ('pending','leased','retry','sent','delivered','bounced','complained','failed','uncertain')"));
+        builder.Entity<EmailDeliveryEvent>().HasIndex(item => item.ProviderEventId).IsUnique();
+        builder.Entity<EmailDeliveryEvent>().HasIndex(item => item.ProviderMessageId);
+        builder.Entity<EmailDeliveryEvent>().Property(item => item.ProviderEventId).HasMaxLength(256);
+        builder.Entity<EmailDeliveryEvent>().Property(item => item.ProviderMessageId).HasMaxLength(256);
+        builder.Entity<EmailDeliveryEvent>().Property(item => item.EventType).HasMaxLength(100);
+        builder.Entity<CustomerAccessChallenge>().HasIndex(item => item.TokenHash).IsUnique();
+        builder.Entity<CustomerAccessChallenge>().HasIndex(item => new { item.IdentifierHash, item.CreatedAt });
+        builder.Entity<CustomerAccessChallenge>().HasIndex(item => new { item.RemoteAddressHash, item.CreatedAt });
+        builder.Entity<CustomerAccessChallenge>().HasIndex(item => item.ExpiresAt);
+        builder.Entity<CustomerAccessChallenge>().HasOne(item => item.Customer).WithMany()
+            .HasForeignKey(item => item.CustomerId).OnDelete(DeleteBehavior.Cascade);
         builder.Entity<Entitlement>().HasIndex(x => x.LicenseRecordId).IsUnique();
         builder.Entity<Entitlement>().HasOne(x => x.ProductDefinition).WithMany(x => x.Entitlements)
             .HasForeignKey(x => x.ProductDefinitionId).OnDelete(DeleteBehavior.Restrict);
@@ -87,6 +127,13 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<AuditRecord>().HasIndex(x => x.TimestampUtc);
         builder.Entity<AuditRecord>().Property(x => x.Actor).HasMaxLength(256);
         builder.Entity<AuditRecord>().Property(x => x.Action).HasMaxLength(100);
+        builder.Entity<ApplicationUser>().Property(x => x.AccountType).HasMaxLength(20)
+            .HasDefaultValue(ApplicationUser.HumanAccountType);
+        builder.Entity<ApplicationUser>().Property(x => x.IsEnabled).HasDefaultValue(true);
+        builder.Entity<ApplicationUser>().Property(x => x.DisabledBy).HasMaxLength(256);
+        builder.Entity<ApplicationUser>().HasIndex(x => new { x.AccountType, x.IsEnabled });
+        builder.Entity<ApplicationUser>().ToTable(table => table.HasCheckConstraint(
+            "CK_AspNetUsers_AccountType", "\"AccountType\" IN ('human', 'service')"));
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
