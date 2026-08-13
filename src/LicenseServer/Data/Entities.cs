@@ -22,6 +22,7 @@ public sealed class LicenseRecord
     public Guid CustomerId { get; set; }
     public required Customer Customer { get; set; }
     public required byte[] ActivationCodeHash { get; set; }
+    public string ActivationCodeHashVersion { get; set; } = ActivationCodeHasher.LegacySha256Version;
     public string MetadataJson { get; set; } = "{}";
     public DateTimeOffset IssuedAt { get; set; }
     public DateTimeOffset? ExpiresAt { get; set; }
@@ -36,6 +37,17 @@ public sealed class LicenseRecord
     public long Version { get; set; }
     public List<Entitlement> Entitlements { get; set; } = [];
     public List<Activation> Activations { get; set; } = [];
+}
+
+public sealed class IssuanceIdempotencyRecord
+{
+    public Guid Id { get; set; }
+    public required string PrincipalId { get; set; }
+    public required byte[] KeyHash { get; set; }
+    public required byte[] RequestHash { get; set; }
+    public required string ProtectedResult { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
 }
 
 public sealed class Entitlement

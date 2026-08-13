@@ -9,6 +9,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<LicenseIdCounter> LicenseIdCounters => Set<LicenseIdCounter>();
     public DbSet<LicenseRecord> Licenses => Set<LicenseRecord>();
+    public DbSet<IssuanceIdempotencyRecord> IssuanceIdempotencyRecords => Set<IssuanceIdempotencyRecord>();
     public DbSet<Entitlement> Entitlements => Set<Entitlement>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<SigningKeyRecord> SigningKeys => Set<SigningKeyRecord>();
@@ -27,6 +28,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             "\"LastValue\" BETWEEN 0 AND 16777215"));
         builder.Entity<LicenseRecord>().HasIndex(x => x.LicenseId).IsUnique();
         builder.Entity<LicenseRecord>().Property(x => x.LicenseId).HasMaxLength(19);
+        builder.Entity<LicenseRecord>().Property(x => x.ActivationCodeHashVersion).HasMaxLength(32)
+            .HasDefaultValue(ActivationCodeHasher.LegacySha256Version);
         builder.Entity<LicenseRecord>().Property(x => x.Version).IsConcurrencyToken();
         builder.Entity<LicenseRecord>().Property(x => x.RevocationReason).HasMaxLength(500);
         builder.Entity<LicenseRecord>().Property(x => x.CancellationReason).HasMaxLength(500);
@@ -45,6 +48,10 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             "\"ExpirySubMicrosecondTicks\" BETWEEN 0 AND 9"));
         builder.Entity<LicenseRecord>().HasMany(x => x.Entitlements).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Cascade);
         builder.Entity<LicenseRecord>().HasMany(x => x.Activations).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<IssuanceIdempotencyRecord>().Property(x => x.PrincipalId).HasMaxLength(256);
+        builder.Entity<IssuanceIdempotencyRecord>().Property(x => x.ProtectedResult).HasColumnType("text");
+        builder.Entity<IssuanceIdempotencyRecord>().HasIndex(x => new { x.PrincipalId, x.KeyHash }).IsUnique();
+        builder.Entity<IssuanceIdempotencyRecord>().HasIndex(x => x.ExpiresAt);
         builder.Entity<Entitlement>().HasIndex(x => new { x.LicenseRecordId, x.Product }).IsUnique();
         builder.Entity<Entitlement>().ToTable(table =>
         {

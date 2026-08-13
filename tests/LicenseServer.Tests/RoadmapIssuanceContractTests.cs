@@ -65,6 +65,7 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var row = await db.Licenses.AsNoTracking().SingleAsync(item => item.LicenseId == issued.LicenseId);
         var audit = await db.AuditRecords.AsNoTracking().Where(item => item.TargetId == issued.LicenseId).ToListAsync();
+        Assert.Equal(ActivationCodeHasher.CurrentVersion, row.ActivationCodeHashVersion);
         Assert.DoesNotContain(issued.ActivationCode, Convert.ToHexString(row.ActivationCodeHash), StringComparison.Ordinal);
         Assert.All(audit, item => Assert.DoesNotContain(issued.ActivationCode, item.ContextJson, StringComparison.Ordinal));
         Assert.All(fixture.CapturedLogs.Messages, message => Assert.DoesNotContain(issued.ActivationCode, message, StringComparison.Ordinal));
@@ -73,6 +74,65 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
         var laterBody = await later.Content.ReadAsStringAsync();
         Assert.DoesNotContain(issued.ActivationCode, laterBody, StringComparison.Ordinal);
         Assert.DoesNotContain("activationCode", laterBody, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "05")]
+    public async Task SamePrincipalAndIdempotencyKeyReturnsEncryptedRetryResultWithoutDuplicateIssuance()
+    {
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
+        var requestBody = RoadmapTestSupport.ValidIssueRequest($"idempotent-{Guid.NewGuid():N}");
+        var key = $"phase05-{Guid.NewGuid():N}";
+
+        async Task<IssueLicenseResultContract> IssueAsync()
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/licenses")
+            {
+                Content = JsonContent.Create(requestBody)
+            };
+            request.Headers.Add("Idempotency-Key", key);
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            return await response.Content.ReadFromJsonAsync<IssueLicenseResultContract>()
+                ?? throw new InvalidOperationException("Issuance response was empty.");
+        }
+
+        var first = await IssueAsync();
+        var retry = await IssueAsync();
+        Assert.Equal(first.LicenseId, retry.LicenseId);
+        Assert.Equal(first.ActivationCode, retry.ActivationCode);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        Assert.Equal(1, await db.Licenses.CountAsync(item => item.LicenseId == first.LicenseId));
+        var keyHash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key));
+        var retryRecord = await db.IssuanceIdempotencyRecords.AsNoTracking()
+            .SingleAsync(item => item.KeyHash == keyHash);
+        Assert.DoesNotContain(first.ActivationCode, retryRecord.ProtectedResult, StringComparison.Ordinal);
+        Assert.DoesNotContain(key, Convert.ToHexString(retryRecord.KeyHash), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "05")]
+    public async Task ReusingAnIdempotencyKeyForDifferentInputIsRejected()
+    {
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
+        var key = $"phase05-{Guid.NewGuid():N}";
+        using var firstRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/licenses")
+        {
+            Content = JsonContent.Create(RoadmapTestSupport.ValidIssueRequest($"first-{Guid.NewGuid():N}"))
+        };
+        firstRequest.Headers.Add("Idempotency-Key", key);
+        using var first = await client.SendAsync(firstRequest);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        using var secondRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/licenses")
+        {
+            Content = JsonContent.Create(RoadmapTestSupport.ValidIssueRequest($"second-{Guid.NewGuid():N}"))
+        };
+        secondRequest.Headers.Add("Idempotency-Key", key);
+        using var second = await client.SendAsync(secondRequest);
+        await RoadmapTestSupport.AssertProblemAsync(second, HttpStatusCode.Conflict);
     }
 
     [Fact]

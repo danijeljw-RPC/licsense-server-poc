@@ -114,11 +114,14 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
     public async Task<LicenseStore.IssuedLicense> CreateLicenseAsync(
         CreateLicenseInput input,
         string actor,
+        string principalId,
+        string idempotencyKey,
         CancellationToken cancellationToken = default)
     {
         var result = await store.IssueAsync(new IssueLicenseRequest(
             input.CustomerName, input.CustomerEmail, input.Product, input.Edition, input.LicenseType,
-            input.ExpiresAt, input.Seats, input.UpdatesUntil, null), actor, Guid.NewGuid().ToString("D"),
+            input.ExpiresAt, input.Seats, input.UpdatesUntil, null),
+            new IssuanceContext(actor, principalId, Guid.NewGuid().ToString("D"), idempotencyKey),
             cancellationToken);
         if (!result.Success) throw new InvalidOperationException(result.Error);
         return result.Value!;

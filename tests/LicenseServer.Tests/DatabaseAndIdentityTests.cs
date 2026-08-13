@@ -21,7 +21,7 @@ public sealed class DatabaseAndIdentityTests(PostgresWebFixture fixture)
     {
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        Assert.Equal(2, (await db.Database.GetAppliedMigrationsAsync()).Count());
+        Assert.Equal(3, (await db.Database.GetAppliedMigrationsAsync()).Count());
         Assert.True(await db.Database.CanConnectAsync());
         await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().InitializeAsync();
         await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().InitializeAsync();
