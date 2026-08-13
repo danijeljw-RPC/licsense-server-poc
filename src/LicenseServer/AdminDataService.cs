@@ -83,14 +83,32 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             .SingleOrDefaultAsync(x => x.LicenseId == licenseId, cancellationToken);
         if (x is null) return null;
         var active = x.Activations.SingleOrDefault(a => a.DeactivatedAt == null);
+        var activationIds = x.Activations.Select(y => y.ActivationId).ToArray();
+        var history = await db.AuditRecords.AsNoTracking()
+            .Where(a => a.TargetId == licenseId || (a.TargetType == "activation" && activationIds.Contains(a.TargetId)))
+            .OrderByDescending(a => a.TimestampUtc)
+            .Select(a => new AuditView(a.Actor, a.Action, a.TargetType, a.TargetId, a.Result, a.TimestampUtc, a.ContextJson))
+            .ToListAsync(cancellationToken);
         return new LicenseDetailView(
-            x.LicenseId, x.Customer.Name, x.MetadataJson, x.IssuedAt,
+            x.LicenseId, x.Customer.Name, ContactEmail(x.MetadataJson), x.IssuedAt,
             x.ExpiresAt?.AddTicks(x.ExpirySubMicrosecondTicks),
             x.CancelledAt, x.CancellationReason, x.CancelledBy, x.RevokedAt, x.RevocationReason, x.Version,
             LicenseStore.GetLifecycleState(x, active is not null, DateTimeOffset.UtcNow),
             x.Entitlements.OrderBy(e => e.Product).Select(e => new EntitlementView(e.Product, e.Edition, e.LicenseType, e.Seats, e.UpdatesUntil)).ToList(),
             active is null ? null : new ActivationView(active.ActivationId, active.Mode, active.DeviceIdSuffix, active.DeviceName, active.ActivatedAt, active.RefreshAfter, active.LeaseExpiresAt),
-            x.Activations.OrderByDescending(a => a.ActivatedAt).Select(a => new ActivationHistoryView(a.ActivationId, a.Mode, a.DeviceIdSuffix, a.ActivatedAt, a.DeactivatedAt)).ToList());
+            x.Activations.OrderByDescending(a => a.ActivatedAt).Select(a => new ActivationHistoryView(a.ActivationId, a.Mode, a.DeviceIdSuffix, a.ActivatedAt, a.DeactivatedAt)).ToList(),
+            history);
+    }
+
+    private static string? ContactEmail(string metadataJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(metadataJson);
+            return document.RootElement.TryGetProperty("contactEmail", out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString() : null;
+        }
+        catch (JsonException) { return null; }
     }
 
     public async Task<string> CreateLicenseAsync(CreateLicenseInput input, string actor, CancellationToken cancellationToken = default)
@@ -117,11 +135,11 @@ public sealed record EntitlementView(string Product, string Edition, string Lice
 public sealed record ActivationView(string ActivationId, string Mode, string DeviceSuffix, string? DeviceName, DateTimeOffset ActivatedAt, DateTimeOffset? RefreshAfter, DateTimeOffset? LeaseExpiresAt);
 public sealed record ActivationHistoryView(string ActivationId, string Mode, string DeviceSuffix, DateTimeOffset ActivatedAt, DateTimeOffset? DeactivatedAt);
 public sealed record LicenseDetailView(
-    string LicenseId, string Customer, string MetadataJson, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
+    string LicenseId, string Customer, string? CustomerEmail, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
     DateTimeOffset? CancelledAt, string? CancellationReason, string? CancelledBy,
     DateTimeOffset? RevokedAt, string? RevocationReason, long Version, string Status,
     IReadOnlyList<EntitlementView> Entitlements, ActivationView? ActiveActivation,
-    IReadOnlyList<ActivationHistoryView> IssuanceHistory);
+    IReadOnlyList<ActivationHistoryView> IssuanceHistory, IReadOnlyList<AuditView> History);
 
 public sealed class CreateLicenseInput
 {

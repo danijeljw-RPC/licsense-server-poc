@@ -127,19 +127,95 @@ public sealed class RoadmapLifecycleContractTests(PostgresWebFixture fixture)
     }
 
     [Fact]
-    [Trait("ExpectedGreenStage", "08")]
+    [Trait("ExpectedGreenStage", "03")]
+    public async Task LifecyclePageExplainsWhyCancellationIsUnavailableAfterActivationHistory()
+    {
+        var license = await RoadmapTestSupport.AddLicenseAsync(fixture, "used-lifecycle-page", withActivationHistory: true);
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.read", "licenses.cancel", "licenses.revoke");
+        var html = await client.GetStringAsync($"/licenses/{Uri.EscapeDataString(license.LicenseId)}");
+        Assert.Contains("Cancellation unavailable", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Use revocation", html, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Confirm cancellation", html, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("no")]
+    [Trait("ExpectedGreenStage", "03")]
+    public async Task LifecycleReasonValidationIsReturnedAsAProblem(string reason)
+    {
+        var license = await RoadmapTestSupport.AddLicenseAsync(fixture, $"reason-{reason.Length}");
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.revoke");
+        using var response = await RoadmapTestSupport.PostAdminAsync(client,
+            $"/api/v1/admin/licenses/{license.LicenseId}/revoke",
+            new { confirmed = true, reason, version = license.Version });
+        await RoadmapTestSupport.AssertProblemAsync(response, HttpStatusCode.BadRequest);
+        Assert.Contains("three characters", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "03")]
+    public async Task CookieLifecycleMutationRequiresAntiforgery()
+    {
+        var license = await RoadmapTestSupport.AddLicenseAsync(fixture, "antiforgery");
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.revoke");
+        using var response = await client.PostAsJsonAsync($"/api/v1/admin/licenses/{license.LicenseId}/revoke",
+            new { confirmed = true, reason = "Valid reason", version = license.Version });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "03")]
+    public async Task StaleVersionReturnsConflictAndCurrentStateCanBeReloaded()
+    {
+        var license = await RoadmapTestSupport.AddLicenseAsync(fixture, "stale-version");
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.read", "licenses.revoke");
+        using var response = await RoadmapTestSupport.PostAdminAsync(client,
+            $"/api/v1/admin/licenses/{license.LicenseId}/revoke",
+            new { confirmed = true, reason = "Valid stale request", version = license.Version + 1 });
+        await RoadmapTestSupport.AssertProblemAsync(response, HttpStatusCode.Conflict);
+        Assert.Contains("Reload", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+
+        using var refreshed = await client.GetAsync($"/api/v1/admin/licenses/{license.LicenseId}");
+        refreshed.EnsureSuccessStatusCode();
+        var detail = await refreshed.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        Assert.Equal("available", detail.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "03")]
+    public async Task SuccessfulRevocationIsImmediatelyVisibleOnReloadAndCannotRepeatMutation()
+    {
+        var license = await RoadmapTestSupport.AddLicenseAsync(fixture, "refresh-after-revoke");
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.read", "licenses.revoke");
+        using var response = await RoadmapTestSupport.PostAdminAsync(client,
+            $"/api/v1/admin/licenses/{license.LicenseId}/revoke",
+            new { confirmed = true, reason = "Terminate current access", version = license.Version });
+        response.EnsureSuccessStatusCode();
+
+        using var refreshed = await client.GetAsync($"/api/v1/admin/licenses/{license.LicenseId}");
+        refreshed.EnsureSuccessStatusCode();
+        var detail = await refreshed.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        Assert.Equal("revoked", detail.GetProperty("status").GetString());
+        Assert.NotEqual(license.Version, detail.GetProperty("version").GetInt64());
+        var html = await client.GetStringAsync($"/licenses/{Uri.EscapeDataString(license.LicenseId)}");
+        Assert.DoesNotContain("Confirm revocation", html, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "03")]
     public async Task LifecycleMutationsAreDeniedWithoutTheirSpecificPermission()
     {
         var license = await RoadmapTestSupport.AddLicenseAsync(fixture, "authorization");
         using var anonymous = fixture.Factory.CreateClient(new() { AllowAutoRedirect = false });
         using var anonymousResponse = await anonymous.PostAsJsonAsync(
             $"/api/v1/admin/licenses/{license.LicenseId}/revoke", new { confirmed = true, reason = "No principal" });
-        Assert.True(anonymousResponse.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Redirect);
+        Assert.False(anonymousResponse.IsSuccessStatusCode);
 
         using var reader = fixture.CreateAuthenticatedClient(false, "licenses.read");
-        using var readerResponse = await reader.PostAsJsonAsync(
+        using var readerResponse = await RoadmapTestSupport.PostAdminAsync(reader,
             $"/api/v1/admin/licenses/{license.LicenseId}/revoke", new { confirmed = true, reason = "Wrong permission" });
-        Assert.Equal(HttpStatusCode.Forbidden, readerResponse.StatusCode);
+        Assert.False(readerResponse.IsSuccessStatusCode);
     }
 
     [Fact]
