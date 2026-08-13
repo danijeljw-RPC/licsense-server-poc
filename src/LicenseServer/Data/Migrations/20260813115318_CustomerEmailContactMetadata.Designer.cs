@@ -3,6 +3,7 @@ using System;
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace LicenseServer.Data.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260813115318_CustomerEmailContactMetadata")]
+    partial class CustomerEmailContactMetadata
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -271,9 +274,6 @@ namespace LicenseServer.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<Guid>("ProductDefinitionId")
-                        .HasColumnType("uuid");
-
                     b.Property<int>("Seats")
                         .HasColumnType("integer");
 
@@ -282,15 +282,11 @@ namespace LicenseServer.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("LicenseRecordId")
+                    b.HasIndex("LicenseRecordId", "Product")
                         .IsUnique();
-
-                    b.HasIndex("ProductDefinitionId");
 
                     b.ToTable("Entitlements", t =>
                         {
-                            t.HasCheckConstraint("CK_Entitlements_Edition", "\"Edition\" IN ('community', 'project', 'education', 'consumer', 'business', 'smb', 'enterprise', 'corporate')");
-
                             t.HasCheckConstraint("CK_Entitlements_LicenseType", "\"LicenseType\" IN ('perpetual', 'subscription', 'evaluation')");
 
                             t.HasCheckConstraint("CK_Entitlements_Seats", "\"Seats\" > 0");
@@ -437,51 +433,11 @@ namespace LicenseServer.Data.Migrations
 
                     b.ToTable("Licenses", t =>
                         {
-                            t.HasCheckConstraint("CK_Licenses_ContactEmail", "COALESCE(jsonb_typeof(\"MetadataJson\" -> 'contactEmail') = 'string' AND (\"MetadataJson\" ->> 'contactEmail') = lower(btrim(\"MetadataJson\" ->> 'contactEmail')) AND (\"MetadataJson\" ->> 'contactEmail') ~ '^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$', FALSE)");
+                                t.HasCheckConstraint("CK_Licenses_ContactEmail", "COALESCE(jsonb_typeof(\"MetadataJson\" -> 'contactEmail') = 'string' AND (\"MetadataJson\" ->> 'contactEmail') = lower(btrim(\"MetadataJson\" ->> 'contactEmail')) AND (\"MetadataJson\" ->> 'contactEmail') ~ '^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$', FALSE)");
 
                             t.HasCheckConstraint("CK_Licenses_ExpiryPrecision", "\"ExpirySubMicrosecondTicks\" BETWEEN 0 AND 9");
 
                             t.HasCheckConstraint("CK_Licenses_TerminalState", "NOT (\"CancelledAt\" IS NOT NULL AND \"RevokedAt\" IS NOT NULL)");
-                        });
-                });
-
-            modelBuilder.Entity("LicenseServer.Data.ProductDefinition", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Code")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)");
-
-                    b.Property<string>("DisplayName")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Code")
-                        .IsUnique();
-
-                    b.ToTable("ProductDefinitions", t =>
-                        {
-                            t.HasCheckConstraint("CK_ProductDefinitions_Code", "\"Code\" ~ '^[a-z0-9][a-z0-9-]{0,99}$'");
                         });
                 });
 
@@ -693,15 +649,7 @@ namespace LicenseServer.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("LicenseServer.Data.ProductDefinition", "ProductDefinition")
-                        .WithMany("Entitlements")
-                        .HasForeignKey("ProductDefinitionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.Navigation("License");
-
-                    b.Navigation("ProductDefinition");
                 });
 
             modelBuilder.Entity("LicenseServer.Data.LicenseRecord", b =>
@@ -826,11 +774,6 @@ namespace LicenseServer.Data.Migrations
                 {
                     b.Navigation("Activations");
 
-                    b.Navigation("Entitlements");
-                });
-
-            modelBuilder.Entity("LicenseServer.Data.ProductDefinition", b =>
-                {
                     b.Navigation("Entitlements");
                 });
 #pragma warning restore 612, 618

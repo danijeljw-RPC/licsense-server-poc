@@ -1,5 +1,5 @@
 @page "/"
-@attribute [Authorize(Policy = "Administrator")]
+@attribute [Authorize(Policy = Permissions.LicensesRead)]
 @inject AdminDataService Data
 
 <PageTitle>Dashboard</PageTitle>

@@ -5,6 +5,7 @@ internal static class LicenseTerms
     public const string Perpetual = "perpetual";
     public const string Subscription = "subscription";
     public const string Evaluation = "evaluation";
+    public static readonly IReadOnlyList<string> All = [Perpetual, Subscription, Evaluation];
 
     public static readonly DateTimeOffset PerpetualExpiry =
         new DateTimeOffset(9999, 12, 31, 23, 59, 59, TimeSpan.Zero).AddTicks(9_999_990);

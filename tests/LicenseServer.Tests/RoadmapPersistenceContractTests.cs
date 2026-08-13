@@ -1,6 +1,9 @@
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace LicenseServer.Tests;
 
@@ -37,10 +40,24 @@ public sealed class RoadmapPersistenceContractTests(PostgresWebFixture fixture)
         Assert.False(normalizedEmail!.IsNullable);
         Assert.Contains(customer.GetIndexes(), index => index.Properties.Any(property => property.Name == "NormalizedEmail"));
 
-        var license = db.Model.FindEntityType(typeof(LicenseRecord))!;
+        var license = db.GetService<IDesignTimeModel>().Model.FindEntityType(typeof(LicenseRecord))!;
         Assert.Equal("jsonb", license.FindProperty(nameof(LicenseRecord.MetadataJson))!.GetColumnType());
         Assert.Contains(license.GetCheckConstraints(), constraint =>
             constraint.Sql.Contains("contactEmail", StringComparison.Ordinal));
+
+        var demo = await db.Licenses.AsNoTracking()
+            .SingleAsync(item => item.Customer.ExternalId == "POC-CUSTOMER");
+        var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+            db.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE \"Licenses\" SET \"MetadataJson\" = CAST({"{}"} AS jsonb) WHERE \"Id\" = {demo.Id}"));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+
+        var seededCustomer = await db.Customers.AsNoTracking()
+            .SingleAsync(item => item.ExternalId == "POC-CUSTOMER");
+        Assert.Equal("licensing@example.com", seededCustomer.Email);
+        Assert.Equal("licensing@example.com", seededCustomer.NormalizedEmail);
+        Assert.Equal("licensing@example.com", System.Text.Json.JsonDocument.Parse(demo.MetadataJson)
+            .RootElement.GetProperty("contactEmail").GetString());
     }
 
     [Fact]
@@ -55,6 +72,10 @@ public sealed class RoadmapPersistenceContractTests(PostgresWebFixture fixture)
         Assert.NotNull(product.FindProperty("IsActive"));
         var entitlement = db.Model.FindEntityType(typeof(Entitlement))!;
         Assert.Contains(entitlement.GetForeignKeys(), key => key.PrincipalEntityType == product);
+        Assert.Contains(entitlement.GetIndexes(), index =>
+            index.IsUnique
+            && index.Properties.Count == 1
+            && index.Properties[0].Name == nameof(Entitlement.LicenseRecordId));
     }
 
     [Fact]

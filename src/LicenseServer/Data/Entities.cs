@@ -4,6 +4,8 @@ public sealed class Customer
 {
     public Guid Id { get; set; }
     public required string Name { get; set; }
+    public required string Email { get; set; }
+    public required string NormalizedEmail { get; set; }
     public string? ExternalId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public List<LicenseRecord> Licenses { get; set; } = [];
@@ -13,6 +15,18 @@ public sealed class LicenseIdCounter
 {
     public DateOnly BusinessDate { get; set; }
     public int LastValue { get; set; }
+}
+
+public sealed class ProductDefinition
+{
+    public Guid Id { get; set; }
+    public required string Code { get; set; }
+    public required string DisplayName { get; set; }
+    public string? Description { get; set; }
+    public bool IsActive { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public List<Entitlement> Entitlements { get; set; } = [];
 }
 
 public sealed class LicenseRecord
@@ -55,6 +69,8 @@ public sealed class Entitlement
     public Guid Id { get; set; }
     public Guid LicenseRecordId { get; set; }
     public required LicenseRecord License { get; set; }
+    public Guid ProductDefinitionId { get; set; }
+    public required ProductDefinition ProductDefinition { get; set; }
     public required string Product { get; set; }
     public required string Edition { get; set; }
     public required string LicenseType { get; set; }

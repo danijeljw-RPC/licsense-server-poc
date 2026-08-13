@@ -19,7 +19,8 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
         var device1 = new string('A', 64);
         var first = Request(device1, "online");
         var activated = await client.PostAsJsonAsync($"/api/v1/licenses/{demoLicenseId}/activate", first);
-        activated.EnsureSuccessStatusCode();
+        Assert.True(activated.IsSuccessStatusCode,
+            $"Activation returned {(int)activated.StatusCode}: {await activated.Content.ReadAsStringAsync()}");
         var response = await activated.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
         Assert.Equal(demoLicenseId, response.LicenseId);
         Assert.NotNull(LicenseVerifier.Verify(response.SignedLicense));

@@ -3,13 +3,15 @@ using System.Text;
 using System.Text.Json;
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
+using LicenseServer.Authorization;
 
 namespace LicenseServer;
 
-internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore store)
+internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore store, PermissionGuard permissions)
 {
     public async Task<DashboardView> GetDashboardAsync(CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesRead);
         var now = DateTimeOffset.UtcNow;
         var licenses = await db.Licenses.AsNoTracking()
             .Select(x => new { x.CancelledAt, x.RevokedAt, x.ExpiresAt, Active = x.Activations.Any(a => a.DeactivatedAt == null) })
@@ -39,6 +41,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesRead);
         var now = DateTimeOffset.UtcNow;
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 5, 100);
@@ -46,7 +49,11 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
-            query = query.Where(x => EF.Functions.ILike(x.LicenseId, $"%{term}%") || EF.Functions.ILike(x.Customer.Name, $"%{term}%"));
+            var normalizedTerm = term.ToLowerInvariant();
+            query = query.Where(x =>
+                EF.Functions.ILike(x.LicenseId, $"%{term}%")
+                || EF.Functions.ILike(x.Customer.Name, $"%{term}%")
+                || x.Customer.NormalizedEmail.Contains(normalizedTerm));
         }
         query = status?.ToLowerInvariant() switch
         {
@@ -78,6 +85,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
 
     public async Task<LicenseDetailView?> GetLicenseAsync(string licenseId, CancellationToken cancellationToken = default)
     {
+        await permissions.RequireAsync(Permissions.LicensesRead);
         var x = await db.Licenses.AsNoTracking()
             .Include(x => x.Customer).Include(x => x.Entitlements).Include(x => x.Activations)
             .SingleOrDefaultAsync(x => x.LicenseId == licenseId, cancellationToken);
@@ -90,7 +98,9 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             .Select(a => new AuditView(a.Actor, a.Action, a.TargetType, a.TargetId, a.Result, a.TimestampUtc, a.ContextJson))
             .ToListAsync(cancellationToken);
         return new LicenseDetailView(
-            x.LicenseId, x.Customer.Name, ContactEmail(x.MetadataJson), x.IssuedAt,
+            x.LicenseId, x.Customer.Name, x.Customer.Email,
+            ContactEmail(x.MetadataJson) ?? throw new InvalidOperationException("Stored license contact metadata is invalid."),
+            x.IssuedAt,
             x.ExpiresAt?.AddTicks(x.ExpirySubMicrosecondTicks),
             x.CancelledAt, x.CancellationReason, x.CancelledBy, x.RevokedAt, x.RevocationReason, x.Version,
             LicenseStore.GetLifecycleState(x, active is not null, DateTimeOffset.UtcNow),
@@ -119,7 +129,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         CancellationToken cancellationToken = default)
     {
         var result = await store.IssueAsync(new IssueLicenseRequest(
-            input.CustomerName, input.CustomerEmail, input.Product, input.Edition, input.LicenseType,
+            input.CustomerName, input.CustomerEmail, input.ProductId, input.Edition, input.LicenseType,
             input.ExpiresAt, input.Seats, input.UpdatesUntil, null),
             new IssuanceContext(actor, principalId, Guid.NewGuid().ToString("D"), idempotencyKey),
             cancellationToken);
@@ -127,10 +137,13 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         return result.Value!;
     }
 
-    public Task<List<AuditView>> GetAuditAsync(int take = 200, CancellationToken cancellationToken = default) =>
-        db.AuditRecords.AsNoTracking().OrderByDescending(x => x.TimestampUtc).Take(Math.Clamp(take, 1, 500))
+    public async Task<List<AuditView>> GetAuditAsync(int take = 200, CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.AuditRead);
+        return await db.AuditRecords.AsNoTracking().OrderByDescending(x => x.TimestampUtc).Take(Math.Clamp(take, 1, 500))
             .Select(x => new AuditView(x.Actor, x.Action, x.TargetType, x.TargetId, x.Result, x.TimestampUtc, x.ContextJson))
             .ToListAsync(cancellationToken);
+    }
 }
 
 public sealed record DashboardView(int Total, int Available, int Active, int Expired, int Revoked, int Online, int Offline, int LeasesApproachingExpiry, IReadOnlyList<AuditView> RecentAudit);
@@ -141,7 +154,7 @@ public sealed record EntitlementView(string Product, string Edition, string Lice
 public sealed record ActivationView(string ActivationId, string Mode, string DeviceSuffix, string? DeviceName, DateTimeOffset ActivatedAt, DateTimeOffset? RefreshAfter, DateTimeOffset? LeaseExpiresAt);
 public sealed record ActivationHistoryView(string ActivationId, string Mode, string DeviceSuffix, DateTimeOffset ActivatedAt, DateTimeOffset? DeactivatedAt);
 public sealed record LicenseDetailView(
-    string LicenseId, string Customer, string? CustomerEmail, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
+    string LicenseId, string Customer, string CustomerEmail, string SignedContactEmail, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
     DateTimeOffset? CancelledAt, string? CancellationReason, string? CancelledBy,
     DateTimeOffset? RevokedAt, string? RevocationReason, long Version, string Status,
     IReadOnlyList<EntitlementView> Entitlements, ActivationView? ActiveActivation,
@@ -150,8 +163,8 @@ public sealed record LicenseDetailView(
 public sealed class CreateLicenseInput
 {
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(200)] public string CustomerName { get; set; } = "";
-    [System.ComponentModel.DataAnnotations.EmailAddress, System.ComponentModel.DataAnnotations.StringLength(320)] public string CustomerEmail { get; set; } = "";
-    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Product { get; set; } = "";
+    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.EmailAddress, System.ComponentModel.DataAnnotations.StringLength(320)] public string CustomerEmail { get; set; } = "";
+    [System.ComponentModel.DataAnnotations.Required] public Guid? ProductId { get; set; }
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Edition { get; set; } = "business";
     [System.ComponentModel.DataAnnotations.Required] public string LicenseType { get; set; } = "perpetual";
     [System.ComponentModel.DataAnnotations.Range(1, 100000)] public int Seats { get; set; } = 1;

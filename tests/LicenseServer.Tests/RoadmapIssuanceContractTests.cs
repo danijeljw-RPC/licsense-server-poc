@@ -156,18 +156,60 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
         await RoadmapTestSupport.AssertProblemAsync(rejected, HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    [Trait("ExpectedGreenStage", "06")]
+    public async Task CurrentCustomerEmailCanChangeWithoutRewritingTheSignedSnapshot()
+    {
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/admin/licenses",
+            RoadmapTestSupport.ValidIssueRequest("snapshot") with { CustomerEmail = "first@example.com" });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var issued = await response.Content.ReadFromJsonAsync<IssueLicenseResultContract>()
+            ?? throw new InvalidOperationException("Issuance response was empty.");
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var license = await db.Licenses.Include(item => item.Customer)
+            .SingleAsync(item => item.LicenseId == issued.LicenseId);
+        var snapshot = license.MetadataJson;
+        license.Customer.Email = "second@example.com";
+        license.Customer.NormalizedEmail = "second@example.com";
+        await db.SaveChangesAsync();
+
+        Assert.Equal(snapshot, license.MetadataJson);
+        Assert.Equal("first@example.com", JsonDocument.Parse(license.MetadataJson)
+            .RootElement.GetProperty("contactEmail").GetString());
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "06")]
+    public async Task LicenseSearchUsesNormalizedCustomerEmailCaseInsensitively()
+    {
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/admin/licenses",
+            RoadmapTestSupport.ValidIssueRequest("email-search") with { CustomerEmail = "Search.Me@Example.COM" });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var data = scope.ServiceProvider.GetRequiredService<AdminDataService>();
+        var results = await data.SearchLicensesAsync("SEARCH.ME@EXAMPLE.COM", null, null, 1);
+        Assert.Contains(results.Items, item => item.Customer == "Phase 0 Customer email-search");
+    }
+
     [Theory]
-    [InlineData("made-up-product", "business", "subscription")]
-    [InlineData("gcexp", "professional", "subscription")]
-    [InlineData("gcexp", "business", "trial-ish")]
+    [InlineData("00000000-0000-0000-0000-000000000000", "business", "subscription")]
+    [InlineData("11111111-1111-1111-1111-111111111111", "professional", "subscription")]
+    [InlineData("11111111-1111-1111-1111-111111111111", "business", "trial-ish")]
     [Trait("ExpectedGreenStage", "07")]
     public async Task ForgedProductEditionAndLicenseTypeValuesAreRejected(
-        string product, string edition, string licenseType)
+        string productId, string edition, string licenseType)
     {
         using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
         var request = RoadmapTestSupport.ValidIssueRequest("controlled") with
         {
-            Product = product,
+            ProductId = Guid.Parse(productId),
             Edition = edition,
             LicenseType = licenseType
         };

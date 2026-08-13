@@ -97,7 +97,7 @@ public sealed class LicenseIdAllocationTests(PostgresWebFixture fixture)
             licenseId = "LIC-2000-0101FFFFFF",
             valid.CustomerName,
             valid.CustomerEmail,
-            valid.Product,
+            valid.ProductId,
             valid.Edition,
             valid.LicenseType,
             valid.ExpiresAt,
