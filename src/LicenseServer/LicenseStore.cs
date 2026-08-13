@@ -5,7 +5,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Globalization;
 using LicenseServer.Data;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using SoftwareLicensing;
 
 namespace LicenseServer;
@@ -13,16 +15,21 @@ namespace LicenseServer;
 internal sealed class LicenseStore(
     ApplicationDbContext db,
     LicenseIdAllocator licenseIds,
-    TimeProvider clock)
+    TimeProvider clock,
+    IActivationCodeGenerator activationCodeGenerator,
+    IActivationCodeHasher activationCodeHasher,
+    IDataProtectionProvider dataProtectionProvider,
+    IOptions<ActivationCodeOptions> activationCodeOptions)
 {
-    private static readonly char[] ActivationAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789".ToCharArray();
+    private readonly IDataProtector issuanceResultProtector = dataProtectionProvider.CreateProtector(
+        "LicenseServer.IssuanceResult.v1");
     private static readonly HashSet<string> IssuanceEditions = new(StringComparer.Ordinal)
     {
         "community", "project", "education", "consumer", "business", "smb", "enterprise", "corporate"
     };
 
     public async Task<StoreResult<IssuedLicense>> IssueAsync(
-        IssueLicenseRequest request, string actor, string correlationId,
+        IssueLicenseRequest request, IssuanceContext context,
         CancellationToken cancellationToken = default)
     {
         var now = clock.GetUtcNow();
@@ -39,7 +46,6 @@ internal sealed class LicenseStore(
         if (!LicenseTerms.TryCanonicalizeIssuanceExpiry(licenseType, request.ExpiresAt, now, out var expiry, out var error))
             return StoreResult<IssuedLicense>.BadRequest(error!);
 
-        var activationCode = GenerateActivationCode();
         var metadata = new JsonObject();
         if (request.Metadata is not null)
         {
@@ -47,19 +53,37 @@ internal sealed class LicenseStore(
                 metadata[item.Key] = JsonValue.Create(item.Value);
         }
 
+        var idempotency = ValidateIdempotency(context, request);
+        if (idempotency.Error is not null)
+            return StoreResult<IssuedLicense>.BadRequest(idempotency.Error);
+
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         try
         {
+            if (idempotency.Identity is not null
+                && await ReplayAsync(idempotency.Identity, now, cancellationToken) is { } replay)
+                return replay;
+
             // PostgreSQL serializes the single upserted counter row for this business date.
             // Read committed avoids whole-transaction serialization retries while the atomic
             // statement and unique license index retain concurrency safety. A later rollback
             // rolls back this allocation with the license, customer, entitlement, and audit row.
             var licenseId = await licenseIds.AllocateAsync(now, cancellationToken);
+            // Allocation locks the day's counter row. Recheck after acquiring it so two
+            // simultaneous submissions with one key cannot both proceed to issuance.
+            if (idempotency.Identity is not null
+                && await ReplayAsync(idempotency.Identity, now, cancellationToken) is { } serializedReplay)
+                return serializedReplay;
+
+            var activationCode = activationCodeGenerator.Generate();
+            var activationHash = activationCodeHasher.Hash(activationCode);
             var license = new LicenseRecord
             {
                 Id = Guid.NewGuid(), LicenseId = licenseId,
                 Customer = new Customer { Id = Guid.NewGuid(), Name = customerName, CreatedAt = now },
-                ActivationCodeHash = Hash(activationCode), MetadataJson = metadata.ToJsonString(),
+                ActivationCodeHash = activationHash.Value,
+                ActivationCodeHashVersion = activationHash.Version,
+                MetadataJson = metadata.ToJsonString(),
                 IssuedAt = now, ExpiresAt = expiry,
                 Entitlements =
                 [
@@ -71,17 +95,31 @@ internal sealed class LicenseStore(
                 ]
             };
             db.Licenses.Add(license);
-            AddAudit(actor, "license.issued", "license", licenseId, "success", new
+            AddAudit(context.Actor, "license.issued", "license", licenseId, "success", new
             {
                 customer = customerName, product, edition, licenseType, expiresAt = expiry,
-                seats = request.Seats, correlationId
+                seats = request.Seats, correlationId = context.CorrelationId
             }, now);
+            var issued = new IssuedLicense(
+                licenseId, activationCode, metadata,
+                [new IssuedEntitlement(product, edition, licenseType!, request.Seats, expiry)]);
+            if (idempotency.Identity is not null)
+            {
+                db.IssuanceIdempotencyRecords.Add(new IssuanceIdempotencyRecord
+                {
+                    Id = Guid.NewGuid(),
+                    PrincipalId = idempotency.Identity.PrincipalId,
+                    KeyHash = idempotency.Identity.KeyHash,
+                    RequestHash = idempotency.Identity.RequestHash,
+                    ProtectedResult = issuanceResultProtector.Protect(JsonSerializer.Serialize(issued)),
+                    CreatedAt = now,
+                    ExpiresAt = now.AddMinutes(Math.Clamp(activationCodeOptions.Value.IdempotencyWindowMinutes, 1, 15))
+                });
+            }
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 
-            return StoreResult<IssuedLicense>.Ok(new IssuedLicense(
-                licenseId, activationCode, metadata,
-                [new IssuedEntitlement(product, edition, licenseType!, request.Seats, expiry)]));
+            return StoreResult<IssuedLicense>.Ok(issued);
         }
         catch (LicenseIdExhaustedException exception)
         {
@@ -119,7 +157,10 @@ internal sealed class LicenseStore(
 
             if (license is null)
                 return StoreResult<ActiveActivation>.NotFound("License was not found.");
-            if (!FixedTimeMatches(request.ActivationCode, license.ActivationCodeHash))
+            if (!activationCodeHasher.Verify(
+                    request.ActivationCode,
+                    license.ActivationCodeHashVersion,
+                    license.ActivationCodeHash))
                 return StoreResult<ActiveActivation>.Unauthorized("Activation code is invalid.");
             if (LifecycleBlock(license, now) is { } blocked)
                 return StoreResult<ActiveActivation>.Forbidden(blocked);
@@ -511,13 +552,53 @@ internal sealed class LicenseStore(
         : license.ExpiresAt is not null && license.ExpiresAt <= now ? "License has expired."
         : null;
 
-    private static string GenerateActivationCode()
+    private static (IssuanceIdempotencyIdentity? Identity, string? Error) ValidateIdempotency(
+        IssuanceContext context,
+        IssueLicenseRequest request)
     {
-        var raw = new char[32];
-        for (var index = 0; index < raw.Length; index++)
-            raw[index] = ActivationAlphabet[RandomNumberGenerator.GetInt32(ActivationAlphabet.Length)];
-        var text = new string(raw);
-        return $"{text[..8]}-{text[8..12]}-{text[12..16]}-{text[16..20]}-{text[20..]}";
+        if (string.IsNullOrWhiteSpace(context.IdempotencyKey)) return (null, null);
+        if (context.IdempotencyKey.Length is < 16 or > 200)
+            return (null, "The idempotency key must be between 16 and 200 characters.");
+        if (string.IsNullOrWhiteSpace(context.PrincipalId))
+            return (null, "An authenticated principal is required for idempotent issuance.");
+
+        var requestJson = JsonSerializer.SerializeToUtf8Bytes(request);
+        return (new IssuanceIdempotencyIdentity(
+            context.PrincipalId[..Math.Min(context.PrincipalId.Length, 256)],
+            SHA256.HashData(Encoding.UTF8.GetBytes(context.IdempotencyKey)),
+            SHA256.HashData(requestJson)), null);
+    }
+
+    private async Task<StoreResult<IssuedLicense>?> ReplayAsync(
+        IssuanceIdempotencyIdentity identity,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var record = await db.IssuanceIdempotencyRecords.AsNoTracking().SingleOrDefaultAsync(
+            item => item.PrincipalId == identity.PrincipalId && item.KeyHash == identity.KeyHash,
+            cancellationToken);
+        if (record is null) return null;
+        if (!CryptographicOperations.FixedTimeEquals(record.RequestHash, identity.RequestHash))
+            return StoreResult<IssuedLicense>.Conflict("The idempotency key was already used for a different issuance request.");
+        if (record.ExpiresAt <= now)
+            return StoreResult<IssuedLicense>.Conflict("The idempotent retry window has expired; use a new key after confirming the original result.");
+
+        try
+        {
+            var issued = JsonSerializer.Deserialize<IssuedLicense>(
+                issuanceResultProtector.Unprotect(record.ProtectedResult));
+            return issued is null
+                ? StoreResult<IssuedLicense>.Conflict("The prior issuance result is unavailable.")
+                : StoreResult<IssuedLicense>.Ok(issued);
+        }
+        catch (CryptographicException)
+        {
+            return StoreResult<IssuedLicense>.Conflict("The prior issuance result is unavailable.");
+        }
+        catch (JsonException)
+        {
+            return StoreResult<IssuedLicense>.Conflict("The prior issuance result is unavailable.");
+        }
     }
 
     private static string? ValidateActivationRequest(ActivateRequest request)
@@ -578,7 +659,16 @@ internal sealed class LicenseStore(
     internal sealed record IssuedLicense(
         string LicenseId, string ActivationCode, JsonObject Metadata,
         IReadOnlyList<IssuedEntitlement> Entitlements);
+
+    private sealed record IssuanceIdempotencyIdentity(
+        string PrincipalId, byte[] KeyHash, byte[] RequestHash);
 }
+
+internal sealed record IssuanceContext(
+    string Actor,
+    string PrincipalId,
+    string CorrelationId,
+    string? IdempotencyKey);
 
 internal sealed record StoreResult<T>(bool Success, int StatusCode, string? Error, T? Value)
 {

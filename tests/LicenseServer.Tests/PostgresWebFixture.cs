@@ -90,6 +90,7 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["SEED_DEMO_LICENSE"] = "true",
                 ["DEFAULT_ADMIN_EMAIL"] = DatabaseInitializer.DefaultEmail,
                 ["DEFAULT_ADMIN_PASSWORD"] = DatabaseInitializer.DefaultPassword,
+                ["ActivationCodes:Pepper"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
                 ["Security:UseHttpsRedirection"] = "false"
             }));
         }

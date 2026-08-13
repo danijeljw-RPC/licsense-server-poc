@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,7 +29,9 @@ builder.Services.AddAuthentication(options =>
     {
         options.ApplicationCookie!.Configure(cookie =>
         {
-            cookie.Cookie.Name = "__Host-LicenseServer.Auth";
+            cookie.Cookie.Name = builder.Environment.IsDevelopment()
+                ? "LicenseServer.Auth"
+                : "__Host-LicenseServer.Auth";
             cookie.Cookie.HttpOnly = true;
             cookie.Cookie.SameSite = SameSiteMode.Strict;
             cookie.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
@@ -76,6 +79,39 @@ builder.Services.AddIdentityCore<ApplicationUser>(options =>
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
 builder.Services.AddOptions<LicensingOptions>()
     .BindConfiguration("Licensing");
+builder.Services.AddOptions<ActivationCodeOptions>()
+    .BindConfiguration("ActivationCodes")
+    .Validate(options => options.IdempotencyWindowMinutes is >= 1 and <= 15,
+        "ActivationCodes:IdempotencyWindowMinutes must be between 1 and 15.")
+    .ValidateOnStart();
+var configuredPepper = builder.Configuration["ActivationCodes:Pepper"];
+var ephemeralDevelopmentPepper = string.IsNullOrWhiteSpace(configuredPepper) && builder.Environment.IsDevelopment();
+byte[] activationCodePepper;
+if (ephemeralDevelopmentPepper)
+{
+    activationCodePepper = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+}
+else if (string.IsNullOrWhiteSpace(configuredPepper))
+{
+    throw new InvalidOperationException(
+        "ActivationCodes:Pepper is required outside Development. Supply at least 32 random bytes as Base64 through secret configuration (for example ActivationCodes__Pepper)." );
+}
+else
+{
+    try
+    {
+        activationCodePepper = Convert.FromBase64String(configuredPepper);
+    }
+    catch (FormatException exception)
+    {
+        throw new InvalidOperationException("ActivationCodes:Pepper must be valid Base64.", exception);
+    }
+
+    if (activationCodePepper.Length < 32)
+        throw new InvalidOperationException("ActivationCodes:Pepper must decode to at least 32 random bytes.");
+}
+builder.Services.AddSingleton<IActivationCodeGenerator, ActivationCodeGenerator>();
+builder.Services.AddSingleton<IActivationCodeHasher>(new ActivationCodeHasher(activationCodePepper));
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<ILicenseBusinessDateResolver, ConfiguredLicenseBusinessDateResolver>();
 builder.Services.AddScoped<LicenseIdAllocator>();
@@ -86,16 +122,23 @@ builder.Services.AddSingleton<LicenseEnvelopeSigner>();
 builder.Services.AddScoped<DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
 
+var dataProtection = builder.Services.AddDataProtection().SetApplicationName("LicenseServer");
 var dataProtectionPath = builder.Configuration["DataProtection:KeysPath"];
 if (!string.IsNullOrWhiteSpace(dataProtectionPath))
 {
     Directory.CreateDirectory(dataProtectionPath);
-    builder.Services.AddDataProtection()
-        .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath))
-        .SetApplicationName("LicenseServer");
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath));
 }
 
 var app = builder.Build();
+if (ephemeralDevelopmentPepper)
+{
+    var logEphemeralPepper = LoggerMessage.Define(
+        LogLevel.Warning,
+        new EventId(1001, "EphemeralActivationCodePepper"),
+        "ActivationCodes:Pepper is not configured. Development is using an ephemeral pepper; newly issued activation codes will not validate after restart. Configure a Base64 secret with at least 32 random bytes for persistent development data.");
+    logEphemeralPepper(app.Logger, null);
+}
 
 if (!app.Environment.IsDevelopment())
 {
@@ -209,8 +252,17 @@ adminApi.MapGet("/licenses/{licenseId}", async (string licenseId, AdminDataServi
 adminApi.MapPost("/licenses", async (
     IssueLicenseRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
+    var principalId = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+        ?? context.User.Identity?.Name
+        ?? "unknown";
     var result = await store.IssueAsync(
-        request, context.User.Identity?.Name ?? "unknown", context.TraceIdentifier, ct);
+        request,
+        new IssuanceContext(
+            context.User.Identity?.Name ?? principalId,
+            principalId,
+            context.TraceIdentifier,
+            context.Request.Headers["Idempotency-Key"].FirstOrDefault()),
+        ct);
     return result.Success
         ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
         : Problem(result);
