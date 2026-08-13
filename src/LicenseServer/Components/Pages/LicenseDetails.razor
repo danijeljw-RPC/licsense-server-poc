@@ -65,6 +65,11 @@ else
                             <label>New updates-until date<input type="date" name="UpdatesUntil" required /></label><label>Reason (minimum 3 characters)<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><button class="button" type="submit">Update coverage</button>
                         </form>
                     </article>
+                    <article class="panel"><h2>Edition</h2><p class="field-help">Current: @license.Entitlements.Single().Edition</p>
+                        <form method="post" action="@($"/licenses/{Uri.EscapeDataString(LicenseId)}/terms")"><AntiforgeryToken /><input type="hidden" name="Version" value="@license.Version" />
+                            <label>New edition<select name="Edition" required>@foreach (var edition in LicenseEditions.All) { <option value="@edition">@edition</option> }</select></label><label>Reason (minimum 3 characters)<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><button class="button" type="submit">Update edition</button>
+                        </form>
+                    </article>
                 </div>
             </Authorized>
         </AuthorizeView>

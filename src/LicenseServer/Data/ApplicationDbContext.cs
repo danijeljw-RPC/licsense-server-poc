@@ -9,6 +9,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 {
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<LicenseIdCounter> LicenseIdCounters => Set<LicenseIdCounter>();
+    public DbSet<ProductDefinition> ProductDefinitions => Set<ProductDefinition>();
     public DbSet<LicenseRecord> Licenses => Set<LicenseRecord>();
     public DbSet<IssuanceIdempotencyRecord> IssuanceIdempotencyRecords => Set<IssuanceIdempotencyRecord>();
     public DbSet<Entitlement> Entitlements => Set<Entitlement>();
@@ -30,6 +31,13 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<LicenseIdCounter>().ToTable(table => table.HasCheckConstraint(
             "CK_LicenseIdCounters_LastValue",
             "\"LastValue\" BETWEEN 0 AND 16777215"));
+        builder.Entity<ProductDefinition>().HasIndex(x => x.Code).IsUnique();
+        builder.Entity<ProductDefinition>().Property(x => x.Code).HasMaxLength(100);
+        builder.Entity<ProductDefinition>().Property(x => x.DisplayName).HasMaxLength(200);
+        builder.Entity<ProductDefinition>().Property(x => x.Description).HasMaxLength(2000);
+        builder.Entity<ProductDefinition>().ToTable(table => table.HasCheckConstraint(
+            "CK_ProductDefinitions_Code",
+            "\"Code\" ~ '^[a-z0-9][a-z0-9-]{0,99}$'"));
         builder.Entity<LicenseRecord>().HasIndex(x => x.LicenseId).IsUnique();
         builder.Entity<LicenseRecord>().Property(x => x.LicenseId).HasMaxLength(19);
         builder.Entity<LicenseRecord>().Property(x => x.MetadataJson).HasColumnType("jsonb");
@@ -62,10 +70,13 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<IssuanceIdempotencyRecord>().Property(x => x.ProtectedResult).HasColumnType("text");
         builder.Entity<IssuanceIdempotencyRecord>().HasIndex(x => new { x.PrincipalId, x.KeyHash }).IsUnique();
         builder.Entity<IssuanceIdempotencyRecord>().HasIndex(x => x.ExpiresAt);
-        builder.Entity<Entitlement>().HasIndex(x => new { x.LicenseRecordId, x.Product }).IsUnique();
+        builder.Entity<Entitlement>().HasIndex(x => x.LicenseRecordId).IsUnique();
+        builder.Entity<Entitlement>().HasOne(x => x.ProductDefinition).WithMany(x => x.Entitlements)
+            .HasForeignKey(x => x.ProductDefinitionId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<Entitlement>().ToTable(table =>
         {
             table.HasCheckConstraint("CK_Entitlements_LicenseType", "\"LicenseType\" IN ('perpetual', 'subscription', 'evaluation')");
+            table.HasCheckConstraint("CK_Entitlements_Edition", "\"Edition\" IN ('community', 'project', 'education', 'consumer', 'business', 'smb', 'enterprise', 'corporate')");
             table.HasCheckConstraint("CK_Entitlements_Seats", "\"Seats\" > 0");
         });
         builder.Entity<Activation>().HasIndex(x => x.ActivationId).IsUnique();
@@ -82,6 +93,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     {
         GuardImmutableAudit();
         GuardImmutableLicenseIds();
+        GuardImmutableProductCodes();
         GuardCustomerContactSnapshots();
         NormalizeExpiryPrecision();
         TouchVersions();
@@ -92,6 +104,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     {
         GuardImmutableAudit();
         GuardImmutableLicenseIds();
+        GuardImmutableProductCodes();
         GuardCustomerContactSnapshots();
         NormalizeExpiryPrecision();
         TouchVersions();
@@ -162,6 +175,20 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             {
                 throw new InvalidOperationException("License metadata.contactEmail must equal the normalized customer email at issuance.");
             }
+        }
+    }
+
+    private void GuardImmutableProductCodes()
+    {
+        if (ChangeTracker.Entries<ProductDefinition>().Any(entry =>
+                entry.State == EntityState.Modified
+                && entry.Property(item => item.Code).IsModified
+                && !string.Equals(
+                    entry.Property(item => item.Code).OriginalValue,
+                    entry.Property(item => item.Code).CurrentValue,
+                    StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException("Product code is immutable after creation.");
         }
     }
 

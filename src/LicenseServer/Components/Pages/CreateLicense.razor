@@ -1,8 +1,9 @@
 @page "/licenses/create"
 @rendermode InteractiveServer
-@attribute [Authorize(Policy = "Administrator")]
+@attribute [Authorize(Policy = "licenses.issue")]
 @implements IAsyncDisposable
 @inject AdminDataService Data
+@inject ProductCatalogService Products
 @inject AuthenticationStateProvider AuthenticationState
 @inject IJSRuntime JS
 @inject NavigationManager Navigation
@@ -49,9 +50,9 @@ else
                 <label>License ID<input value="Generated on issue" readonly /></label>
                 <label>Customer<input @bind="Input.CustomerName" @bind:event="oninput" /></label>
                 <label>Customer email<input type="email" @bind="Input.CustomerEmail" @bind:event="oninput" /></label>
-                <label>Product<input @bind="Input.Product" @bind:event="oninput" /></label>
-                <label>Edition<InputSelect @bind-Value="Input.Edition"><option value="business">Business</option><option value="community">Community</option><option value="project">Project</option><option value="education">Education</option><option value="consumer">Consumer</option><option value="smb">SMB</option><option value="enterprise">Enterprise</option><option value="corporate">Corporate</option></InputSelect></label>
-                <label>License type<InputSelect @bind-Value="Input.LicenseType"><option value="perpetual">Perpetual</option><option value="subscription">Subscription</option><option value="evaluation">Evaluation</option></InputSelect></label>
+                <label>Product<InputSelect @bind-Value="Input.ProductId"><option value="">Select an active product</option>@foreach (var product in products) { <option value="@product.Id">@product.DisplayName (@product.Code)</option> }</InputSelect></label>
+                <label>Edition<InputSelect @bind-Value="Input.Edition">@foreach (var edition in LicenseEditions.All) { <option value="@edition">@edition</option> }</InputSelect></label>
+                <label>License type<InputSelect @bind-Value="Input.LicenseType">@foreach (var licenseType in LicenseTerms.All) { <option value="@licenseType">@licenseType</option> }</InputSelect></label>
                 <label>Expiry (required for subscription/evaluation)<InputDate Type="InputDateType.DateTimeLocal" @bind-Value="Input.ExpiresAt" /></label>
                 <label>Seats<InputNumber @bind-Value="Input.Seats" /></label>
             </div>
@@ -71,12 +72,15 @@ else
     private bool isSubmitting;
     private string idempotencyToken = "";
     private LicenseStore.IssuedLicense? issued;
+    private IReadOnlyList<ProductCatalogItem> products = [];
     private IJSObjectReference? module;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         idempotencyToken = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
         Navigation.LocationChanged += HandleLocationChanged;
+        products = await Products.ActiveAsync();
+        Input.ProductId = products.FirstOrDefault()?.Id;
     }
 
     private async Task CreateAsync()

@@ -23,30 +23,26 @@ internal sealed class LicenseStore(
 {
     private readonly IDataProtector issuanceResultProtector = dataProtectionProvider.CreateProtector(
         "LicenseServer.IssuanceResult.v1");
-    private static readonly HashSet<string> IssuanceEditions = new(StringComparer.Ordinal)
-    {
-        "community", "project", "education", "consumer", "business", "smb", "enterprise", "corporate"
-    };
-
     public async Task<StoreResult<IssuedLicense>> IssueAsync(
         IssueLicenseRequest request, IssuanceContext context,
         CancellationToken cancellationToken = default)
     {
         var now = clock.GetUtcNow();
         var customerName = request.CustomerName?.Trim();
-        var product = request.Product?.Trim().ToLowerInvariant();
         var edition = request.Edition?.Trim().ToLowerInvariant();
         var licenseType = request.LicenseType?.Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(customerName) || string.IsNullOrWhiteSpace(product))
-            return StoreResult<IssuedLicense>.BadRequest("Customer name and product are required.");
+        if (string.IsNullOrWhiteSpace(customerName))
+            return StoreResult<IssuedLicense>.BadRequest("Customer name is required.", "customerName");
+        if (request.ProductId is null || request.ProductId == Guid.Empty)
+            return StoreResult<IssuedLicense>.BadRequest("An active product ID is required.", "productId");
         if (!CustomerEmails.TryNormalize(request.CustomerEmail, out var customerEmail, out var emailError))
-            return StoreResult<IssuedLicense>.BadRequest(emailError!);
-        if (edition is null || !IssuanceEditions.Contains(edition))
-            return StoreResult<IssuedLicense>.BadRequest("Edition is not an approved controlled value.");
+            return StoreResult<IssuedLicense>.BadRequest(emailError!, "customerEmail");
+        if (!LicenseEditions.IsSupported(edition))
+            return StoreResult<IssuedLicense>.BadRequest("Edition is not an approved controlled value.", "edition");
         if (request.Seats <= 0)
-            return StoreResult<IssuedLicense>.BadRequest("Seats must be greater than zero.");
+            return StoreResult<IssuedLicense>.BadRequest("Seats must be greater than zero.", "seats");
         if (!LicenseTerms.TryCanonicalizeIssuanceExpiry(licenseType, request.ExpiresAt, now, out var expiry, out var error))
-            return StoreResult<IssuedLicense>.BadRequest(error!);
+            return StoreResult<IssuedLicense>.BadRequest(error!, LicenseTerms.IsSupportedType(licenseType) ? "expiresAt" : "licenseType");
 
         var metadata = new JsonObject();
         if (request.Metadata is not null)
@@ -68,6 +64,12 @@ internal sealed class LicenseStore(
             if (idempotency.Identity is not null
                 && await ReplayAsync(idempotency.Identity, now, cancellationToken) is { } replay)
                 return replay;
+
+            var product = await db.ProductDefinitions.SingleOrDefaultAsync(
+                item => item.Id == request.ProductId.Value && item.IsActive,
+                cancellationToken);
+            if (product is null)
+                return StoreResult<IssuedLicense>.BadRequest("The selected product does not exist or is archived.", "productId");
 
             // PostgreSQL serializes the single upserted counter row for this business date.
             // Read committed avoids whole-transaction serialization retries while the atomic
@@ -98,20 +100,21 @@ internal sealed class LicenseStore(
                 [
                     new Entitlement
                     {
-                        Id = Guid.NewGuid(), Product = product, Edition = edition, LicenseType = licenseType!,
-                        Seats = request.Seats, UpdatesUntil = request.UpdatesUntil, License = null!
+                        Id = Guid.NewGuid(), Edition = edition!, LicenseType = licenseType!,
+                        ProductDefinitionId = product.Id, ProductDefinition = product,
+                        Product = product.Code, Seats = request.Seats, UpdatesUntil = request.UpdatesUntil, License = null!
                     }
                 ]
             };
             db.Licenses.Add(license);
             AddAudit(context.Actor, "license.issued", "license", licenseId, "success", new
             {
-                customer = customerName, product, edition, licenseType, expiresAt = expiry,
+                customer = customerName, productId = product.Id, product = product.Code, edition, licenseType, expiresAt = expiry,
                 seats = request.Seats, correlationId = context.CorrelationId
             }, now);
             var issued = new IssuedLicense(
                 licenseId, activationCode, metadata,
-                [new IssuedEntitlement(product, edition, licenseType!, request.Seats, expiry)]);
+                [new IssuedEntitlement(product.Code, edition!, licenseType!, request.Seats, expiry)]);
             if (idempotency.Identity is not null)
             {
                 db.IssuanceIdempotencyRecords.Add(new IssuanceIdempotencyRecord
@@ -400,7 +403,10 @@ internal sealed class LicenseStore(
     {
         if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length < 3)
             return StoreResult<bool>.BadRequest("An amendment reason of at least three characters is required.");
-        if (request.ExpiresAt is null && request.Seats is null && request.UpdatesUntil is null)
+        var edition = request.Edition?.Trim().ToLowerInvariant();
+        if (request.Edition is not null && !LicenseEditions.IsSupported(edition))
+            return StoreResult<bool>.BadRequest("Edition is not an approved controlled value.");
+        if (request.ExpiresAt is null && request.Seats is null && request.UpdatesUntil is null && edition is null)
             return StoreResult<bool>.BadRequest("At least one supported term must be supplied.");
         if (request.Seats is <= 0)
             return StoreResult<bool>.BadRequest("Seats must be greater than zero.");
@@ -423,15 +429,17 @@ internal sealed class LicenseStore(
         {
             expiresAt = license.ExpiresAt?.AddTicks(license.ExpirySubMicrosecondTicks),
             entitlement.Seats,
-            entitlement.UpdatesUntil
+            entitlement.UpdatesUntil,
+            entitlement.Edition
         };
         if (request.ExpiresAt is not null) license.ExpiresAt = request.ExpiresAt.Value.ToUniversalTime();
         if (request.Seats is not null) entitlement.Seats = request.Seats.Value;
         if (request.UpdatesUntil is not null) entitlement.UpdatesUntil = request.UpdatesUntil;
+        if (edition is not null) entitlement.Edition = edition;
         db.Entry(license).Property(x => x.Version).IsModified = true;
         AddAudit(actor, "license.terms-amended", "license", licenseId, "success", new
         {
-            old, @new = new { expiresAt = license.ExpiresAt, entitlement.Seats, entitlement.UpdatesUntil },
+            old, @new = new { expiresAt = license.ExpiresAt, entitlement.Seats, entitlement.UpdatesUntil, entitlement.Edition },
             reason = request.Reason.Trim(), version = license.Version + 1, correlationId
         }, now);
         await db.SaveChangesAsync(cancellationToken);
@@ -679,10 +687,10 @@ internal sealed record IssuanceContext(
     string CorrelationId,
     string? IdempotencyKey);
 
-internal sealed record StoreResult<T>(bool Success, int StatusCode, string? Error, T? Value)
+internal sealed record StoreResult<T>(bool Success, int StatusCode, string? Error, T? Value, string? Field = null)
 {
     public static StoreResult<T> Ok(T value) => new(true, 200, null, value);
-    public static StoreResult<T> BadRequest(string error) => new(false, 400, error, default);
+    public static StoreResult<T> BadRequest(string error, string? field = null) => new(false, 400, error, default, field);
     public static StoreResult<T> Unauthorized(string error) => new(false, 401, error, default);
     public static StoreResult<T> Forbidden(string error) => new(false, 403, error, default);
     public static StoreResult<T> NotFound(string error) => new(false, 404, error, default);

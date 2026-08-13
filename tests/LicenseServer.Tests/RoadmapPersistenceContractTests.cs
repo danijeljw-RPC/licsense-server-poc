@@ -72,6 +72,10 @@ public sealed class RoadmapPersistenceContractTests(PostgresWebFixture fixture)
         Assert.NotNull(product.FindProperty("IsActive"));
         var entitlement = db.Model.FindEntityType(typeof(Entitlement))!;
         Assert.Contains(entitlement.GetForeignKeys(), key => key.PrincipalEntityType == product);
+        Assert.Contains(entitlement.GetIndexes(), index =>
+            index.IsUnique
+            && index.Properties.Count == 1
+            && index.Properties[0].Name == nameof(Entitlement.LicenseRecordId));
     }
 
     [Fact]

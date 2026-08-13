@@ -46,7 +46,7 @@ builder.Services.AddAuthentication(options =>
 
 var authorization = builder.Services.AddAuthorizationBuilder()
     .AddPolicy("Administrator", policy => policy.RequireRole(DatabaseInitializer.AdministratorRole));
-foreach (var permission in new[] { "licenses.read", "licenses.issue", "licenses.update", "licenses.cancel", "licenses.revoke", "activations.manage", "audit.read" })
+foreach (var permission in new[] { "licenses.read", "licenses.issue", "licenses.update", "licenses.cancel", "licenses.revoke", "activations.manage", "products.read", "products.manage", "audit.read" })
 {
     authorization.AddPolicy(permission, policy => policy.RequireAssertion(context =>
         context.User.IsInRole(DatabaseInitializer.AdministratorRole)
@@ -117,6 +117,7 @@ builder.Services.AddSingleton<ILicenseBusinessDateResolver, ConfiguredLicenseBus
 builder.Services.AddScoped<LicenseIdAllocator>();
 builder.Services.AddScoped<LicenseStore>();
 builder.Services.AddScoped<AdminDataService>();
+builder.Services.AddScoped<ProductCatalogService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddSingleton<LicenseEnvelopeSigner>();
 builder.Services.AddScoped<DatabaseInitializer>();
@@ -249,6 +250,43 @@ adminApi.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) 
 adminApi.MapGet("/licenses/{licenseId}", async (string licenseId, AdminDataService data, CancellationToken ct) =>
     await data.GetLicenseAsync(licenseId, ct) is { } item ? Results.Ok(item) : Results.NotFound())
     .RequireAuthorization("licenses.read");
+adminApi.MapGet("/products", async (string? search, ProductCatalogService catalog, CancellationToken ct) =>
+    Results.Ok(await catalog.SearchAsync(search, ct)))
+    .RequireAuthorization("products.read");
+adminApi.MapPost("/products", async (
+    CreateProductRequest request, ProductCatalogService catalog, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try
+    {
+        var product = await catalog.CreateAsync(request.Code, request.DisplayName, request.Description,
+            context.User.Identity?.Name ?? "unknown", ct);
+        return Results.Created($"/api/v1/admin/products/{product.Id}", product);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["product"] = [exception.Message] });
+    }
+}).RequireAuthorization("products.manage");
+adminApi.MapPatch("/products/{id:guid}", async (
+    Guid id, UpdateProductRequest request, ProductCatalogService catalog, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try
+    {
+        if (request.DisplayName is not null)
+            await catalog.UpdateAsync(id, request.DisplayName, request.Description, context.User.Identity?.Name ?? "unknown", ct);
+        if (request.IsActive is not null)
+            await catalog.SetActiveAsync(id, request.IsActive.Value, context.User.Identity?.Name ?? "unknown", ct);
+        return Results.NoContent();
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["product"] = [exception.Message] });
+    }
+}).RequireAuthorization("products.manage");
 adminApi.MapPost("/licenses", async (
     IssueLicenseRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
@@ -265,7 +303,7 @@ adminApi.MapPost("/licenses", async (
         ct);
     return result.Success
         ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
-        : Problem(result);
+        : IssueProblem(result);
 }).RequireAuthorization("licenses.issue")
   .WithDescription("Issues one license transactionally. Online lifecycle changes are immediate; previously downloaded offline files cannot be recalled.");
 adminApi.MapPost("/licenses/{licenseId}/revoke", async (
@@ -342,7 +380,8 @@ app.MapPost("/licenses/{licenseId}/terms", async (string licenseId, HttpRequest 
         System.Globalization.DateTimeStyles.AssumeUniversal, out var expiryValue) ? expiryValue.ToUniversalTime() : null;
     int? seats = int.TryParse(form["Seats"], out var seatsValue) ? seatsValue : null;
     DateOnly? updates = DateOnly.TryParse(form["UpdatesUntil"], out var updatesValue) ? updatesValue : null;
-    var result = await store.AmendTermsAsync(licenseId, new AmendTermsRequest(expires, seats, updates, form["Reason"], version),
+    var edition = string.IsNullOrWhiteSpace(form["Edition"]) ? null : form["Edition"].ToString();
+    var result = await store.AmendTermsAsync(licenseId, new AmendTermsRequest(expires, seats, updates, form["Reason"], version, edition),
         context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow, context.TraceIdentifier, ct);
     return result.Success ? LifecycleRedirect(licenseId, "notice", "License terms updated.") : LifecycleRedirect(licenseId, "error", result.Error);
 }).RequireAuthorization("licenses.update").WithMetadata(new RequireAntiforgeryTokenAttribute(true));
@@ -397,6 +436,11 @@ static IResult Problem<T>(StoreResult<T> result) => Results.Problem(
     },
     detail: result.Error,
     statusCode: result.StatusCode);
+
+static IResult IssueProblem(StoreResult<LicenseStore.IssuedLicense> result) =>
+    result.StatusCode == StatusCodes.Status400BadRequest && result.Field is not null
+        ? Results.ValidationProblem(new Dictionary<string, string[]> { [result.Field] = [result.Error ?? "Invalid value."] })
+        : Problem(result);
 
 static bool PostedConfirmation(IFormCollection form) =>
     string.Equals(form["Confirmed"], "true", StringComparison.OrdinalIgnoreCase)

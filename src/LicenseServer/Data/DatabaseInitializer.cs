@@ -16,6 +16,7 @@ public sealed partial class DatabaseInitializer(
     ILogger<DatabaseInitializer> logger)
 {
     public const string AdministratorRole = "Administrator";
+    public static readonly Guid KnownProductId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     public const string DefaultEmail = "admin@localhost.com";
     public const string DefaultPassword = "LocalAdmin!7Kp9-Vx3-Rm8-Qz2";
 
@@ -27,6 +28,7 @@ public sealed partial class DatabaseInitializer(
             await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_lock(7349210862)", cancellationToken);
             await db.Database.MigrateAsync(cancellationToken);
             await SeedRoleAndAdminAsync();
+            await SeedProductsAsync(cancellationToken);
             await SeedDemoDataAsync(cancellationToken);
         }
         finally
@@ -34,6 +36,25 @@ public sealed partial class DatabaseInitializer(
             try { await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_unlock(7349210862)", cancellationToken); }
             finally { await db.Database.CloseConnectionAsync(); }
         }
+    }
+
+    private async Task SeedProductsAsync(CancellationToken cancellationToken)
+    {
+        var product = await db.ProductDefinitions.SingleOrDefaultAsync(
+            item => item.Code == "gcexp", cancellationToken);
+        if (product is not null) return;
+        var now = clock.GetUtcNow();
+        db.ProductDefinitions.Add(new ProductDefinition
+        {
+            Id = KnownProductId,
+            Code = "gcexp",
+            DisplayName = "GCE Experience",
+            Description = "Existing product retained from pre-catalog license records.",
+            IsActive = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await db.SaveChangesAsync(cancellationToken);
     }
 
     private async Task SeedRoleAndAdminAsync()
@@ -85,6 +106,7 @@ public sealed partial class DatabaseInitializer(
         if (!GetBoolean("SEED_DEMO_LICENSE", environment.IsDevelopment())) return;
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        var product = await db.ProductDefinitions.SingleAsync(item => item.Code == "gcexp", cancellationToken);
 
         var customer = await db.Customers.SingleOrDefaultAsync(x => x.ExternalId == "POC-CUSTOMER", cancellationToken);
         if (customer is null)
@@ -122,8 +144,10 @@ public sealed partial class DatabaseInitializer(
                     new Entitlement
                     {
                         Id = Guid.NewGuid(),
+                        ProductDefinitionId = product.Id,
+                        ProductDefinition = product,
                         Product = "gcexp",
-                        Edition = "professional",
+                        Edition = "business",
                         LicenseType = "perpetual",
                         Seats = 1,
                         UpdatesUntil = new DateOnly(2027, 8, 12),

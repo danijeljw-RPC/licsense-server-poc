@@ -125,7 +125,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         CancellationToken cancellationToken = default)
     {
         var result = await store.IssueAsync(new IssueLicenseRequest(
-            input.CustomerName, input.CustomerEmail, input.Product, input.Edition, input.LicenseType,
+            input.CustomerName, input.CustomerEmail, input.ProductId, input.Edition, input.LicenseType,
             input.ExpiresAt, input.Seats, input.UpdatesUntil, null),
             new IssuanceContext(actor, principalId, Guid.NewGuid().ToString("D"), idempotencyKey),
             cancellationToken);
@@ -157,7 +157,7 @@ public sealed class CreateLicenseInput
 {
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(200)] public string CustomerName { get; set; } = "";
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.EmailAddress, System.ComponentModel.DataAnnotations.StringLength(320)] public string CustomerEmail { get; set; } = "";
-    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Product { get; set; } = "";
+    [System.ComponentModel.DataAnnotations.Required] public Guid? ProductId { get; set; }
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Edition { get; set; } = "business";
     [System.ComponentModel.DataAnnotations.Required] public string LicenseType { get; set; } = "perpetual";
     [System.ComponentModel.DataAnnotations.Range(1, 100000)] public int Seats { get; set; } = 1;

@@ -199,17 +199,17 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
     }
 
     [Theory]
-    [InlineData("made-up-product", "business", "subscription")]
-    [InlineData("gcexp", "professional", "subscription")]
-    [InlineData("gcexp", "business", "trial-ish")]
+    [InlineData("00000000-0000-0000-0000-000000000000", "business", "subscription")]
+    [InlineData("11111111-1111-1111-1111-111111111111", "professional", "subscription")]
+    [InlineData("11111111-1111-1111-1111-111111111111", "business", "trial-ish")]
     [Trait("ExpectedGreenStage", "07")]
     public async Task ForgedProductEditionAndLicenseTypeValuesAreRejected(
-        string product, string edition, string licenseType)
+        string productId, string edition, string licenseType)
     {
         using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
         var request = RoadmapTestSupport.ValidIssueRequest("controlled") with
         {
-            Product = product,
+            ProductId = Guid.Parse(productId),
             Edition = edition,
             LicenseType = licenseType
         };
