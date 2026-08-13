@@ -25,6 +25,100 @@ internal sealed class LicenseStore(
 {
     private readonly IDataProtector issuanceResultProtector = dataProtectionProvider.CreateProtector(
         "LicenseServer.IssuanceResult.v1");
+
+    internal async Task<StoreResult<IssuedLicense>> IssueForBillingAsync(
+        IssueLicenseRequest request,
+        Customer customer,
+        IssuanceContext context,
+        CancellationToken cancellationToken = default)
+    {
+        if (db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("Billing issuance must participate in the billing transaction.");
+        var now = clock.GetUtcNow();
+        var edition = request.Edition?.Trim().ToLowerInvariant();
+        var licenseType = request.LicenseType?.Trim().ToLowerInvariant();
+        if (!CustomerEmails.TryNormalize(customer.Email, out var customerEmail, out var emailError))
+            return StoreResult<IssuedLicense>.BadRequest(emailError!, "customerEmail");
+        if (request.ProductId is null || request.ProductId == Guid.Empty)
+            return StoreResult<IssuedLicense>.BadRequest("An active product ID is required.", "productId");
+        if (!LicenseEditions.IsSupported(edition))
+            return StoreResult<IssuedLicense>.BadRequest("Edition is not an approved controlled value.", "edition");
+        if (request.Seats <= 0)
+            return StoreResult<IssuedLicense>.BadRequest("Seats must be greater than zero.", "seats");
+        if (!LicenseTerms.TryCanonicalizeIssuanceExpiry(licenseType, request.ExpiresAt, now, out var expiry, out var error))
+            return StoreResult<IssuedLicense>.BadRequest(error!, "expiresAt");
+
+        var product = await db.ProductDefinitions.SingleOrDefaultAsync(
+            item => item.Id == request.ProductId.Value && item.IsActive, cancellationToken);
+        if (product is null)
+            return StoreResult<IssuedLicense>.BadRequest("The selected product does not exist or is archived.", "productId");
+
+        var metadata = new JsonObject { ["contactEmail"] = customerEmail };
+        var activationCode = activationCodeGenerator.Generate();
+        var activationHash = activationCodeHasher.Hash(activationCode);
+        var licenseId = await licenseIds.AllocateAsync(now, cancellationToken);
+        var license = new LicenseRecord
+        {
+            Id = Guid.NewGuid(), LicenseId = licenseId, CustomerId = customer.Id, Customer = customer,
+            ActivationCodeHash = activationHash.Value, ActivationCodeHashVersion = activationHash.Version,
+            MetadataJson = metadata.ToJsonString(), IssuedAt = now, ExpiresAt = expiry,
+            Entitlements =
+            [
+                new Entitlement
+                {
+                    Id = Guid.NewGuid(), ProductDefinitionId = product.Id, ProductDefinition = product,
+                    Product = product.Code, Edition = edition!, LicenseType = licenseType!, Seats = request.Seats,
+                    UpdatesUntil = request.UpdatesUntil, License = null!
+                }
+            ]
+        };
+        db.Licenses.Add(license);
+        AddAudit(context.Actor, "license.issued", "license", licenseId, "success", new
+        {
+            customerId = customer.Id, productId = product.Id, product = product.Code, edition, licenseType,
+            expiresAt = expiry, seats = request.Seats, correlationId = context.CorrelationId
+        }, now);
+        await db.SaveChangesAsync(cancellationToken);
+        return StoreResult<IssuedLicense>.Ok(new IssuedLicense(
+            licenseId, activationCode, metadata,
+            [new IssuedEntitlement(product.Code, edition!, licenseType!, request.Seats, expiry)]));
+    }
+
+    internal async Task<StoreResult<bool>> ApplyBillingTermsAsync(
+        LicenseRecord license,
+        ProductDefinition product,
+        string edition,
+        int seats,
+        DateTimeOffset expiry,
+        string eventId,
+        string action,
+        CancellationToken cancellationToken = default)
+    {
+        if (db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("Billing terms must participate in the billing transaction.");
+        if (!LicenseEditions.IsSupported(edition) || seats <= 0)
+            return StoreResult<bool>.BadRequest("Mapped billing terms are invalid.");
+        await db.Entry(license).Collection(item => item.Entitlements).LoadAsync(cancellationToken);
+        if (license.Entitlements.Count != 1)
+            return StoreResult<bool>.Conflict("Billing terms require exactly one entitlement.");
+        var entitlement = license.Entitlements[0];
+        var old = new { license.ExpiresAt, entitlement.Product, entitlement.Edition, entitlement.Seats };
+        license.ExpiresAt = expiry.ToUniversalTime();
+        entitlement.ProductDefinitionId = product.Id;
+        entitlement.ProductDefinition = product;
+        entitlement.Product = product.Code;
+        entitlement.Edition = edition;
+        entitlement.Seats = seats;
+        db.Entry(license).Property(item => item.Version).IsModified = true;
+        AddAudit("billing:stripe", action, "license", license.LicenseId, "success", new
+        {
+            eventId, old,
+            @new = new { expiresAt = expiry, product = product.Code, edition, seats },
+            correlationId = eventId
+        }, clock.GetUtcNow());
+        await db.SaveChangesAsync(cancellationToken);
+        return StoreResult<bool>.Ok(true);
+    }
     public async Task<StoreResult<IssuedLicense>> IssueAsync(
         IssueLicenseRequest request, IssuanceContext context,
         CancellationToken cancellationToken = default)

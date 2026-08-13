@@ -168,6 +168,12 @@ builder.Services.AddOptions<BillingWorkerOptions>()
     .Validate(options => options.MaxAttempts is >= 1 and <= 20, "Billing:MaxAttempts must be between 1 and 20.")
     .Validate(options => options.LeaseSeconds is >= 30 and <= 900, "Billing:LeaseSeconds must be between 30 and 900.")
     .ValidateOnStart();
+builder.Services.AddOptions<BillingPolicyOptions>()
+    .BindConfiguration("Billing")
+    .Validate(options => options.GracePeriodDays is >= 1 and <= 90, "Billing:GracePeriodDays must be between 1 and 90.")
+    .Validate(options => options.RefundAction is "review" or "suspend", "Billing:RefundAction must be review or suspend.")
+    .Validate(options => options.DisputeAction is "review" or "suspend", "Billing:DisputeAction must be review or suspend.")
+    .ValidateOnStart();
 builder.Services.Configure<EmailWorkerOptions>(options =>
     options.Enabled = builder.Configuration.GetValue("Email:WorkerEnabled", true));
 builder.Services.AddScoped<TransactionalEmailSender>();
@@ -177,8 +183,12 @@ builder.Services.AddScoped<EmailOutboxProcessor>();
 builder.Services.AddScoped<MailerSendWebhookService>();
 builder.Services.AddHostedService<EmailOutboxWorker>();
 builder.Services.AddScoped<StripeWebhookReceiver>();
-builder.Services.AddScoped<IBillingEventProcessor, CategorizingBillingEventProcessor>();
+builder.Services.AddScoped<IStripeCurrentStateFetcher, StripeCurrentStateFetcher>();
+builder.Services.AddScoped<IStripeBillingStateProvider, StripeBillingStateProvider>();
+builder.Services.AddScoped<StripeBillingPolicyProcessor>();
+builder.Services.AddScoped<IBillingEventProcessor, StripeBillingEventProcessor>();
 builder.Services.AddScoped<BillingInboxProcessor>();
+builder.Services.AddScoped<BillingOperationsService>();
 builder.Services.AddHostedService<BillingInboxWorker>();
 var mailerSendToken = builder.Configuration["MailerSend:ApiToken"];
 var mailerSendFrom = builder.Configuration["MailerSend:FromEmail"];
@@ -578,6 +588,23 @@ adminApi.MapGet("/audit", async (
     AdminDataService data, CancellationToken ct) =>
     Results.Ok(await data.GetAuditAsync(action, actor, targetType, targetId, take ?? 200, ct)))
     .RequireAuthorization(Permissions.AuditRead);
+adminApi.MapGet("/billing/events", async (
+    string? status, int? take, BillingOperationsService service, CancellationToken ct) =>
+    Results.Ok(await service.ListAsync(status, take ?? 100, ct)))
+    .RequireAuthorization(Permissions.BillingManage)
+    .WithDescription("Lists redacted Stripe inbox state and non-secret provider identifiers. Raw payloads are never returned.");
+adminApi.MapPost("/billing/events/{id:guid}/reprocess", async (
+    Guid id, BillingOperationsService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { return await service.ReprocessAsync(id, ct) ? Results.NoContent() : Results.NotFound(); }
+    catch (InvalidOperationException exception)
+    {
+        return Results.Problem(title: "Event cannot be reprocessed", detail: exception.Message, statusCode: 409);
+    }
+}).RequireAuthorization(Permissions.BillingManage)
+  .WithDescription("Resets only process state after an operator repairs mappings or configuration; payload and business data are immutable.");
 adminApi.MapGet("/api-keys", async (
     string? ownerUserId, ApiCredentialService service, HttpContext context, CancellationToken ct) =>
 {

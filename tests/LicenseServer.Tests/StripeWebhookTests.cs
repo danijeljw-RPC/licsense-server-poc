@@ -106,9 +106,14 @@ public sealed class StripeWebhookTests(PostgresWebFixture fixture)
             .Where(item => item.ProviderEventId == newerId || item.ProviderEventId == olderId)
             .OrderBy(item => item.ProviderEventId).ToListAsync();
         Assert.Equal(2, rows.Count);
-        Assert.All(rows, row => Assert.Equal("categorized", row.Status));
-        Assert.Equal("subscription", rows.Single(row => row.ProviderEventId == newerId).Category);
-        Assert.Equal("payment_failure", rows.Single(row => row.ProviderEventId == olderId).Category);
+        var newer = rows.Single(row => row.ProviderEventId == newerId);
+        var olderResult = rows.Single(row => row.ProviderEventId == olderId);
+        Assert.Equal("subscription", newer.Category);
+        Assert.Equal(BillingInboxStatus.Quarantined, newer.Status);
+        Assert.Equal("unknown_subscription_mapping", newer.LastErrorCode);
+        Assert.Equal("payment_failure", olderResult.Category);
+        Assert.Equal(BillingInboxStatus.Categorized, olderResult.Status);
+        Assert.Equal("current_state_unavailable", olderResult.LastErrorCode);
         Assert.All(rows, row => Assert.Null(row.LeaseId));
     }
 

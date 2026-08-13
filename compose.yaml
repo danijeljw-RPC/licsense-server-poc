@@ -53,6 +53,9 @@ services:
       Stripe__ApiKey: ${STRIPE_API_KEY:?Set STRIPE_API_KEY in .env}
       Stripe__WebhookSecret: ${STRIPE_WEBHOOK_SECRET:?Set STRIPE_WEBHOOK_SECRET in .env}
       Stripe__ApiVersion: 2026-07-29.dahlia
+      Billing__GracePeriodDays: ${BILLING_GRACE_PERIOD_DAYS:-7}
+      Billing__RefundAction: ${BILLING_REFUND_ACTION:-review}
+      Billing__DisputeAction: ${BILLING_DISPUTE_ACTION:-review}
       CustomerPortal__PublicBaseUrl: ${CUSTOMER_PORTAL_PUBLIC_BASE_URL:?Set CUSTOMER_PORTAL_PUBLIC_BASE_URL in .env}
       RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-false}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
