@@ -150,9 +150,8 @@ passkey, or browser-login credentials and exist only to own scoped automation ke
 PostgreSQL serializes System Administrator disable/demotion operations so concurrent
 requests cannot remove the final enabled administrator. Disabling an identity changes
 its security stamp, rejects subsequent requests, calls the owned-credential revocation
-hook, and writes a secret-free audit event. Until transactional email is enabled in
-stage 12, Development shows a newly generated setup link once; Production refuses to
-reveal it and requires configured delivery.
+hook, writes a secret-free audit event, and queues invitation/reset delivery through
+the transactional email outbox. Setup links are never returned by production APIs.
 
 ### Scoped API credentials
 
@@ -236,6 +235,34 @@ Customer logout requires antiforgery and clears only the customer session. Devic
 deactivation, contact-email changes, and renewal mutations are deliberately unavailable;
 future sensitive operations must begin with a fresh email challenge.
 
+### Stripe billing and licensing policy
+
+`POST /api/v1/integrations/stripe/webhook` is anonymous transport only. It reads the
+untouched body, verifies `Stripe-Signature` with Stripe.net before parsing or writing,
+encrypts verified payloads with Data Protection, and inserts a unique provider event ID
+into `WebhookInbox`. Duplicate delivery returns success. Invalid signatures and
+malformed payloads create no inbox, customer, order, license, audit, or email rows.
+
+The billing worker leases rows with `FOR UPDATE SKIP LOCKED`. Stripe customer, Product,
+Price, subscription, Checkout Session, and invoice IDs live only in dedicated mapping
+tables. `BillingContract` and `LicenseOrder` remain provider-neutral, while license
+issuance and terms changes use `LicenseStore`. Provider IDs and payment data never enter
+signed metadata.
+
+Default policy is seven days of payment grace, paid-through cancellation, and review
+for refunds/disputes. `Billing__RefundAction` and `Billing__DisputeAction` can be set to
+`suspend` deliberately. Purchases issue one license and queue its one-time activation
+email transactionally; renewals are monotonic and idempotent by invoice; payment
+recovery clears grace; cancellation reversal and plan changes follow current provider
+state. Unknown/conflicting mappings quarantine without business side effects.
+
+Operators with `billing.manage` can list redacted status at
+`GET /api/v1/admin/billing/events` and reset eligible processing state at
+`POST /api/v1/admin/billing/events/{id}/reprocess`. Raw payloads and arbitrary mutation
+are not exposed. See [`docs/operator-runbook.md`](docs/operator-runbook.md) for exact
+configuration and recovery, and [`docs/roadmap-traceability.md`](docs/roadmap-traceability.md)
+for final acceptance evidence.
+
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:
@@ -263,7 +290,12 @@ dotnet build SoftwareLicensing.slnx --configuration Release
 docker build --tag license-server:test .
 ```
 
-`Test-DatabaseAndAuth.ps1` creates a uniquely named PostgreSQL test container, runs migration, seed-idempotency, authorization, forced-password, TOTP/recovery-code, passkey-service, activation/conflict/refresh/transfer/revocation/offline-signature tests, and removes the container in `finally`. `Test-ActivationFlow.ps1` also starts its own isolated PostgreSQL database and LicenseServer process; it does **not** need or use a manually launched server. Both scripts clean up their temporary processes and files unless their explicit keep switch is used.
+`Test-DatabaseAndAuth.ps1` creates a uniquely named PostgreSQL test container and runs
+clean migration/repeated seed, authorization, one-time-secret, concurrency, email,
+customer-access, Stripe webhook/policy, activation, revocation, and offline-boundary
+tests. `Test-ActivationFlow.ps1` starts its own isolated PostgreSQL database and
+LicenseServer process; it does **not** need a manually launched server. The scripts
+remove their temporary resources unless an explicit keep switch is used.
 
 For the final container smoke test:
 
@@ -276,7 +308,7 @@ docker compose down
 
 ### Security boundaries and production work
 
-The development private key is intentionally mounted as a file for this PoC. Production must replace `LicenseEnvelopeSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database passwords and TLS keys in a secret manager or orchestrator secrets, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, configure real recovery email, add rate limiting and monitoring, and back up both PostgreSQL and signing-key metadata.
+The development private key is intentionally mounted as a file for this PoC. Production must replace `LicenseEnvelopeSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database, MailerSend, Stripe, webhook, and TLS secrets in a secret manager, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, add monitoring, and back up PostgreSQL, Data Protection keys, and signing-key metadata as one recovery set.
 
 Signed license JSON provides authenticity, not confidentiality. Do not put secrets or unnecessary personal information in it. Device IDs remain spoofable software identifiers rather than hardware proof. Offline files cannot receive immediate revocation, and system-clock rollback remains a concern unless the client periodically obtains trusted server time. Passkey credentials in PostgreSQL are public keys and counters; private credentials remain in the user's authenticator.
 
