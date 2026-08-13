@@ -9,6 +9,12 @@ public sealed class Customer
     public List<LicenseRecord> Licenses { get; set; } = [];
 }
 
+public sealed class LicenseIdCounter
+{
+    public DateOnly BusinessDate { get; set; }
+    public int LastValue { get; set; }
+}
+
 public sealed class LicenseRecord
 {
     public Guid Id { get; set; }

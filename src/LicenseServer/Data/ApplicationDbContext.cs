@@ -7,6 +7,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     : IdentityDbContext<ApplicationUser>(options)
 {
     public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<LicenseIdCounter> LicenseIdCounters => Set<LicenseIdCounter>();
     public DbSet<LicenseRecord> Licenses => Set<LicenseRecord>();
     public DbSet<Entitlement> Entitlements => Set<Entitlement>();
     public DbSet<Activation> Activations => Set<Activation>();
@@ -20,8 +21,12 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<ApplicationUser>().Property(x => x.MustChangePassword).HasDefaultValue(false);
         builder.Entity<Customer>().HasIndex(x => x.ExternalId).IsUnique();
         builder.Entity<Customer>().Property(x => x.Name).HasMaxLength(200);
+        builder.Entity<LicenseIdCounter>().HasKey(x => x.BusinessDate);
+        builder.Entity<LicenseIdCounter>().ToTable(table => table.HasCheckConstraint(
+            "CK_LicenseIdCounters_LastValue",
+            "\"LastValue\" BETWEEN 0 AND 16777215"));
         builder.Entity<LicenseRecord>().HasIndex(x => x.LicenseId).IsUnique();
-        builder.Entity<LicenseRecord>().Property(x => x.LicenseId).HasMaxLength(100);
+        builder.Entity<LicenseRecord>().Property(x => x.LicenseId).HasMaxLength(19);
         builder.Entity<LicenseRecord>().Property(x => x.Version).IsConcurrencyToken();
         builder.Entity<LicenseRecord>().Property(x => x.RevocationReason).HasMaxLength(500);
         builder.Entity<LicenseRecord>().Property(x => x.CancellationReason).HasMaxLength(500);
@@ -59,6 +64,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         GuardImmutableAudit();
+        GuardImmutableLicenseIds();
         NormalizeExpiryPrecision();
         TouchVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
@@ -67,6 +73,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         GuardImmutableAudit();
+        GuardImmutableLicenseIds();
         NormalizeExpiryPrecision();
         TouchVersions();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
@@ -76,6 +83,20 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     {
         if (ChangeTracker.Entries<AuditRecord>().Any(x => x.State is EntityState.Modified or EntityState.Deleted))
             throw new InvalidOperationException("Audit records are immutable.");
+    }
+
+    private void GuardImmutableLicenseIds()
+    {
+        if (ChangeTracker.Entries<LicenseRecord>().Any(entry =>
+                entry.State == EntityState.Modified
+                && entry.Property(x => x.LicenseId).IsModified
+                && !string.Equals(
+                    entry.Property(x => x.LicenseId).OriginalValue,
+                    entry.Property(x => x.LicenseId).CurrentValue,
+                    StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException("LicenseId is immutable after insertion.");
+        }
     }
 
     private void TouchVersions()

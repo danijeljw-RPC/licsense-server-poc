@@ -15,29 +15,30 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
     public async Task ActivationConflictRefreshTransferRevocationAndOfflineSignaturesWork()
     {
         var client = fixture.Factory.CreateClient();
+        var demoLicenseId = await RoadmapTestSupport.DemoLicenseIdAsync(fixture);
         var device1 = new string('A', 64);
         var first = Request(device1, "online");
-        var activated = await client.PostAsJsonAsync("/api/v1/licenses/LIC-POC-0001/activate", first);
+        var activated = await client.PostAsJsonAsync($"/api/v1/licenses/{demoLicenseId}/activate", first);
         activated.EnsureSuccessStatusCode();
         var response = await activated.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
-        Assert.Equal("LIC-POC-0001", response.LicenseId);
+        Assert.Equal(demoLicenseId, response.LicenseId);
         Assert.NotNull(LicenseVerifier.Verify(response.SignedLicense));
 
-        var second = await client.PostAsJsonAsync("/api/v1/licenses/LIC-POC-0001/activate", Request(new string('B', 64), "online"));
+        var second = await client.PostAsJsonAsync($"/api/v1/licenses/{demoLicenseId}/activate", Request(new string('B', 64), "online"));
         Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
 
         var credentials = new ActivationCredentialRequest(first.ActivationToken, device1);
         var refresh = await client.PostAsJsonAsync($"/api/v1/activations/{response.ActivationId}/refresh", credentials);
         refresh.EnsureSuccessStatusCode();
         var refreshed = await refresh.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
-        Assert.Equal("LIC-POC-0001", refreshed.LicenseId);
+        Assert.Equal(demoLicenseId, refreshed.LicenseId);
         Assert.NotNull(LicenseVerifier.Verify(refreshed.SignedLicense));
 
         var deactivated = await client.PostAsJsonAsync($"/api/v1/activations/{response.ActivationId}/deactivate", credentials);
         deactivated.EnsureSuccessStatusCode();
-        Assert.Equal("LIC-POC-0001", (await deactivated.Content.ReadFromJsonAsync<DeactivationResponse>())?.LicenseId);
+        Assert.Equal(demoLicenseId, (await deactivated.Content.ReadFromJsonAsync<DeactivationResponse>())?.LicenseId);
         var offlineRequest = Request(new string('B', 64), "offline");
-        var offline = await client.PostAsJsonAsync("/api/v1/licenses/LIC-POC-0001/activate", offlineRequest);
+        var offline = await client.PostAsJsonAsync($"/api/v1/licenses/{demoLicenseId}/activate", offlineRequest);
         offline.EnsureSuccessStatusCode();
         var offlineResponse = await offline.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
         Assert.Null(offlineResponse.LeaseExpiresAt);
@@ -45,7 +46,7 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var store = scope.ServiceProvider.GetRequiredService<LicenseStore>();
-        Assert.True((await store.RevokeAsync("LIC-POC-0001", "automated integration test", "test-admin", DateTimeOffset.UtcNow)).Success);
+        Assert.True((await store.RevokeAsync(demoLicenseId, "automated integration test", "test-admin", DateTimeOffset.UtcNow)).Success);
         var rejected = await client.PostAsJsonAsync($"/api/v1/activations/{offlineResponse.ActivationId}/validate", new ActivationCredentialRequest(offlineRequest.ActivationToken, new string('B', 64)));
         Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
         Assert.NotNull(LicenseVerifier.Verify(offlineResponse.SignedLicense));

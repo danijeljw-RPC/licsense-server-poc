@@ -12,6 +12,16 @@ internal static class RoadmapTestSupport
     public static readonly DateTimeOffset PerpetualExpiry =
         new DateTimeOffset(9999, 12, 31, 23, 59, 59, TimeSpan.Zero).AddTicks(9_999_990);
 
+    public static async Task<string> DemoLicenseIdAsync(PostgresWebFixture fixture)
+    {
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        return await db.Licenses.AsNoTracking()
+            .Where(item => item.Customer.ExternalId == "POC-CUSTOMER")
+            .Select(item => item.LicenseId)
+            .SingleAsync();
+    }
+
     public static IssueLicenseContract ValidIssueRequest(string suffix = "default") => new(
         $"Phase 0 Customer {suffix}",
         $"phase0-{suffix}@example.com",
@@ -34,7 +44,7 @@ internal static class RoadmapTestSupport
         var license = new LicenseRecord
         {
             Id = Guid.NewGuid(),
-            LicenseId = $"PHASE0-{suffix}-{Guid.NewGuid():N}",
+            LicenseId = $"LIC-{DateTime.UtcNow:yyyy}-{DateTime.UtcNow:MMdd}{Convert.ToHexString(Guid.NewGuid().ToByteArray())[..6]}",
             Customer = new Customer
             {
                 Id = Guid.NewGuid(),
