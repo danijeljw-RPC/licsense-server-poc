@@ -93,6 +93,8 @@ public sealed partial class DatabaseInitializer(
             {
                 Id = Guid.NewGuid(),
                 Name = "Example Pty Ltd",
+                Email = "licensing@example.com",
+                NormalizedEmail = "licensing@example.com",
                 ExternalId = "POC-CUSTOMER",
                 CreatedAt = DateTimeOffset.UtcNow
             };
@@ -108,7 +110,11 @@ public sealed partial class DatabaseInitializer(
                 LicenseId = await licenseIds.AllocateAsync(now, cancellationToken),
                 Customer = customer,
                 ActivationCodeHash = LicenseStore.Hash("POC-DEMO-ACTIVATION-CODE"),
-                MetadataJson = new JsonObject { ["purchaseOrder"] = "PO-POC-0001" }.ToJsonString(),
+                MetadataJson = new JsonObject
+                {
+                    ["purchaseOrder"] = "PO-POC-0001",
+                    ["contactEmail"] = customer.NormalizedEmail
+                }.ToJsonString(),
                 IssuedAt = now,
                 ExpiresAt = LicenseTerms.PerpetualExpiry,
                 Entitlements =

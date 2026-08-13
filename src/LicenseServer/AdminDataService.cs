@@ -46,7 +46,11 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
-            query = query.Where(x => EF.Functions.ILike(x.LicenseId, $"%{term}%") || EF.Functions.ILike(x.Customer.Name, $"%{term}%"));
+            var normalizedTerm = term.ToLowerInvariant();
+            query = query.Where(x =>
+                EF.Functions.ILike(x.LicenseId, $"%{term}%")
+                || EF.Functions.ILike(x.Customer.Name, $"%{term}%")
+                || x.Customer.NormalizedEmail.Contains(normalizedTerm));
         }
         query = status?.ToLowerInvariant() switch
         {
@@ -90,7 +94,9 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             .Select(a => new AuditView(a.Actor, a.Action, a.TargetType, a.TargetId, a.Result, a.TimestampUtc, a.ContextJson))
             .ToListAsync(cancellationToken);
         return new LicenseDetailView(
-            x.LicenseId, x.Customer.Name, ContactEmail(x.MetadataJson), x.IssuedAt,
+            x.LicenseId, x.Customer.Name, x.Customer.Email,
+            ContactEmail(x.MetadataJson) ?? throw new InvalidOperationException("Stored license contact metadata is invalid."),
+            x.IssuedAt,
             x.ExpiresAt?.AddTicks(x.ExpirySubMicrosecondTicks),
             x.CancelledAt, x.CancellationReason, x.CancelledBy, x.RevokedAt, x.RevocationReason, x.Version,
             LicenseStore.GetLifecycleState(x, active is not null, DateTimeOffset.UtcNow),
@@ -141,7 +147,7 @@ public sealed record EntitlementView(string Product, string Edition, string Lice
 public sealed record ActivationView(string ActivationId, string Mode, string DeviceSuffix, string? DeviceName, DateTimeOffset ActivatedAt, DateTimeOffset? RefreshAfter, DateTimeOffset? LeaseExpiresAt);
 public sealed record ActivationHistoryView(string ActivationId, string Mode, string DeviceSuffix, DateTimeOffset ActivatedAt, DateTimeOffset? DeactivatedAt);
 public sealed record LicenseDetailView(
-    string LicenseId, string Customer, string? CustomerEmail, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
+    string LicenseId, string Customer, string CustomerEmail, string SignedContactEmail, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
     DateTimeOffset? CancelledAt, string? CancellationReason, string? CancelledBy,
     DateTimeOffset? RevokedAt, string? RevocationReason, long Version, string Status,
     IReadOnlyList<EntitlementView> Entitlements, ActivationView? ActiveActivation,
@@ -150,7 +156,7 @@ public sealed record LicenseDetailView(
 public sealed class CreateLicenseInput
 {
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(200)] public string CustomerName { get; set; } = "";
-    [System.ComponentModel.DataAnnotations.EmailAddress, System.ComponentModel.DataAnnotations.StringLength(320)] public string CustomerEmail { get; set; } = "";
+    [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.EmailAddress, System.ComponentModel.DataAnnotations.StringLength(320)] public string CustomerEmail { get; set; } = "";
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Product { get; set; } = "";
     [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(100)] public string Edition { get; set; } = "business";
     [System.ComponentModel.DataAnnotations.Required] public string LicenseType { get; set; } = "perpetual";

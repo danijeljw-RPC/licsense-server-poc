@@ -55,7 +55,7 @@ else
                 <label>Expiry (required for subscription/evaluation)<InputDate Type="InputDateType.DateTimeLocal" @bind-Value="Input.ExpiresAt" /></label>
                 <label>Seats<InputNumber @bind-Value="Input.Seats" /></label>
             </div>
-            <p class="notice">No activation code is accepted from the browser. The server generates it and stores only a versioned hash.</p>
+            <p class="notice">The normalized customer email is embedded as plaintext signed metadata and is visible to anyone holding the license file. Never enter billing data, secrets, or provider objects. No activation code is accepted from the browser; the server generates it and stores only a versioned hash.</p>
             <button class="button" type="submit" disabled="@isSubmitting" aria-disabled="@isSubmitting">
                 @(isSubmitting ? "Issuing…" : "Issue license")
             </button>

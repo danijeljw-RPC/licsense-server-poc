@@ -39,6 +39,8 @@ internal sealed class LicenseStore(
         var licenseType = request.LicenseType?.Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(customerName) || string.IsNullOrWhiteSpace(product))
             return StoreResult<IssuedLicense>.BadRequest("Customer name and product are required.");
+        if (!CustomerEmails.TryNormalize(request.CustomerEmail, out var customerEmail, out var emailError))
+            return StoreResult<IssuedLicense>.BadRequest(emailError!);
         if (edition is null || !IssuanceEditions.Contains(edition))
             return StoreResult<IssuedLicense>.BadRequest("Edition is not an approved controlled value.");
         if (request.Seats <= 0)
@@ -49,9 +51,12 @@ internal sealed class LicenseStore(
         var metadata = new JsonObject();
         if (request.Metadata is not null)
         {
-            foreach (var item in request.Metadata.Where(item => item.Value is string or bool or int or long or decimal or double))
+            foreach (var item in request.Metadata.Where(item =>
+                         !string.Equals(item.Key, "contactEmail", StringComparison.Ordinal)
+                         && item.Value is string or bool or int or long or decimal or double))
                 metadata[item.Key] = JsonValue.Create(item.Value);
         }
+        metadata["contactEmail"] = customerEmail;
 
         var idempotency = ValidateIdempotency(context, request);
         if (idempotency.Error is not null)
@@ -80,7 +85,11 @@ internal sealed class LicenseStore(
             var license = new LicenseRecord
             {
                 Id = Guid.NewGuid(), LicenseId = licenseId,
-                Customer = new Customer { Id = Guid.NewGuid(), Name = customerName, CreatedAt = now },
+                Customer = new Customer
+                {
+                    Id = Guid.NewGuid(), Name = customerName,
+                    Email = customerEmail, NormalizedEmail = customerEmail, CreatedAt = now
+                },
                 ActivationCodeHash = activationHash.Value,
                 ActivationCodeHashVersion = activationHash.Version,
                 MetadataJson = metadata.ToJsonString(),

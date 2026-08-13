@@ -49,11 +49,16 @@ internal static class RoadmapTestSupport
             {
                 Id = Guid.NewGuid(),
                 Name = $"Phase 0 {suffix}",
+                Email = $"phase0-{suffix}@example.com",
+                NormalizedEmail = $"phase0-{suffix}@example.com",
                 ExternalId = $"phase0-{suffix}-{Guid.NewGuid():N}",
                 CreatedAt = DateTimeOffset.UtcNow
             },
             ActivationCodeHash = LicenseStore.Hash($"PHASE0-{suffix}-ACTIVATION-CODE"),
-            MetadataJson = "{}",
+            MetadataJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                contactEmail = $"phase0-{suffix}@example.com"
+            }),
             IssuedAt = DateTimeOffset.UtcNow,
             ExpiresAt = expiresAt,
             Entitlements =

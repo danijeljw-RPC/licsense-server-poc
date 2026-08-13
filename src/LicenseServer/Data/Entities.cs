@@ -4,6 +4,8 @@ public sealed class Customer
 {
     public Guid Id { get; set; }
     public required string Name { get; set; }
+    public required string Email { get; set; }
+    public required string NormalizedEmail { get; set; }
     public string? ExternalId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public List<LicenseRecord> Licenses { get; set; } = [];

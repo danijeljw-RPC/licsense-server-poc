@@ -8,13 +8,17 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.DependencyInjection;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Encodings.Web;
+using SoftwareLicensing;
 
 namespace LicenseServer.Tests;
 
 public sealed class PostgresWebFixture : IAsyncLifetime
 {
     private readonly List<WebApplicationFactory<Program>> authenticatedFactories = [];
+    private string? temporaryKeyDirectory;
+    private string? originalTrustedPublicKey;
     public WebApplicationFactory<Program> Factory { get; private set; } = null!;
     public SecretCaptureLoggerProvider CapturedLogs { get; } = new();
 
@@ -23,8 +27,9 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         var connectionString = Environment.GetEnvironmentVariable("TEST_POSTGRES_CONNECTION")
             ?? throw new InvalidOperationException("Run tests through scripts/Test-DatabaseAndAuth.ps1 so they receive an isolated PostgreSQL database.");
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", connectionString);
-        Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", FindRepositoryFile("keys/license-primary-2026-private.pem"));
-        Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", FindRepositoryFile("keys/license-primary-2026-public.pem"));
+        var keys = ResolveSigningKeys();
+        Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", keys.PrivateKeyPath);
+        Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", keys.PublicKeyPath);
         Factory = new LicenseServerFactory(connectionString);
         using var client = Factory.CreateClient();
         using var ready = await client.GetAsync("/health/ready");
@@ -41,6 +46,30 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         throw new FileNotFoundException($"Could not locate repository file '{relativePath}'.");
     }
 
+    private (string PrivateKeyPath, string PublicKeyPath) ResolveSigningKeys()
+    {
+        try
+        {
+            return (
+                FindRepositoryFile("keys/license-primary-2026-private.pem"),
+                FindRepositoryFile("keys/license-primary-2026-public.pem"));
+        }
+        catch (FileNotFoundException)
+        {
+            temporaryKeyDirectory = Path.Combine(Path.GetTempPath(), $"license-server-test-keys-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(temporaryKeyDirectory);
+            var privateKeyPath = Path.Combine(temporaryKeyDirectory, "private.pem");
+            var publicKeyPath = Path.Combine(temporaryKeyDirectory, "public.pem");
+            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            File.WriteAllText(privateKeyPath, key.ExportPkcs8PrivateKeyPem());
+            var publicKeyPem = key.ExportSubjectPublicKeyInfoPem();
+            File.WriteAllText(publicKeyPath, publicKeyPem);
+            originalTrustedPublicKey = TrustedPublicKeys.ByKeyId["primary-2026"];
+            ((IDictionary<string, string>)TrustedPublicKeys.ByKeyId)["primary-2026"] = publicKeyPem;
+            return (privateKeyPath, publicKeyPath);
+        }
+    }
+
     public async Task DisposeAsync()
     {
         foreach (var factory in authenticatedFactories)
@@ -49,6 +78,10 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", null);
         Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", null);
         Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", null);
+        if (temporaryKeyDirectory is not null && Directory.Exists(temporaryKeyDirectory))
+            Directory.Delete(temporaryKeyDirectory, recursive: true);
+        if (originalTrustedPublicKey is not null)
+            ((IDictionary<string, string>)TrustedPublicKeys.ByKeyId)["primary-2026"] = originalTrustedPublicKey;
     }
 
     public HttpClient CreateAuthenticatedClient(bool administrator, params string[] permissions)

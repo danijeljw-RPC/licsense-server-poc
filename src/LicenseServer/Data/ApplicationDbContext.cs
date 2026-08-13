@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 namespace LicenseServer.Data;
 
@@ -21,13 +22,17 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
 
         builder.Entity<ApplicationUser>().Property(x => x.MustChangePassword).HasDefaultValue(false);
         builder.Entity<Customer>().HasIndex(x => x.ExternalId).IsUnique();
+        builder.Entity<Customer>().HasIndex(x => x.NormalizedEmail);
         builder.Entity<Customer>().Property(x => x.Name).HasMaxLength(200);
+        builder.Entity<Customer>().Property(x => x.Email).HasMaxLength(CustomerEmails.MaximumLength);
+        builder.Entity<Customer>().Property(x => x.NormalizedEmail).HasMaxLength(CustomerEmails.MaximumLength);
         builder.Entity<LicenseIdCounter>().HasKey(x => x.BusinessDate);
         builder.Entity<LicenseIdCounter>().ToTable(table => table.HasCheckConstraint(
             "CK_LicenseIdCounters_LastValue",
             "\"LastValue\" BETWEEN 0 AND 16777215"));
         builder.Entity<LicenseRecord>().HasIndex(x => x.LicenseId).IsUnique();
         builder.Entity<LicenseRecord>().Property(x => x.LicenseId).HasMaxLength(19);
+        builder.Entity<LicenseRecord>().Property(x => x.MetadataJson).HasColumnType("jsonb");
         builder.Entity<LicenseRecord>().Property(x => x.ActivationCodeHashVersion).HasMaxLength(32)
             .HasDefaultValue(ActivationCodeHasher.LegacySha256Version);
         builder.Entity<LicenseRecord>().Property(x => x.Version).IsConcurrencyToken();
@@ -46,6 +51,11 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<LicenseRecord>().ToTable(table => table.HasCheckConstraint(
             "CK_Licenses_ExpiryPrecision",
             "\"ExpirySubMicrosecondTicks\" BETWEEN 0 AND 9"));
+        builder.Entity<LicenseRecord>().ToTable(table => table.HasCheckConstraint(
+            "CK_Licenses_ContactEmail",
+            "COALESCE(jsonb_typeof(\"MetadataJson\" -> 'contactEmail') = 'string' " +
+            "AND (\"MetadataJson\" ->> 'contactEmail') = lower(btrim(\"MetadataJson\" ->> 'contactEmail')) " +
+            "AND (\"MetadataJson\" ->> 'contactEmail') ~ '^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$', FALSE)"));
         builder.Entity<LicenseRecord>().HasMany(x => x.Entitlements).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Cascade);
         builder.Entity<LicenseRecord>().HasMany(x => x.Activations).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<IssuanceIdempotencyRecord>().Property(x => x.PrincipalId).HasMaxLength(256);
@@ -72,6 +82,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     {
         GuardImmutableAudit();
         GuardImmutableLicenseIds();
+        GuardCustomerContactSnapshots();
         NormalizeExpiryPrecision();
         TouchVersions();
         return base.SaveChanges(acceptAllChangesOnSuccess);
@@ -81,6 +92,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     {
         GuardImmutableAudit();
         GuardImmutableLicenseIds();
+        GuardCustomerContactSnapshots();
         NormalizeExpiryPrecision();
         TouchVersions();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
@@ -110,6 +122,47 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     {
         foreach (var entry in ChangeTracker.Entries<LicenseRecord>().Where(x => x.State == EntityState.Modified))
             entry.Entity.Version++;
+    }
+
+    private void GuardCustomerContactSnapshots()
+    {
+        foreach (var entry in ChangeTracker.Entries<Customer>().Where(entry => entry.State is EntityState.Added or EntityState.Modified))
+        {
+            if (!CustomerEmails.TryNormalize(entry.Entity.Email, out var normalized, out var error)
+                || !string.Equals(entry.Entity.NormalizedEmail, normalized, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(error ?? "Customer normalized email must match the current email.");
+            }
+        }
+
+        foreach (var entry in ChangeTracker.Entries<LicenseRecord>())
+        {
+            if (entry.State == EntityState.Modified && entry.Property(item => item.MetadataJson).IsModified)
+                throw new InvalidOperationException("Signed contact metadata is an immutable issuance snapshot.");
+            if (entry.State != EntityState.Added)
+                continue;
+
+            string? contactEmail;
+            try
+            {
+                using var document = JsonDocument.Parse(entry.Entity.MetadataJson);
+                contactEmail = document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("contactEmail", out var value)
+                    && value.ValueKind == JsonValueKind.String
+                    ? value.GetString()
+                    : null;
+            }
+            catch (JsonException)
+            {
+                contactEmail = null;
+            }
+
+            if (!CustomerEmails.TryNormalize(contactEmail, out var normalized, out _)
+                || !string.Equals(entry.Entity.Customer.NormalizedEmail, normalized, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("License metadata.contactEmail must equal the normalized customer email at issuance.");
+            }
+        }
     }
 
     private void NormalizeExpiryPrecision()

@@ -28,8 +28,9 @@ else
             <h2>Customer and entitlements</h2>
             <dl class="customer-details">
                 <dt>Customer name</dt><dd>@license.Customer</dd>
-                <dt>Customer email</dt><dd>@(license.CustomerEmail ?? "Not collected yet (email stage placeholder)")</dd>
-                <dt>Signed metadata</dt><dd>@(license.CustomerEmail is null ? "Contact email will be included by the later issuance/email stage." : "Customer email is present in signed metadata.")</dd>
+                <dt>Current customer email</dt><dd>@license.CustomerEmail</dd>
+                <dt>Signed contact snapshot</dt><dd>@license.SignedContactEmail</dd>
+                <dt>Signed metadata visibility</dt><dd>This address is plaintext to anyone holding the signed license file.</dd>
             </dl>
             @foreach (var item in license.Entitlements)
             {

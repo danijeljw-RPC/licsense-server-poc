@@ -5,7 +5,7 @@
 <PageTitle>Licenses</PageTitle>
 <div class="page-heading"><div><p class="eyebrow">Inventory</p><h1>Licenses</h1><p>Search, filter, and inspect every issued license.</p></div><a class="button" href="/licenses/create">Issue license</a></div>
 <form method="get" class="filters">
-    <label>Search<input name="search" value="@Search" placeholder="License ID or customer" /></label>
+    <label>Search<input name="search" value="@Search" placeholder="License ID, customer, or email" /></label>
     <label>Status<select name="status"><option value="">All statuses</option><option selected="@(Status == "available")">Available</option><option selected="@(Status == "active")">Active</option><option selected="@(Status == "expired")">Expired</option><option selected="@(Status == "revoked")">Revoked</option></select></label>
     <label>Sort<select name="sort"><option value="newest">Newest first</option><option value="oldest" selected="@(Sort == "oldest")">Oldest first</option><option value="customer" selected="@(Sort == "customer")">Customer</option></select></label>
     <button class="button secondary" type="submit">Apply</button>
