@@ -161,6 +161,13 @@ builder.Services.Configure<DataProtectionTokenProviderOptions>(options =>
     options.TokenLifespan = TimeSpan.FromMinutes(15));
 
 builder.Services.Configure<MailerSendOptions>(builder.Configuration.GetSection("MailerSend"));
+builder.Services.Configure<StripeOptions>(builder.Configuration.GetSection("Stripe"));
+builder.Services.AddOptions<BillingWorkerOptions>()
+    .BindConfiguration("Billing")
+    .Validate(options => options.BatchSize is >= 1 and <= 100, "Billing:BatchSize must be between 1 and 100.")
+    .Validate(options => options.MaxAttempts is >= 1 and <= 20, "Billing:MaxAttempts must be between 1 and 20.")
+    .Validate(options => options.LeaseSeconds is >= 30 and <= 900, "Billing:LeaseSeconds must be between 30 and 900.")
+    .ValidateOnStart();
 builder.Services.Configure<EmailWorkerOptions>(options =>
     options.Enabled = builder.Configuration.GetValue("Email:WorkerEnabled", true));
 builder.Services.AddScoped<TransactionalEmailSender>();
@@ -169,6 +176,10 @@ builder.Services.AddScoped<IEmailSender<ApplicationUser>, TransactionalIdentityE
 builder.Services.AddScoped<EmailOutboxProcessor>();
 builder.Services.AddScoped<MailerSendWebhookService>();
 builder.Services.AddHostedService<EmailOutboxWorker>();
+builder.Services.AddScoped<StripeWebhookReceiver>();
+builder.Services.AddScoped<IBillingEventProcessor, CategorizingBillingEventProcessor>();
+builder.Services.AddScoped<BillingInboxProcessor>();
+builder.Services.AddHostedService<BillingInboxWorker>();
 var mailerSendToken = builder.Configuration["MailerSend:ApiToken"];
 var mailerSendFrom = builder.Configuration["MailerSend:FromEmail"];
 if (!builder.Environment.IsDevelopment()
@@ -178,6 +189,14 @@ if (!builder.Environment.IsDevelopment()
 {
     throw new InvalidOperationException("MailerSend:ApiToken, MailerSend:FromEmail, and MailerSend:WebhookSecret are required outside Development.");
 }
+if (!builder.Environment.IsDevelopment()
+    && (string.IsNullOrWhiteSpace(builder.Configuration["Stripe:ApiKey"])
+        || string.IsNullOrWhiteSpace(builder.Configuration["Stripe:WebhookSecret"])))
+{
+    throw new InvalidOperationException("Stripe:ApiKey and Stripe:WebhookSecret are required outside Development and must come from secret configuration.");
+}
+if (!string.Equals(builder.Configuration["Stripe:ApiVersion"] ?? StripeOptions.SupportedApiVersion, StripeOptions.SupportedApiVersion, StringComparison.Ordinal))
+    throw new InvalidOperationException($"Stripe:ApiVersion must be the supported pinned version {StripeOptions.SupportedApiVersion}.");
 var customerPortalBaseUrl = builder.Configuration["CustomerPortal:PublicBaseUrl"];
 if (!builder.Environment.IsDevelopment()
     && (!Uri.TryCreate(customerPortalBaseUrl, UriKind.Absolute, out var customerPortalUri)
@@ -389,6 +408,18 @@ app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnony
 app.MapHealthChecks("/health/ready");
 app.MapGet("/health", () => Results.Redirect("/health/ready")).AllowAnonymous();
 app.MapOpenApi().AllowAnonymous();
+app.MapPost("/api/v1/integrations/stripe/webhook", async (
+    HttpRequest request, StripeWebhookReceiver webhooks, CancellationToken ct) =>
+{
+    if (request.ContentLength is > 1_048_576)
+        return Results.Problem(title: "Webhook payload is too large", statusCode: StatusCodes.Status413PayloadTooLarge);
+    using var reader = new StreamReader(request.Body, Encoding.UTF8, false, leaveOpen: true);
+    var body = await reader.ReadToEndAsync(ct);
+    var result = await webhooks.ReceiveAsync(body, request.Headers["Stripe-Signature"].FirstOrDefault(), ct);
+    return result.Accepted
+        ? Results.Ok(new { received = true, duplicate = result.Duplicate })
+        : Results.Problem(title: "Invalid Stripe webhook", statusCode: StatusCodes.Status400BadRequest);
+}).AllowAnonymous();
 app.MapPost("/api/v1/webhooks/mailersend", async (
     HttpRequest request, MailerSendWebhookService webhooks, CancellationToken ct) =>
 {

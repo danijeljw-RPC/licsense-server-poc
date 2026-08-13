@@ -50,6 +50,9 @@ services:
       MailerSend__FromEmail: ${MAILERSEND_FROM_EMAIL:?Set MAILERSEND_FROM_EMAIL in .env}
       MailerSend__FromName: ${MAILERSEND_FROM_NAME:-License Server}
       MailerSend__WebhookSecret: ${MAILERSEND_WEBHOOK_SECRET:?Set MAILERSEND_WEBHOOK_SECRET in .env}
+      Stripe__ApiKey: ${STRIPE_API_KEY:?Set STRIPE_API_KEY in .env}
+      Stripe__WebhookSecret: ${STRIPE_WEBHOOK_SECRET:?Set STRIPE_WEBHOOK_SECRET in .env}
+      Stripe__ApiVersion: 2026-07-29.dahlia
       CustomerPortal__PublicBaseUrl: ${CUSTOMER_PORTAL_PUBLIC_BASE_URL:?Set CUSTOMER_PORTAL_PUBLIC_BASE_URL in .env}
       RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-false}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
