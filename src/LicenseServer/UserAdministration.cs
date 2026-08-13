@@ -196,6 +196,7 @@ internal sealed class UserAdministrationService(
         var assignedRoles = (await users.GetRolesAsync(user)).Order(StringComparer.Ordinal).ToArray();
         var derivedPermissions = assignedRoles.SelectMany(BuiltInRoles.PermissionsFor)
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        var credentialCount = await db.ApiCredentials.CountAsync(item => item.OwnerUserId == user.Id);
         return new UserView(
             user.Id,
             user.Email ?? "",
@@ -207,7 +208,7 @@ internal sealed class UserAdministrationService(
             assignedRoles,
             derivedPermissions,
             user.AccountType == ApplicationUser.HumanAccountType && await users.GetTwoFactorEnabledAsync(user),
-            0);
+            credentialCount);
     }
 
     private async Task<IReadOnlyList<string>> ValidateRolesAsync(IReadOnlyList<string>? requested)

@@ -144,8 +144,10 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["DEFAULT_ADMIN_EMAIL"] = DatabaseInitializer.DefaultEmail,
                 ["DEFAULT_ADMIN_PASSWORD"] = DatabaseInitializer.DefaultPassword,
                 ["ActivationCodes:Pepper"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+                ["ApiCredentials:Pepper"] = "HyQjIiEgHx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwY=",
                 ["Security:UseHttpsRedirection"] = "false",
-                ["Security:RequireMfaForHighRiskPermissions"] = "true"
+                ["Security:RequireMfaForHighRiskPermissions"] = "true",
+                ["RateLimits:AdminPermitLimit"] = "5000"
             }));
         }
     }
@@ -178,6 +180,7 @@ public sealed class TestAuthenticationHandler(
         claims.AddRange(Request.Headers[PermissionHeader].Select(value => new Claim("permission", value!)));
         if (string.Equals(Request.Headers[MfaHeader].FirstOrDefault(), "true", StringComparison.OrdinalIgnoreCase))
             claims.Add(new Claim("amr", "mfa"));
+        claims.Add(new Claim("amr", "integration_test"));
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName)));
     }

@@ -45,6 +45,7 @@ services:
       SEED_DEMO_LICENSE: ${SEED_DEMO_LICENSE:-true}
       Licensing__IdTimeZone: ${LICENSE_ID_TIME_ZONE:-Australia/Adelaide}
       ActivationCodes__Pepper: ${ACTIVATION_CODE_PEPPER:?Set ACTIVATION_CODE_PEPPER in .env}
+      ApiCredentials__Pepper: ${API_CREDENTIAL_PEPPER:?Set API_CREDENTIAL_PEPPER in .env}
       RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-false}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
     ports:

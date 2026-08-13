@@ -12,6 +12,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public DbSet<ProductDefinition> ProductDefinitions => Set<ProductDefinition>();
     public DbSet<LicenseRecord> Licenses => Set<LicenseRecord>();
     public DbSet<IssuanceIdempotencyRecord> IssuanceIdempotencyRecords => Set<IssuanceIdempotencyRecord>();
+    public DbSet<ApiCredential> ApiCredentials => Set<ApiCredential>();
     public DbSet<Entitlement> Entitlements => Set<Entitlement>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<SigningKeyRecord> SigningKeys => Set<SigningKeyRecord>();
@@ -70,6 +71,19 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<IssuanceIdempotencyRecord>().Property(x => x.ProtectedResult).HasColumnType("text");
         builder.Entity<IssuanceIdempotencyRecord>().HasIndex(x => new { x.PrincipalId, x.KeyHash }).IsUnique();
         builder.Entity<IssuanceIdempotencyRecord>().HasIndex(x => x.ExpiresAt);
+        builder.Entity<ApiCredential>().HasIndex(x => x.PublicId).IsUnique();
+        builder.Entity<ApiCredential>().HasIndex(x => x.OwnerUserId);
+        builder.Entity<ApiCredential>().HasIndex(x => x.ExpiresAt);
+        builder.Entity<ApiCredential>().Property(x => x.PublicId).HasMaxLength(32);
+        builder.Entity<ApiCredential>().Property(x => x.Name).HasMaxLength(200);
+        builder.Entity<ApiCredential>().Property(x => x.HashVersion).HasMaxLength(32);
+        builder.Entity<ApiCredential>().Property(x => x.LastFour).HasMaxLength(4);
+        builder.Entity<ApiCredential>().Property(x => x.RevokedBy).HasMaxLength(256);
+        builder.Entity<ApiCredential>().Property(x => x.ScopesJson).HasColumnType("jsonb");
+        builder.Entity<ApiCredential>().HasOne(x => x.OwnerUser).WithMany()
+            .HasForeignKey(x => x.OwnerUserId).OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<ApiCredential>().ToTable(table => table.HasCheckConstraint(
+            "CK_ApiCredentials_Lifecycle", "\"ExpiresAt\" IS NULL OR \"ExpiresAt\" > \"CreatedAt\""));
         builder.Entity<Entitlement>().HasIndex(x => x.LicenseRecordId).IsUnique();
         builder.Entity<Entitlement>().HasOne(x => x.ProductDefinition).WithMany(x => x.Entitlements)
             .HasForeignKey(x => x.ProductDefinitionId).OnDelete(DeleteBehavior.Restrict);

@@ -154,6 +154,23 @@ hook, and writes a secret-free audit event. Until transactional email is enabled
 stage 12, Development shows a newly generated setup link once; Production refuses to
 reveal it and requires configured delivery.
 
+### Scoped API credentials
+
+`/settings/api-keys` creates bearer credentials in the form
+`lic_live_<public-id>_<secret>`. The 32-byte secret is displayed once; PostgreSQL keeps
+only its versioned HMAC-SHA-256 digest, public ID, last four characters, owner, scopes,
+and lifecycle timestamps. Human-owned keys require an expiry. Rotation creates a new
+secret and revokes the old key atomically; revocation and owner disablement take effect
+on the next request.
+
+Bearer authentication is selected only by `Authorization: Bearer` and maps key scopes
+to the existing permission policies. It never reads cookies and does not use
+antiforgery; cookie-authenticated mutations still require a valid antiforgery token.
+Bearer admin traffic is rate-limited by owner and IP, while anonymous device routes use
+a stricter IP partition. Configure `ApiCredentials__Pepper` outside source control with
+an independent Base64 value containing at least 32 random bytes. Development can use an
+ephemeral pepper, but its keys intentionally stop working after restart.
+
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:

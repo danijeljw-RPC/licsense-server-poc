@@ -64,6 +64,25 @@ public sealed class IssuanceIdempotencyRecord
     public DateTimeOffset ExpiresAt { get; set; }
 }
 
+public sealed class ApiCredential
+{
+    public Guid Id { get; set; }
+    public required string PublicId { get; set; }
+    public required string Name { get; set; }
+    public required string OwnerUserId { get; set; }
+    public required ApplicationUser OwnerUser { get; set; }
+    public required byte[] SecretHash { get; set; }
+    public required string HashVersion { get; set; }
+    public required string LastFour { get; set; }
+    public string ScopesJson { get; set; } = "[]";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? LastUsedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public string? RevokedBy { get; set; }
+    public Guid? ReplacedByCredentialId { get; set; }
+}
+
 public sealed class Entitlement
 {
     public Guid Id { get; set; }

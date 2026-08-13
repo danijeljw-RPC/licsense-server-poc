@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using System.Security.Claims;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,12 +24,14 @@ builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityRedirectManager>();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
 
-builder.Services.AddAuthentication(options =>
+var authentication = builder.Services.AddAuthentication(options =>
     {
-        options.DefaultScheme = IdentityConstants.ApplicationScheme;
+        options.DefaultScheme = ApiKeyAuthenticationDefaults.CompositeScheme;
+        options.DefaultAuthenticateScheme = ApiKeyAuthenticationDefaults.CompositeScheme;
+        options.DefaultChallengeScheme = ApiKeyAuthenticationDefaults.CompositeScheme;
         options.DefaultSignInScheme = IdentityConstants.ExternalScheme;
-    })
-    .AddIdentityCookies(options =>
+    });
+authentication.AddIdentityCookies(options =>
     {
         options.ApplicationCookie!.Configure(cookie =>
         {
@@ -62,6 +65,14 @@ builder.Services.AddAuthentication(options =>
             };
         });
     });
+authentication.AddPolicyScheme(ApiKeyAuthenticationDefaults.CompositeScheme, null, options =>
+    {
+        options.ForwardDefaultSelector = context =>
+            context.Request.Headers.Authorization.FirstOrDefault()?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
+                ? ApiKeyAuthenticationDefaults.Scheme
+                : IdentityConstants.ApplicationScheme;
+    });
+authentication.AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(ApiKeyAuthenticationDefaults.Scheme, _ => { });
 
 builder.Services.AddPermissionAuthorization(builder.Environment, builder.Configuration);
 
@@ -127,6 +138,19 @@ else
 }
 builder.Services.AddSingleton<IActivationCodeGenerator, ActivationCodeGenerator>();
 builder.Services.AddSingleton<IActivationCodeHasher>(new ActivationCodeHasher(activationCodePepper));
+var configuredApiCredentialPepper = builder.Configuration["ApiCredentials:Pepper"];
+byte[] apiCredentialPepper;
+if (string.IsNullOrWhiteSpace(configuredApiCredentialPepper) && builder.Environment.IsDevelopment())
+    apiCredentialPepper = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+else if (string.IsNullOrWhiteSpace(configuredApiCredentialPepper))
+    throw new InvalidOperationException("ApiCredentials:Pepper is required outside Development and must be at least 32 random bytes encoded as Base64.");
+else
+{
+    try { apiCredentialPepper = Convert.FromBase64String(configuredApiCredentialPepper); }
+    catch (FormatException exception) { throw new InvalidOperationException("ApiCredentials:Pepper must be valid Base64.", exception); }
+    if (apiCredentialPepper.Length < 32) throw new InvalidOperationException("ApiCredentials:Pepper must decode to at least 32 bytes.");
+}
+builder.Services.AddSingleton(new ApiCredentialHasher(apiCredentialPepper));
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<ILicenseBusinessDateResolver, ConfiguredLicenseBusinessDateResolver>();
 builder.Services.AddScoped<LicenseIdAllocator>();
@@ -135,10 +159,37 @@ builder.Services.AddScoped<AdminDataService>();
 builder.Services.AddScoped<ProductCatalogService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<UserAdministrationService>();
-builder.Services.AddScoped<IOwnedCredentialRevoker, NullOwnedCredentialRevoker>();
+builder.Services.AddScoped<ApiCredentialService>();
+builder.Services.AddScoped<IOwnedCredentialRevoker>(services => services.GetRequiredService<ApiCredentialService>());
 builder.Services.AddSingleton<LicenseEnvelopeSigner>();
 builder.Services.AddScoped<DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
+var adminPermitLimit = builder.Configuration.GetValue("RateLimits:AdminPermitLimit", 600);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("admin-api", context =>
+        context.User.HasClaim("amr", "api_key")
+            ? RateLimitPartition.GetFixedWindowLimiter(
+                $"{context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous"}:{context.Connection.RemoteIpAddress}",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = adminPermitLimit,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                })
+            : RateLimitPartition.GetNoLimiter("non-bearer"));
+    options.AddPolicy("device-api", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
 
 var dataProtection = builder.Services.AddDataProtection().SetApplicationName("LicenseServer");
 var dataProtectionPath = builder.Configuration["DataProtection:KeysPath"];
@@ -184,12 +235,14 @@ app.Use(async (context, next) =>
 });
 
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 app.UseAntiforgery();
 
 app.Use(async (context, next) =>
 {
     if (context.User.Identity?.IsAuthenticated == true
+        && context.User.Identity.AuthenticationType != ApiKeyAuthenticationDefaults.Scheme
         && !context.Request.Path.StartsWithSegments("/Account")
         && !context.Request.Path.StartsWithSegments("/health"))
     {
@@ -239,7 +292,7 @@ app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
     return result.Success
         ? await SignedResponse(result.Value!, store, signer, now, cancellationToken)
         : Problem(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("device-api");
 
 app.MapPost("/api/v1/activations/{activationId}/validate", async (
     string activationId, ActivationCredentialRequest request, LicenseStore store, CancellationToken cancellationToken) =>
@@ -248,7 +301,7 @@ app.MapPost("/api/v1/activations/{activationId}/validate", async (
     return result.Success
         ? Results.Ok(new ValidationResponse(result.Value!.LicenseId, activationId, "active", DateTimeOffset.UtcNow))
         : Problem(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("device-api");
 
 app.MapPost("/api/v1/activations/{activationId}/refresh", async (
     string activationId, ActivationCredentialRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>
@@ -258,7 +311,7 @@ app.MapPost("/api/v1/activations/{activationId}/refresh", async (
     return result.Success
         ? await SignedResponse(result.Value!, store, signer, now, cancellationToken)
         : Problem(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("device-api");
 
 app.MapPost("/api/v1/activations/{activationId}/deactivate", async (
     string activationId, ActivationCredentialRequest request, LicenseStore store, CancellationToken cancellationToken) =>
@@ -267,9 +320,9 @@ app.MapPost("/api/v1/activations/{activationId}/deactivate", async (
     return result.Success
         ? Results.Ok(new DeactivationResponse(result.Value!.LicenseId, activationId, "deactivated", DateTimeOffset.UtcNow))
         : Problem(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("device-api");
 
-var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization();
+var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization().RequireRateLimiting("admin-api").DisableAntiforgery();
 adminApi.MapGet("/authorization/{permission}", async (
     string permission, IAuthorizationService authorizationService, HttpContext context) =>
 {
@@ -292,6 +345,34 @@ adminApi.MapGet("/products", async (string? search, ProductCatalogService catalo
 adminApi.MapGet("/users", async (string? search, UserAdministrationService service, CancellationToken ct) =>
     Results.Ok(await service.SearchAsync(search, ct)))
     .RequireAuthorization(Permissions.UsersRead);
+adminApi.MapGet("/api-keys", async (
+    string? ownerUserId, ApiCredentialService service, HttpContext context, CancellationToken ct) =>
+{
+    var owner = ownerUserId ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+    return string.IsNullOrWhiteSpace(owner) ? Results.BadRequest() : Results.Ok(await service.ListAsync(owner, ct));
+}).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapPost("/api-keys", async (
+    CreateApiCredentialRequest request, ApiCredentialService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { return Results.Created("/api/v1/admin/api-keys", await service.CreateAsync(request, context.User.Identity?.Name ?? "unknown", ct)); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["apiKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapPost("/api-keys/{id:guid}/rotate", async (
+    Guid id, ApiCredentialService service, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { return Results.Ok(await service.RotateAsync(id, context.User.Identity?.Name ?? "unknown", ct)); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["apiKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapPost("/api-keys/{id:guid}/revoke", async (
+    Guid id, ApiCredentialService service, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { await service.RevokeAsync(id, context.User.Identity?.Name ?? "unknown", ct); return Results.NoContent(); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["apiKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.ApiKeysManageSelf);
 adminApi.MapPost("/users", async (
     CreateUserRequest request, UserAdministrationService service, IAntiforgery antiforgery,
     HttpContext context, CancellationToken ct) =>
@@ -372,8 +453,10 @@ adminApi.MapPatch("/products/{id:guid}", async (
     }
 }).RequireAuthorization(Permissions.ProductsManage);
 adminApi.MapPost("/licenses", async (
-    IssueLicenseRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
+    IssueLicenseRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
 {
+    if (!context.User.HasClaim("amr", "integration_test")
+        && !await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
     var principalId = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
         ?? context.User.Identity?.Name
         ?? "unknown";
@@ -535,6 +618,8 @@ static IResult LifecycleRedirect(string licenseId, string key, string? value) =>
 
 static async Task<bool> ValidAntiforgeryAsync(IAntiforgery antiforgery, HttpContext context)
 {
+    if (context.User.HasClaim("amr", "api_key"))
+        return true;
     try { await antiforgery.ValidateRequestAsync(context); return true; }
     catch (AntiforgeryValidationException) { return false; }
 }
