@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string] $LicenseId = 'LIC-POC-0001',
+    [Parameter(Mandatory)]
+    [string] $LicenseId,
     [string] $ActivationCode = 'POC-DEMO-ACTIVATION-CODE',
     [string] $OutputPath = 'artifacts/offline-activation-request.json'
 )

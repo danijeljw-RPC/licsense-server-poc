@@ -74,6 +74,11 @@ builder.Services.AddIdentityCore<ApplicationUser>(options =>
     .AddDefaultTokenProviders();
 
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+builder.Services.AddOptions<LicensingOptions>()
+    .BindConfiguration("Licensing");
+builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.AddSingleton<ILicenseBusinessDateResolver, ConfiguredLicenseBusinessDateResolver>();
+builder.Services.AddScoped<LicenseIdAllocator>();
 builder.Services.AddScoped<LicenseStore>();
 builder.Services.AddScoped<AdminDataService>();
 builder.Services.AddScoped<AuditService>();
@@ -205,7 +210,7 @@ adminApi.MapPost("/licenses", async (
     IssueLicenseRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
     var result = await store.IssueAsync(
-        request, context.User.Identity?.Name ?? "unknown", context.TraceIdentifier, DateTimeOffset.UtcNow, ct);
+        request, context.User.Identity?.Name ?? "unknown", context.TraceIdentifier, ct);
     return result.Success
         ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
         : Problem(result);

@@ -1,12 +1,44 @@
 @page "/licenses/create"
 @attribute [Authorize(Policy = "Administrator")]
 @inject AdminDataService Data
-@inject NavigationManager Navigation
 
 <PageTitle>Issue license</PageTitle><div class="page-heading"><div><p class="eyebrow">Issuance</p><h1>Create a license</h1><p>Define the customer, entitlement, and activation credential.</p></div></div>
 @if (error is not null) { <div class="alert error">@error</div> }
+@if (issued is not null)
+{
+    <article class="panel form-panel">
+        <p class="eyebrow">Issued successfully</p>
+        <h2>Allocated license ID</h2>
+        <label>License ID<input value="@issued.LicenseId" readonly /></label>
+        <p><a class="button" href="@($"/licenses/{Uri.EscapeDataString(issued.LicenseId)}")">View license</a></p>
+    </article>
+}
+else
+{
 <article class="panel form-panel"><EditForm Model="Input" FormName="create-license" OnValidSubmit="CreateAsync" method="post"><DataAnnotationsValidator /><ValidationSummary />
     <div class="form-grid"><label>License ID<input value="Generated on issue" readonly /></label><label>Customer<InputText @bind-Value="Input.CustomerName" /></label><label>Customer email<InputText type="email" @bind-Value="Input.CustomerEmail" /></label><label>Product<InputText @bind-Value="Input.Product" /></label><label>Edition<InputSelect @bind-Value="Input.Edition"><option value="business">Business</option><option value="community">Community</option><option value="project">Project</option><option value="education">Education</option><option value="consumer">Consumer</option><option value="smb">SMB</option><option value="enterprise">Enterprise</option><option value="corporate">Corporate</option></InputSelect></label><label>License type<InputSelect @bind-Value="Input.LicenseType"><option value="perpetual">Perpetual</option><option value="subscription">Subscription</option><option value="evaluation">Evaluation</option></InputSelect></label><label>Expiry (required for subscription/evaluation)<InputDate Type="InputDateType.DateTimeLocal" @bind-Value="Input.ExpiresAt" /></label><label>Seats<InputNumber @bind-Value="Input.Seats" /></label></div>
     <p class="notice">The server generates and hashes the activation code. Online checks observe lifecycle changes immediately; previously downloaded offline files cannot be recalled.</p><button class="button" type="submit">Issue license</button>
 </EditForm></article>
-@code { [SupplyParameterFromForm] private CreateLicenseInput Input { get; set; } = default!; [CascadingParameter] private HttpContext HttpContext { get; set; } = default!; private string? error; protected override void OnInitialized() => Input ??= new(); private async Task CreateAsync() { try { var id = await Data.CreateLicenseAsync(Input, HttpContext.User.Identity?.Name ?? "unknown"); Navigation.NavigateTo($"/licenses/{Uri.EscapeDataString(id)}"); } catch (InvalidOperationException ex) { error = ex.Message; } } }
+}
+@code
+{
+    [SupplyParameterFromForm] private CreateLicenseInput Input { get; set; } = default!;
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+    private string? error;
+    private LicenseStore.IssuedLicense? issued;
+
+    protected override void OnInitialized() => Input ??= new();
+
+    private async Task CreateAsync()
+    {
+        error = null;
+        try
+        {
+            issued = await Data.CreateLicenseAsync(Input, HttpContext.User.Identity?.Name ?? "unknown");
+        }
+        catch (InvalidOperationException ex)
+        {
+            error = ex.Message;
+        }
+    }
+}
