@@ -84,4 +84,3 @@ internal sealed class ActivationCodeOptions
     public string? Pepper { get; set; }
     public int IdempotencyWindowMinutes { get; set; } = 5;
 }
-
