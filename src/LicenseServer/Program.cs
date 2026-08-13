@@ -296,7 +296,7 @@ adminApi.MapPatch("/products/{id:guid}", async (
     if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
     try
     {
-        if (request.DisplayName is not null)
+        if (request.DisplayName is not null || request.Description is not null)
             await catalog.UpdateAsync(id, request.DisplayName, request.Description, context.User.Identity?.Name ?? "unknown", ct);
         if (request.IsActive is not null)
             await catalog.SetActiveAsync(id, request.IsActive.Value, context.User.Identity?.Name ?? "unknown", ct);

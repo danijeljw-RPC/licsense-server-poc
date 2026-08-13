@@ -55,13 +55,13 @@ namespace LicenseServer.Data.Migrations
                             substr(md5(lower(entitlement."Product")), 21, 12))::uuid
                     END,
                     lower(entitlement."Product"),
-                    CASE WHEN lower(entitlement."Product") = 'gcexp' THEN 'GCE Experience' ELSE entitlement."Product" END,
+                    CASE WHEN lower(entitlement."Product") = 'gcexp' THEN 'GCE Experience' ELSE min(entitlement."Product") END,
                     'Migrated from an existing immutable entitlement snapshot.',
                     TRUE,
                     CURRENT_TIMESTAMP,
                     CURRENT_TIMESTAMP
                 FROM "Entitlements" AS entitlement
-                GROUP BY lower(entitlement."Product"), entitlement."Product";
+                GROUP BY lower(entitlement."Product");
 
                 UPDATE "Entitlements" AS entitlement
                 SET "ProductDefinitionId" = product."Id"

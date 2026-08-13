@@ -68,6 +68,7 @@
     private void Select(ProductCatalogItem product)
     {
         selected = product;
+        edit.Code = product.Code;
         edit.DisplayName = product.DisplayName;
         edit.Description = product.Description ?? "";
     }

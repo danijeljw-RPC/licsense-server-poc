@@ -97,7 +97,7 @@ internal sealed partial class ProductCatalogService(
         await permissions.RequireAsync(Permissions.ProductsManage);
         var product = await db.ProductDefinitions.SingleOrDefaultAsync(item => item.Id == id, cancellationToken)
             ?? throw new InvalidOperationException("Product was not found.");
-        var name = displayName?.Trim();
+        var name = displayName is null ? product.DisplayName : displayName.Trim();
         if (string.IsNullOrWhiteSpace(name) || name.Length > 200)
             throw new InvalidOperationException("Product display name is required and cannot exceed 200 characters.");
         if (description?.Trim().Length > 2000)
