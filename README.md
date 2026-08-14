@@ -13,7 +13,7 @@ The signer and validator deliberately share `Licensing.Core`, so their interpret
 
 `LicenseServer` combines static server-rendered Blazor pages with narrowly scoped interactive support for Identity passkeys. EF Core and Npgsql persist customers, licenses, entitlements, activation history, signing-key metadata, ASP.NET Core Identity users/roles/passkeys, revocations, and append-only audit events in PostgreSQL. API request contracts remain separate from database entities.
 
-The public device APIs preserve the `/api/v1/licenses/{licenseId}/activate` and `/api/v1/activations/{activationId}/{validate|refresh|deactivate}` routes. Administrative pages and `/api/v1/admin/*` require the `Administrator` policy. The old `local-poc-admin-key` header has been removed.
+The public device APIs preserve the `/api/v1/licenses/{licenseId}/activate` and `/api/v1/activations/{activationId}/{validate|refresh|deactivate}` routes. Administrative pages and `/api/v1/admin/*` use named action-level permission policies. The legacy `Administrator` role is mapped to `System Administrator` during initialization, and the old `local-poc-admin-key` header has been removed.
 
 Activation and deactivation use serializable database transactions. Issuance uses a read-committed transaction containing one atomic PostgreSQL counter upsert, the customer, license, entitlement, and audit insert; rollback therefore returns the counter value as well. Counter-row locking makes concurrent allocation safe without retrying serializable transactions, and the unique license-ID index remains the final integrity boundary. `Licensing:IdTimeZone` controls only the business date embedded in the ID and defaults to `Australia/Adelaide`; every real timestamp remains UTC.
 
@@ -125,20 +125,157 @@ After login, open **Security**:
 - **Passkeys** registers, names, lists, renames, and removes WebAuthn credentials. .NET 10 Identity performs challenge creation, attestation, assertion validation, counter handling, and PostgreSQL public-credential storage. The server never receives private passkey material.
 - The login screen supports password, TOTP challenge, recovery-code challenge, and passkey authentication. Five failed password attempts trigger a 15-minute lockout.
 
+Production requires an MFA-authenticated Identity principal for `users.manage`, `apiKeys.manageAll`, and `licenses.revoke`. Development bypasses this high-risk gate unless `Security:RequireMfaForHighRiskPermissions=true` is set explicitly; the PostgreSQL authorization tests set it to `true`. A user with Identity two-factor enabled receives the `amr=mfa` session claim used by these policies. The built-in role matrix is:
+
+| Role | Access summary |
+| --- | --- |
+| System Administrator | All 16 roadmap permissions |
+| License Manager | Full license/customer/activation lifecycle, product read, self API-key management, and audit read |
+| License Issuer | License read/issue, customer read, product read, and self API-key management |
+| Support Agent | License/customer/product read, activation management, and self API-key management |
+| Product Administrator | Product read/manage and self API-key management |
+| Auditor | Read-only licenses, customers, products, users, and audit plus self API-key management |
+| Billing Automation | License read/issue/update, customer read/manage, product read, and billing management |
+
 WebAuthn requires a secure browser context. `http://localhost` is the browser-defined local-development exception. Deploy behind HTTPS everywhere else, preserve the public host and scheme through trusted forwarded headers, persist Data Protection keys, and set cookie secure policy to `Always` at the TLS boundary.
+
+### Operator and service-account administration
+
+`/settings/users` requires `users.read`; invitations, enable/disable, role changes,
+and forced password setup require `users.manage` plus the configured high-risk MFA
+gate. Human operators receive a 15-minute Identity password-setup token and an
+administrator never selects their password. Service accounts have no password, MFA,
+passkey, or browser-login credentials and exist only to own scoped automation keys.
+
+PostgreSQL serializes System Administrator disable/demotion operations so concurrent
+requests cannot remove the final enabled administrator. Disabling an identity changes
+its security stamp, rejects subsequent requests, calls the owned-credential revocation
+hook, writes a secret-free audit event, and queues invitation/reset delivery through
+the transactional email outbox. Setup links are never returned by production APIs.
+
+### Scoped API credentials
+
+`/settings/api-keys` creates bearer credentials in the form
+`lic_live_<public-id>_<secret>`. The 32-byte secret is displayed once; PostgreSQL keeps
+only its versioned HMAC-SHA-256 digest, public ID, last four characters, owner, scopes,
+and lifecycle timestamps. Human-owned keys require an expiry. Rotation creates a new
+secret and revokes the old key atomically; revocation and owner disablement take effect
+on the next request.
+
+Bearer authentication is selected only by `Authorization: Bearer` and maps key scopes
+to the existing permission policies. It never reads cookies and does not use
+antiforgery; cookie-authenticated mutations still require a valid antiforgery token.
+Bearer admin traffic is rate-limited by owner and IP, while anonymous device routes use
+a stricter IP partition. Configure `ApiCredentials__Pepper` outside source control with
+an independent Base64 value containing at least 32 random bytes. Development can use an
+ephemeral pepper, but its keys intentionally stop working after restart.
+
+### Versioned administration API
+
+The `/api/v1/admin` surface exposes the same authorization policies and domain services
+as the operator UI. Its route inventory covers bounded license search and detail,
+one-product issuance, terms updates, cancellation, revocation, activation-code rotation,
+operator deactivation, products, customers, users, API credentials, and filtered audit.
+Mutation responses never serialize EF entities; generated activation codes are returned
+only by issuance or rotation and PostgreSQL retains only their versioned HMAC digest.
+
+License detail returns a quoted numeric `ETag`. `PATCH` terms requests must send that
+value in `If-Match` and in the versioned request DTO. Cookie sessions require
+`X-CSRF-TOKEN`; scoped bearer credentials do not use cookie antiforgery. Issuance accepts
+`Idempotency-Key` and binds its encrypted, expiring replay result to the authenticated
+principal and canonical request fingerprint. All API responses carry `X-Correlation-ID`.
+The generated OpenAPI 3.1 document is available at `/openapi/v1.json` and describes both
+Identity-cookie and API-key bearer authentication, concurrency, pagination, one-time
+secrets, and the offline recall limitation.
+
+### Durable transactional email
+
+Transactional messages are inserted into PostgreSQL `EmailOutbox` through the
+provider-neutral sender and encrypted with ASP.NET Core Data Protection. The template
+registry covers purchase/activation, renewal reminder and receipt, payment failure,
+invoice, operator invitation, Identity confirmation/recovery, and customer magic-link
+messages. An idempotency digest uniquely suppresses duplicate queue requests; recipient
+addresses and template models exist only inside the protected payload.
+
+The hosted worker claims bounded batches with `FOR UPDATE SKIP LOCKED`, commits its
+short lease before calling MailerSend, and records the provider message ID, attempts,
+next attempt, and final status. Explicit throttling/server failures use bounded
+exponential retries. Ambiguous timeouts or network failures enter `uncertain` for
+operator reconciliation because the provider send API does not define an idempotency
+contract. Development without a token uses a redacted capture transport; non-Development
+startup requires `MailerSend__ApiToken`, `MailerSend__FromEmail`, and
+`MailerSend__WebhookSecret`. `MailerSend__FromName` is optional and
+`Email__WorkerEnabled` controls processing.
+
+`POST /api/v1/webhooks/mailersend` verifies the hexadecimal `Signature` as a fixed-time
+HMAC-SHA-256 over the raw request body before parsing. Provider event IDs are unique,
+delivery/bounce/complaint updates are operational only, and webhooks never mutate a
+license. The worker deletes terminal outbox rows and delivery events after the 30-day
+retention deadline; logs contain only outbox IDs, template names, and recipient hashes.
+
+### Passwordless customer access
+
+`/customer/access` always gives the same response whether or not a normalized email and
+optional license ID match. Valid matches queue a 32-byte random magic-link token through
+the transactional email outbox; PostgreSQL stores only its SHA-256 hash, hashed email/IP
+rate-limit identifiers, a 12-minute expiry, and its atomic consumption timestamp. The
+token is never an activation code and cannot be used twice.
+`CustomerPortal__PublicBaseUrl` supplies the public HTTPS origin for emailed links.
+
+Successful consumption clears any prior customer cookie before issuing a non-sliding,
+30-minute `LicenseServer.Customer` session. This scheme is separate from operator
+Identity and API credentials and contains only a customer ID plus a customer-session
+marker. The read-only portal and `/api/v1/customer` queries always include that customer
+ID in the database predicate, return 404 for another customer's license, and expose only
+status, product, edition, seats, expiry (`Never` for perpetual), activation state, and a
+redacted device suffix. Activation credentials/hashes, full device identifiers, signed
+metadata, audits, and operator controls are never projected.
+
+Customer logout requires antiforgery and clears only the customer session. Device
+deactivation, contact-email changes, and renewal mutations are deliberately unavailable;
+future sensitive operations must begin with a fresh email challenge.
+
+### Stripe billing and licensing policy
+
+`POST /api/v1/integrations/stripe/webhook` is anonymous transport only. It reads the
+untouched body, verifies `Stripe-Signature` with Stripe.net before parsing or writing,
+encrypts verified payloads with Data Protection, and inserts a unique provider event ID
+into `WebhookInbox`. Duplicate delivery returns success. Invalid signatures and
+malformed payloads create no inbox, customer, order, license, audit, or email rows.
+
+The billing worker leases rows with `FOR UPDATE SKIP LOCKED`. Stripe customer, Product,
+Price, subscription, Checkout Session, and invoice IDs live only in dedicated mapping
+tables. `BillingContract` and `LicenseOrder` remain provider-neutral, while license
+issuance and terms changes use `LicenseStore`. Provider IDs and payment data never enter
+signed metadata.
+
+Default policy is seven days of payment grace, paid-through cancellation, and review
+for refunds/disputes. `Billing__RefundAction` and `Billing__DisputeAction` can be set to
+`suspend` deliberately. Purchases issue one license and queue its one-time activation
+email transactionally; renewals are monotonic and idempotent by invoice; payment
+recovery clears grace; cancellation reversal and plan changes follow current provider
+state. Unknown/conflicting mappings quarantine without business side effects.
+
+Operators with `billing.manage` can list redacted status at
+`GET /api/v1/admin/billing/events` and reset eligible processing state at
+`POST /api/v1/admin/billing/events/{id}/reprocess`. Raw payloads and arbitrary mutation
+are not exposed. See [`docs/operator-runbook.md`](docs/operator-runbook.md) for exact
+configuration and recovery, and [`docs/roadmap-traceability.md`](docs/roadmap-traceability.md)
+for final acceptance evidence.
 
 ### Visual licensing workflows
 
 Use the left navigation after replacing the seed password:
 
-1. **Licenses** supports search, status filters, sort, pagination, and details. The demo seed receives a generated ID shown in this list; its activation code is `POC-DEMO-ACTIVATION-CODE` for development only.
-2. **Issue license** creates a customer, entitlement, and hashed activation credential. Deliver the original activation code through a separate secure channel because it cannot be recovered.
+1. **Licenses** supports case-insensitive search by ID, customer, or normalized customer email, plus status filters, sort, pagination, and details. The demo seed receives a generated ID shown in this list; its activation code is `POC-DEMO-ACTIVATION-CODE` for development only.
+2. **Issue license** selects one active product UUID from the catalog and creates a customer, one entitlement, an authoritative signed `metadata.contactEmail` snapshot, and a hashed activation credential. The normalized email is plaintext to anyone holding the signed file. Deliver the original activation code through a separate secure channel because it cannot be recovered.
 3. A license detail page accepts a client-generated 32-byte Base64 activation token and the device's 64-character SHA-256 ID. It issues a downloadable signed response without rendering either secret back to the page.
 4. For an online activation, enter its token and full device ID to refresh the lease and download the refreshed signed file.
 5. To transfer, use **Deactivate / transfer** first. A second device receives HTTP 409 until authenticated deactivation succeeds; the page makes this ordering explicit.
 6. **Revoke license** requires a reason and confirmation. Revocation prevents online validation and lease refresh. It cannot recall an offline file already in the field.
 7. **Offline issuance** imports JSON created by `scripts/New-OfflineActivationRequest.ps1`, validates it, and downloads the signed `.license` response. The imported token and full device ID are cleared and never displayed.
-8. **Audit trail** shows actor, action, target, UTC timestamp, result, and non-secret context. **System status** and `/health/ready` show aggregate readiness without secrets.
+8. **Products** supports search, add, display-name/description edit, activation, and archival while retaining stable immutable codes and historical reference counts.
+9. **Audit trail** shows actor, action, target, UTC timestamp, result, and non-secret context. **System status** and `/health/ready` show aggregate readiness without secrets.
 
 ### Tests
 
@@ -153,7 +290,12 @@ dotnet build SoftwareLicensing.slnx --configuration Release
 docker build --tag license-server:test .
 ```
 
-`Test-DatabaseAndAuth.ps1` creates a uniquely named PostgreSQL test container, runs migration, seed-idempotency, authorization, forced-password, TOTP/recovery-code, passkey-service, activation/conflict/refresh/transfer/revocation/offline-signature tests, and removes the container in `finally`. `Test-ActivationFlow.ps1` also starts its own isolated PostgreSQL database and LicenseServer process; it does **not** need or use a manually launched server. Both scripts clean up their temporary processes and files unless their explicit keep switch is used.
+`Test-DatabaseAndAuth.ps1` creates a uniquely named PostgreSQL test container and runs
+clean migration/repeated seed, authorization, one-time-secret, concurrency, email,
+customer-access, Stripe webhook/policy, activation, revocation, and offline-boundary
+tests. `Test-ActivationFlow.ps1` starts its own isolated PostgreSQL database and
+LicenseServer process; it does **not** need a manually launched server. The scripts
+remove their temporary resources unless an explicit keep switch is used.
 
 For the final container smoke test:
 
@@ -166,7 +308,7 @@ docker compose down
 
 ### Security boundaries and production work
 
-The development private key is intentionally mounted as a file for this PoC. Production must replace `LicenseEnvelopeSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database passwords and TLS keys in a secret manager or orchestrator secrets, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, configure real recovery email, add rate limiting and monitoring, and back up both PostgreSQL and signing-key metadata.
+The development private key is intentionally mounted as a file for this PoC. Production must replace `LicenseEnvelopeSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database, MailerSend, Stripe, webhook, and TLS secrets in a secret manager, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, add monitoring, and back up PostgreSQL, Data Protection keys, and signing-key metadata as one recovery set.
 
 Signed license JSON provides authenticity, not confidentiality. Do not put secrets or unnecessary personal information in it. Device IDs remain spoofable software identifiers rather than hardware proof. Offline files cannot receive immediate revocation, and system-clock rollback remains a concern unless the client periodically obtains trusted server time. Passkey credentials in PostgreSQL are public keys and counters; private credentials remain in the user's authenticator.
 
@@ -247,8 +389,11 @@ The seeded PoC license receives a generated `LIC-YYYY-MMDDXXXXXX` ID; find it on
 | `POST /api/v1/activations/{activationId}/validate` | Check current server state. |
 | `POST /api/v1/activations/{activationId}/refresh` | Issue a fresh signed online lease. |
 | `POST /api/v1/activations/{activationId}/deactivate` | Authenticate deactivation and make the licence transferable. |
-| `GET /api/v1/admin/licenses/{licenseId}` | Inspect state; requires an authenticated Administrator cookie. |
-| `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires Administrator authorization and an antiforgery token. |
+| `GET /api/v1/admin/licenses/{licenseId}` | Inspect state; requires `licenses.read`. |
+| `POST /api/v1/admin/licenses` | Issue one catalog product by UUID; requires `licenses.issue`. |
+| `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires `licenses.revoke`, MFA in production, and an antiforgery token for cookie requests. |
+| `GET /api/v1/admin/products` | Search the readable product catalog; requires `products.read`. |
+| `POST/PATCH /api/v1/admin/products` | Add, edit, activate, or archive products; requires `products.manage`. |
 
 The service uses PostgreSQL transactions, database uniqueness constraints, ASP.NET Core Identity, and immutable audit records. The web process loads a mounted development PEM only for this PoC; move signing behind a KMS/HSM boundary before production.
 

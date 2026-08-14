@@ -2,6 +2,8 @@ using System.Text.Json.Nodes;
 using System.Data;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using LicenseServer.Authorization;
+using System.Security.Claims;
 
 namespace LicenseServer.Data;
 
@@ -15,7 +17,8 @@ public sealed partial class DatabaseInitializer(
     IWebHostEnvironment environment,
     ILogger<DatabaseInitializer> logger)
 {
-    public const string AdministratorRole = "Administrator";
+    public const string AdministratorRole = BuiltInRoles.LegacyAdministrator;
+    public static readonly Guid KnownProductId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     public const string DefaultEmail = "admin@localhost.com";
     public const string DefaultPassword = "LocalAdmin!7Kp9-Vx3-Rm8-Qz2";
 
@@ -27,6 +30,7 @@ public sealed partial class DatabaseInitializer(
             await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_lock(7349210862)", cancellationToken);
             await db.Database.MigrateAsync(cancellationToken);
             await SeedRoleAndAdminAsync();
+            await SeedProductsAsync(cancellationToken);
             await SeedDemoDataAsync(cancellationToken);
         }
         finally
@@ -36,12 +40,59 @@ public sealed partial class DatabaseInitializer(
         }
     }
 
+    private async Task SeedProductsAsync(CancellationToken cancellationToken)
+    {
+        var product = await db.ProductDefinitions.SingleOrDefaultAsync(
+            item => item.Code == "gcexp", cancellationToken);
+        if (product is not null) return;
+        var now = clock.GetUtcNow();
+        db.ProductDefinitions.Add(new ProductDefinition
+        {
+            Id = KnownProductId,
+            Code = "gcexp",
+            DisplayName = "GCE Experience",
+            Description = "Existing product retained from pre-catalog license records.",
+            IsActive = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
     private async Task SeedRoleAndAdminAsync()
     {
-        if (!await roles.RoleExistsAsync(AdministratorRole))
+        foreach (var roleName in BuiltInRoles.All.Append(BuiltInRoles.LegacyAdministrator))
         {
-            var roleResult = await roles.CreateAsync(new IdentityRole(AdministratorRole));
-            EnsureSucceeded(roleResult, "create the Administrator role");
+            if (!await roles.RoleExistsAsync(roleName))
+                EnsureSucceeded(await roles.CreateAsync(new IdentityRole(roleName)), $"create the {roleName} role");
+        }
+
+        foreach (var roleName in BuiltInRoles.All)
+        {
+            var role = await roles.FindByNameAsync(roleName)
+                ?? throw new InvalidOperationException($"Unable to load the {roleName} role.");
+            var existing = await roles.GetClaimsAsync(role);
+            var expected = BuiltInRoles.PermissionsFor(roleName);
+            foreach (var claim in existing.Where(claim =>
+                         claim.Type == Permissions.ClaimType
+                         && !expected.Contains(claim.Value, StringComparer.Ordinal)))
+            {
+                EnsureSucceeded(await roles.RemoveClaimAsync(role, claim), $"remove stale permission from {roleName}");
+            }
+            foreach (var permission in expected.Where(permission =>
+                         !existing.Any(claim => claim.Type == Permissions.ClaimType && claim.Value == permission)))
+            {
+                EnsureSucceeded(
+                    await roles.AddClaimAsync(role, new Claim(Permissions.ClaimType, permission)),
+                    $"add {permission} to {roleName}");
+            }
+        }
+
+        foreach (var legacyAdmin in await users.GetUsersInRoleAsync(BuiltInRoles.LegacyAdministrator))
+        {
+            if (!await users.IsInRoleAsync(legacyAdmin, BuiltInRoles.SystemAdministrator))
+                EnsureSucceeded(await users.AddToRoleAsync(legacyAdmin, BuiltInRoles.SystemAdministrator),
+                    "map a legacy Administrator to System Administrator");
         }
 
         if (!GetBoolean("SEED_DEFAULT_ADMIN", environment.IsDevelopment()))
@@ -69,6 +120,8 @@ public sealed partial class DatabaseInitializer(
 
         if (!await users.IsInRoleAsync(user, AdministratorRole))
             EnsureSucceeded(await users.AddToRoleAsync(user, AdministratorRole), "assign the Administrator role");
+        if (!await users.IsInRoleAsync(user, BuiltInRoles.SystemAdministrator))
+            EnsureSucceeded(await users.AddToRoleAsync(user, BuiltInRoles.SystemAdministrator), "assign the System Administrator role");
 
         if (GetBoolean("RESET_ADMIN_PASSWORD", false))
         {
@@ -85,6 +138,7 @@ public sealed partial class DatabaseInitializer(
         if (!GetBoolean("SEED_DEMO_LICENSE", environment.IsDevelopment())) return;
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        var product = await db.ProductDefinitions.SingleAsync(item => item.Code == "gcexp", cancellationToken);
 
         var customer = await db.Customers.SingleOrDefaultAsync(x => x.ExternalId == "POC-CUSTOMER", cancellationToken);
         if (customer is null)
@@ -93,6 +147,8 @@ public sealed partial class DatabaseInitializer(
             {
                 Id = Guid.NewGuid(),
                 Name = "Example Pty Ltd",
+                Email = "licensing@example.com",
+                NormalizedEmail = "licensing@example.com",
                 ExternalId = "POC-CUSTOMER",
                 CreatedAt = DateTimeOffset.UtcNow
             };
@@ -108,7 +164,11 @@ public sealed partial class DatabaseInitializer(
                 LicenseId = await licenseIds.AllocateAsync(now, cancellationToken),
                 Customer = customer,
                 ActivationCodeHash = LicenseStore.Hash("POC-DEMO-ACTIVATION-CODE"),
-                MetadataJson = new JsonObject { ["purchaseOrder"] = "PO-POC-0001" }.ToJsonString(),
+                MetadataJson = new JsonObject
+                {
+                    ["purchaseOrder"] = "PO-POC-0001",
+                    ["contactEmail"] = customer.NormalizedEmail
+                }.ToJsonString(),
                 IssuedAt = now,
                 ExpiresAt = LicenseTerms.PerpetualExpiry,
                 Entitlements =
@@ -116,8 +176,10 @@ public sealed partial class DatabaseInitializer(
                     new Entitlement
                     {
                         Id = Guid.NewGuid(),
+                        ProductDefinitionId = product.Id,
+                        ProductDefinition = product,
                         Product = "gcexp",
-                        Edition = "professional",
+                        Edition = "business",
                         LicenseType = "perpetual",
                         Seats = 1,
                         UpdatesUntil = new DateOnly(2027, 8, 12),

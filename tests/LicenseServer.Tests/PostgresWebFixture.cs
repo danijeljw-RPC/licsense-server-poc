@@ -8,13 +8,20 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.DependencyInjection;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Encodings.Web;
+using SoftwareLicensing;
+using LicenseServer.Authorization;
 
 namespace LicenseServer.Tests;
 
 public sealed class PostgresWebFixture : IAsyncLifetime
 {
+    internal const string MailerSendWebhookSecret = "stage12-mailersend-webhook-secret-with-32-bytes";
+    internal const string StripeWebhookSecret = "whsec_stage14_test_webhook_secret";
     private readonly List<WebApplicationFactory<Program>> authenticatedFactories = [];
+    private string? temporaryKeyDirectory;
+    private string? originalTrustedPublicKey;
     public WebApplicationFactory<Program> Factory { get; private set; } = null!;
     public SecretCaptureLoggerProvider CapturedLogs { get; } = new();
 
@@ -23,8 +30,10 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         var connectionString = Environment.GetEnvironmentVariable("TEST_POSTGRES_CONNECTION")
             ?? throw new InvalidOperationException("Run tests through scripts/Test-DatabaseAndAuth.ps1 so they receive an isolated PostgreSQL database.");
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", connectionString);
-        Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", FindRepositoryFile("keys/license-primary-2026-private.pem"));
-        Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", FindRepositoryFile("keys/license-primary-2026-public.pem"));
+        Environment.SetEnvironmentVariable("Security__RequireMfaForHighRiskPermissions", "true");
+        var keys = ResolveSigningKeys();
+        Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", keys.PrivateKeyPath);
+        Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", keys.PublicKeyPath);
         Factory = new LicenseServerFactory(connectionString);
         using var client = Factory.CreateClient();
         using var ready = await client.GetAsync("/health/ready");
@@ -41,6 +50,30 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         throw new FileNotFoundException($"Could not locate repository file '{relativePath}'.");
     }
 
+    private (string PrivateKeyPath, string PublicKeyPath) ResolveSigningKeys()
+    {
+        try
+        {
+            return (
+                FindRepositoryFile("keys/license-primary-2026-private.pem"),
+                FindRepositoryFile("keys/license-primary-2026-public.pem"));
+        }
+        catch (FileNotFoundException)
+        {
+            temporaryKeyDirectory = Path.Combine(Path.GetTempPath(), $"license-server-test-keys-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(temporaryKeyDirectory);
+            var privateKeyPath = Path.Combine(temporaryKeyDirectory, "private.pem");
+            var publicKeyPath = Path.Combine(temporaryKeyDirectory, "public.pem");
+            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            File.WriteAllText(privateKeyPath, key.ExportPkcs8PrivateKeyPem());
+            var publicKeyPem = key.ExportSubjectPublicKeyInfoPem();
+            File.WriteAllText(publicKeyPath, publicKeyPem);
+            originalTrustedPublicKey = TrustedPublicKeys.ByKeyId["primary-2026"];
+            ((IDictionary<string, string>)TrustedPublicKeys.ByKeyId)["primary-2026"] = publicKeyPem;
+            return (privateKeyPath, publicKeyPath);
+        }
+    }
+
     public async Task DisposeAsync()
     {
         foreach (var factory in authenticatedFactories)
@@ -49,9 +82,35 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", null);
         Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", null);
         Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", null);
+        Environment.SetEnvironmentVariable("Security__RequireMfaForHighRiskPermissions", null);
+        if (temporaryKeyDirectory is not null && Directory.Exists(temporaryKeyDirectory))
+            Directory.Delete(temporaryKeyDirectory, recursive: true);
+        if (originalTrustedPublicKey is not null)
+            ((IDictionary<string, string>)TrustedPublicKeys.ByKeyId)["primary-2026"] = originalTrustedPublicKey;
     }
 
     public HttpClient CreateAuthenticatedClient(bool administrator, params string[] permissions)
+    {
+        var client = CreateTestClient();
+        if (administrator)
+        {
+            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.RoleHeader, DatabaseInitializer.AdministratorRole);
+            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.MfaHeader, "true");
+        }
+        foreach (var permission in permissions)
+            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.PermissionHeader, permission);
+        return client;
+    }
+
+    public HttpClient CreateRoleClient(string role, bool mfa)
+    {
+        var client = CreateTestClient();
+        client.DefaultRequestHeaders.Add(TestAuthenticationHandler.RoleHeader, role);
+        if (mfa) client.DefaultRequestHeaders.Add(TestAuthenticationHandler.MfaHeader, "true");
+        return client;
+    }
+
+    private HttpClient CreateTestClient()
     {
         var factory = Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
@@ -71,10 +130,6 @@ public sealed class PostgresWebFixture : IAsyncLifetime
             HandleCookies = true,
             BaseAddress = new Uri("https://localhost")
         });
-        if (administrator)
-            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.RoleHeader, DatabaseInitializer.AdministratorRole);
-        foreach (var permission in permissions)
-            client.DefaultRequestHeaders.Add(TestAuthenticationHandler.PermissionHeader, permission);
         return client;
     }
 
@@ -90,7 +145,15 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["SEED_DEMO_LICENSE"] = "true",
                 ["DEFAULT_ADMIN_EMAIL"] = DatabaseInitializer.DefaultEmail,
                 ["DEFAULT_ADMIN_PASSWORD"] = DatabaseInitializer.DefaultPassword,
-                ["Security:UseHttpsRedirection"] = "false"
+                ["ActivationCodes:Pepper"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+                ["ApiCredentials:Pepper"] = "HyQjIiEgHx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwY=",
+                ["Email:WorkerEnabled"] = "false",
+                ["MailerSend:WebhookSecret"] = MailerSendWebhookSecret,
+                ["Stripe:WebhookSecret"] = StripeWebhookSecret,
+                ["Billing:WorkerEnabled"] = "false",
+                ["Security:UseHttpsRedirection"] = "false",
+                ["Security:RequireMfaForHighRiskPermissions"] = "true",
+                ["RateLimits:AdminPermitLimit"] = "5000"
             }));
         }
     }
@@ -105,6 +168,7 @@ public sealed class TestAuthenticationHandler(
     public const string SchemeName = "Phase0Test";
     public const string RoleHeader = "X-Test-Role";
     public const string PermissionHeader = "X-Test-Permission";
+    public const string MfaHeader = "X-Test-Mfa";
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
@@ -113,8 +177,16 @@ public sealed class TestAuthenticationHandler(
             new(ClaimTypes.NameIdentifier, "phase0-test-operator"),
             new(ClaimTypes.Name, "phase0-test-operator")
         };
-        claims.AddRange(Request.Headers[RoleHeader].Select(value => new Claim(ClaimTypes.Role, value!)));
+        foreach (var role in Request.Headers[RoleHeader].Select(value => value!).Where(value => value is not null))
+        {
+            claims.Add(new Claim(ClaimTypes.Role, role));
+            claims.AddRange(BuiltInRoles.PermissionsFor(role)
+                .Select(permission => new Claim(Permissions.ClaimType, permission)));
+        }
         claims.AddRange(Request.Headers[PermissionHeader].Select(value => new Claim("permission", value!)));
+        if (string.Equals(Request.Headers[MfaHeader].FirstOrDefault(), "true", StringComparison.OrdinalIgnoreCase))
+            claims.Add(new Claim("amr", "mfa"));
+        claims.Add(new Claim("amr", "integration_test"));
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName)));
     }

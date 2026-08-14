@@ -1,7 +1,7 @@
 # License administration roadmap
 
-Status: implementation plan for the current proof of concept  
-Last updated: 2026-08-13
+Status: implemented and acceptance-verified; see `docs/roadmap-traceability.md`
+Last updated: 2026-08-14
 
 This document turns the requested licensing workflows into an implementation plan for this repository. It is intentionally specific about database invariants, API behavior, permissions, and testable outcomes.
 
@@ -21,7 +21,7 @@ This document turns the requested licensing workflows into an implementation pla
 - Administrative actions are available through a versioned API with scoped bearer credentials, not only through the browser UI.
 - Every sensitive mutation is authorized on the server and recorded in the append-only audit trail.
 
-## Current repository assessment
+## Original repository assessment
 
 The current application already provides PostgreSQL persistence, ASP.NET Core Identity, an `Administrator` policy, audit records, activation/deactivation/refresh, revocation, and signed license generation. It also hashes activation codes and activation tokens at rest.
 
@@ -447,52 +447,52 @@ This phase directly resolves the unusable red button and inability to expire a l
 
 ### Issuance
 
-- [ ] A user/API client cannot provide or overwrite a License ID.
-- [ ] 1,000 concurrent creations produce unique IDs matching `^LIC-[0-9]{4}-[0-9]{4}[A-F0-9]{6}$` and daily hex values are monotonic.
-- [ ] Activation codes match the requested segment lengths and never contain `0`, `O`, `1`, `I`, or `L`.
-- [ ] Plaintext activation code is visible only in the successful issuance response and Copy works with accessible feedback.
-- [ ] Database, logs, exceptions, audit, and subsequent APIs contain no plaintext activation code.
-- [ ] Product and edition cannot bypass their catalogs with a forged POST/API request.
-- [ ] Each portal/API-issued license has exactly one entitlement.
-- [ ] Subscription/evaluation cannot be created without a future expiry.
-- [ ] Perpetual stores/signs the canonical year-9999 expiry and UI displays `Never`.
-- [ ] Signed entitlement expiry matches the server record.
+- [x] A user/API client cannot provide or overwrite a License ID.
+- [x] 1,000 concurrent creations produce unique IDs matching `^LIC-[0-9]{4}-[0-9]{4}[A-F0-9]{6}$` and daily hex values are monotonic.
+- [x] Activation codes match the requested segment lengths and never contain `0`, `O`, `1`, `I`, or `L`.
+- [x] Plaintext activation code is visible only in the successful issuance response and Copy works with accessible feedback.
+- [x] Database, logs, exceptions, audit, and subsequent APIs contain no plaintext activation code.
+- [x] Product and edition cannot bypass their catalogs with a forged POST/API request.
+- [x] Each portal/API-issued license has exactly one entitlement.
+- [x] Subscription/evaluation cannot be created without a future expiry.
+- [x] Perpetual stores/signs the canonical year-9999 expiry and UI displays `Never`.
+- [x] Signed entitlement expiry matches the server record.
 
 ### Mandatory metadata and search
 
-- [ ] UI/API/Stripe issuance fails without a valid customer email.
-- [ ] Every created license contains exactly one authoritative `metadata.contactEmail` normalized to the customer email.
-- [ ] A client cannot omit or override `metadata.contactEmail` through custom metadata.
-- [ ] Seeded/demo licenses also satisfy the email invariant.
-- [ ] Searching by email returns the expected customer/licenses case-insensitively.
+- [x] UI/API/Stripe issuance fails without a valid customer email.
+- [x] Every created license contains exactly one authoritative `metadata.contactEmail` normalized to the customer email.
+- [x] A client cannot omit or override `metadata.contactEmail` through custom metadata.
+- [x] Seeded/demo licenses also satisfy the email invariant.
+- [x] Searching by email returns the expected customer/licenses case-insensitively.
 
 ### Lifecycle
 
-- [ ] Checking confirmation enables the red action and validation errors are visible.
-- [ ] Never-activated license can be cancelled with a reason and can never activate afterward.
-- [ ] License with activation history cannot use cancel and is directed to revoke.
-- [ ] Authorized user can set expiry to yesterday; activation/validate/refresh then fail as expired.
-- [ ] Revocation works before or after activation and is idempotent.
-- [ ] Unauthorized users cannot update/cancel/revoke by direct HTTP calls.
-- [ ] Every mutation records actor, timestamp, result, target, old/new non-secret values, and correlation ID.
-- [ ] Offline limitation is visible and covered by tests.
+- [x] Checking confirmation enables the red action and validation errors are visible.
+- [x] Never-activated license can be cancelled with a reason and can never activate afterward.
+- [x] License with activation history cannot use cancel and is directed to revoke.
+- [x] Authorized user can set expiry to yesterday; activation/validate/refresh then fail as expired.
+- [x] Revocation works before or after activation and is idempotent.
+- [x] Unauthorized users cannot update/cancel/revoke by direct HTTP calls.
+- [x] Every mutation records actor, timestamp, result, target, old/new non-secret values, and correlation ID.
+- [x] Offline limitation is visible and covered by tests.
 
 ### API and users
 
-- [ ] API key is shown once, hashed at rest, scope-limited, expirable, rotatable, and immediately revocable.
-- [ ] Missing/wrong scope returns `403`; missing/invalid token returns `401` without revealing lookup details.
-- [ ] Cookie mutations require antiforgery; bearer mutations do not depend on cookies.
-- [ ] Each built-in role passes allowed-action tests and fails disallowed-action tests.
-- [ ] Disabling a user invalidates sessions and owned API keys.
-- [ ] The final System Administrator cannot be removed or disabled accidentally.
+- [x] API key is shown once, hashed at rest, scope-limited, expirable, rotatable, and immediately revocable.
+- [x] Missing/wrong scope returns `403`; missing/invalid token returns `401` without revealing lookup details.
+- [x] Cookie mutations require antiforgery; bearer mutations do not depend on cookies.
+- [x] Each built-in role passes allowed-action tests and fails disallowed-action tests.
+- [x] Disabling a user invalidates sessions and owned API keys.
+- [x] The final System Administrator cannot be removed or disabled accidentally.
 
 ### Integrations
 
-- [ ] Mail is outbox-backed, retry-safe, redacted in logs, and observable by provider message ID.
-- [ ] Customer magic links are hashed, short-lived, single-use, rate-limited, and customer-scoped.
-- [ ] Stripe signature is verified against raw body before parsing.
-- [ ] Duplicate/reordered Stripe events do not duplicate licenses, renewals, audit entries, or email.
-- [ ] Payment failure uses the configured grace policy rather than silently revoking access.
+- [x] Mail is outbox-backed, retry-safe, redacted in logs, and observable by provider message ID.
+- [x] Customer magic links are hashed, short-lived, single-use, rate-limited, and customer-scoped.
+- [x] Stripe signature is verified against raw body before parsing.
+- [x] Duplicate/reordered Stripe events do not duplicate licenses, renewals, audit entries, or email.
+- [x] Payment failure uses the configured grace policy rather than silently revoking access.
 
 ## Definition of done
 

@@ -33,7 +33,8 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
             };
             request.Headers.Add("Idempotency-Key", $"phase0-concurrent-{index}");
             using var response = await client.SendAsync(request);
-            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            Assert.True(response.StatusCode == HttpStatusCode.Created,
+                $"Expected 201 but received {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
             var issued = await response.Content.ReadFromJsonAsync<IssueLicenseResultContract>();
             return issued ?? throw new InvalidOperationException("Issuance response was empty.");
         });
@@ -65,6 +66,7 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var row = await db.Licenses.AsNoTracking().SingleAsync(item => item.LicenseId == issued.LicenseId);
         var audit = await db.AuditRecords.AsNoTracking().Where(item => item.TargetId == issued.LicenseId).ToListAsync();
+        Assert.Equal(ActivationCodeHasher.CurrentVersion, row.ActivationCodeHashVersion);
         Assert.DoesNotContain(issued.ActivationCode, Convert.ToHexString(row.ActivationCodeHash), StringComparison.Ordinal);
         Assert.All(audit, item => Assert.DoesNotContain(issued.ActivationCode, item.ContextJson, StringComparison.Ordinal));
         Assert.All(fixture.CapturedLogs.Messages, message => Assert.DoesNotContain(issued.ActivationCode, message, StringComparison.Ordinal));
@@ -73,6 +75,65 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
         var laterBody = await later.Content.ReadAsStringAsync();
         Assert.DoesNotContain(issued.ActivationCode, laterBody, StringComparison.Ordinal);
         Assert.DoesNotContain("activationCode", laterBody, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "05")]
+    public async Task SamePrincipalAndIdempotencyKeyReturnsEncryptedRetryResultWithoutDuplicateIssuance()
+    {
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
+        var requestBody = RoadmapTestSupport.ValidIssueRequest($"idempotent-{Guid.NewGuid():N}");
+        var key = $"phase05-{Guid.NewGuid():N}";
+
+        async Task<IssueLicenseResultContract> IssueAsync()
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/licenses")
+            {
+                Content = JsonContent.Create(requestBody)
+            };
+            request.Headers.Add("Idempotency-Key", key);
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            return await response.Content.ReadFromJsonAsync<IssueLicenseResultContract>()
+                ?? throw new InvalidOperationException("Issuance response was empty.");
+        }
+
+        var first = await IssueAsync();
+        var retry = await IssueAsync();
+        Assert.Equal(first.LicenseId, retry.LicenseId);
+        Assert.Equal(first.ActivationCode, retry.ActivationCode);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        Assert.Equal(1, await db.Licenses.CountAsync(item => item.LicenseId == first.LicenseId));
+        var keyHash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key));
+        var retryRecord = await db.IssuanceIdempotencyRecords.AsNoTracking()
+            .SingleAsync(item => item.KeyHash == keyHash);
+        Assert.DoesNotContain(first.ActivationCode, retryRecord.ProtectedResult, StringComparison.Ordinal);
+        Assert.DoesNotContain(key, Convert.ToHexString(retryRecord.KeyHash), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "05")]
+    public async Task ReusingAnIdempotencyKeyForDifferentInputIsRejected()
+    {
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
+        var key = $"phase05-{Guid.NewGuid():N}";
+        using var firstRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/licenses")
+        {
+            Content = JsonContent.Create(RoadmapTestSupport.ValidIssueRequest($"first-{Guid.NewGuid():N}"))
+        };
+        firstRequest.Headers.Add("Idempotency-Key", key);
+        using var first = await client.SendAsync(firstRequest);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        using var secondRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/licenses")
+        {
+            Content = JsonContent.Create(RoadmapTestSupport.ValidIssueRequest($"second-{Guid.NewGuid():N}"))
+        };
+        secondRequest.Headers.Add("Idempotency-Key", key);
+        using var second = await client.SendAsync(secondRequest);
+        await RoadmapTestSupport.AssertProblemAsync(second, HttpStatusCode.Conflict);
     }
 
     [Fact]
@@ -96,18 +157,60 @@ public sealed class RoadmapIssuanceContractTests(PostgresWebFixture fixture)
         await RoadmapTestSupport.AssertProblemAsync(rejected, HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    [Trait("ExpectedGreenStage", "06")]
+    public async Task CurrentCustomerEmailCanChangeWithoutRewritingTheSignedSnapshot()
+    {
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/admin/licenses",
+            RoadmapTestSupport.ValidIssueRequest("snapshot") with { CustomerEmail = "first@example.com" });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var issued = await response.Content.ReadFromJsonAsync<IssueLicenseResultContract>()
+            ?? throw new InvalidOperationException("Issuance response was empty.");
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var license = await db.Licenses.Include(item => item.Customer)
+            .SingleAsync(item => item.LicenseId == issued.LicenseId);
+        var snapshot = license.MetadataJson;
+        license.Customer.Email = "second@example.com";
+        license.Customer.NormalizedEmail = "second@example.com";
+        await db.SaveChangesAsync();
+
+        Assert.Equal(snapshot, license.MetadataJson);
+        Assert.Equal("first@example.com", JsonDocument.Parse(license.MetadataJson)
+            .RootElement.GetProperty("contactEmail").GetString());
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "06")]
+    public async Task LicenseSearchUsesNormalizedCustomerEmailCaseInsensitively()
+    {
+        using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/admin/licenses",
+            RoadmapTestSupport.ValidIssueRequest("email-search") with { CustomerEmail = "Search.Me@Example.COM" });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var data = scope.ServiceProvider.GetRequiredService<AdminDataService>();
+        var results = await data.SearchLicensesAsync("SEARCH.ME@EXAMPLE.COM", null, null, 1);
+        Assert.Contains(results.Items, item => item.Customer == "Phase 0 Customer email-search");
+    }
+
     [Theory]
-    [InlineData("made-up-product", "business", "subscription")]
-    [InlineData("gcexp", "professional", "subscription")]
-    [InlineData("gcexp", "business", "trial-ish")]
+    [InlineData("00000000-0000-0000-0000-000000000000", "business", "subscription")]
+    [InlineData("11111111-1111-1111-1111-111111111111", "professional", "subscription")]
+    [InlineData("11111111-1111-1111-1111-111111111111", "business", "trial-ish")]
     [Trait("ExpectedGreenStage", "07")]
     public async Task ForgedProductEditionAndLicenseTypeValuesAreRejected(
-        string product, string edition, string licenseType)
+        string productId, string edition, string licenseType)
     {
         using var client = fixture.CreateAuthenticatedClient(true, "licenses.issue");
         var request = RoadmapTestSupport.ValidIssueRequest("controlled") with
         {
-            Product = product,
+            ProductId = Guid.Parse(productId),
             Edition = edition,
             LicenseType = licenseType
         };

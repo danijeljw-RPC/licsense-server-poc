@@ -44,15 +44,26 @@ public sealed record AmendTermsRequest(
     int? Seats,
     DateOnly? UpdatesUntil,
     string? Reason,
-    long Version);
+    long Version,
+    string? Edition = null);
 
 public sealed record IssueLicenseRequest(
     string? CustomerName,
     string? CustomerEmail,
-    string? Product,
+    Guid? ProductId,
     string? Edition,
     string? LicenseType,
     DateTimeOffset? ExpiresAt,
     int Seats,
     DateOnly? UpdatesUntil,
     IReadOnlyDictionary<string, object?>? Metadata);
+
+public sealed record CreateProductRequest(string? Code, string? DisplayName, string? Description);
+public sealed record UpdateProductRequest(string? DisplayName, string? Description, bool? IsActive);
+public sealed record UpdateCustomerRequest(string? Name, string? Email);
+public sealed record RotateActivationCodeRequest(long Version);
+
+public sealed record InviteUserRequest(string? Email, IReadOnlyList<string>? Roles);
+public sealed record CreateServiceAccountRequest(string? Email, IReadOnlyList<string>? Roles);
+public sealed record CreateUserRequest(string? Email, string? AccountType, IReadOnlyList<string>? Roles);
+public sealed record UpdateUserRequest(bool? IsEnabled, IReadOnlyList<string>? Roles, bool ForcePasswordReset = false);

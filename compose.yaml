@@ -44,6 +44,19 @@ services:
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:?Set DEFAULT_ADMIN_PASSWORD in .env}
       SEED_DEMO_LICENSE: ${SEED_DEMO_LICENSE:-true}
       Licensing__IdTimeZone: ${LICENSE_ID_TIME_ZONE:-Australia/Adelaide}
+      ActivationCodes__Pepper: ${ACTIVATION_CODE_PEPPER:?Set ACTIVATION_CODE_PEPPER in .env}
+      ApiCredentials__Pepper: ${API_CREDENTIAL_PEPPER:?Set API_CREDENTIAL_PEPPER in .env}
+      MailerSend__ApiToken: ${MAILERSEND_API_TOKEN:?Set MAILERSEND_API_TOKEN in .env}
+      MailerSend__FromEmail: ${MAILERSEND_FROM_EMAIL:?Set MAILERSEND_FROM_EMAIL in .env}
+      MailerSend__FromName: ${MAILERSEND_FROM_NAME:-License Server}
+      MailerSend__WebhookSecret: ${MAILERSEND_WEBHOOK_SECRET:?Set MAILERSEND_WEBHOOK_SECRET in .env}
+      Stripe__ApiKey: ${STRIPE_API_KEY:?Set STRIPE_API_KEY in .env}
+      Stripe__WebhookSecret: ${STRIPE_WEBHOOK_SECRET:?Set STRIPE_WEBHOOK_SECRET in .env}
+      Stripe__ApiVersion: 2026-07-29.dahlia
+      Billing__GracePeriodDays: ${BILLING_GRACE_PERIOD_DAYS:-7}
+      Billing__RefundAction: ${BILLING_REFUND_ACTION:-review}
+      Billing__DisputeAction: ${BILLING_DISPUTE_ACTION:-review}
+      CustomerPortal__PublicBaseUrl: ${CUSTOMER_PORTAL_PUBLIC_BASE_URL:?Set CUSTOMER_PORTAL_PUBLIC_BASE_URL in .env}
       RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-false}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
     ports:

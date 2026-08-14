@@ -9,6 +9,7 @@ namespace LicenseServer.Tests;
 
 internal static class RoadmapTestSupport
 {
+    public static readonly Guid KnownProductId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     public static readonly DateTimeOffset PerpetualExpiry =
         new DateTimeOffset(9999, 12, 31, 23, 59, 59, TimeSpan.Zero).AddTicks(9_999_990);
 
@@ -25,7 +26,7 @@ internal static class RoadmapTestSupport
     public static IssueLicenseContract ValidIssueRequest(string suffix = "default") => new(
         $"Phase 0 Customer {suffix}",
         $"phase0-{suffix}@example.com",
-        "gcexp",
+        KnownProductId,
         "business",
         "subscription",
         DateTimeOffset.UtcNow.AddYears(1),
@@ -49,18 +50,24 @@ internal static class RoadmapTestSupport
             {
                 Id = Guid.NewGuid(),
                 Name = $"Phase 0 {suffix}",
+                Email = $"phase0-{suffix}@example.com",
+                NormalizedEmail = $"phase0-{suffix}@example.com",
                 ExternalId = $"phase0-{suffix}-{Guid.NewGuid():N}",
                 CreatedAt = DateTimeOffset.UtcNow
             },
             ActivationCodeHash = LicenseStore.Hash($"PHASE0-{suffix}-ACTIVATION-CODE"),
-            MetadataJson = "{}",
+            MetadataJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                contactEmail = $"phase0-{suffix}@example.com"
+            }),
             IssuedAt = DateTimeOffset.UtcNow,
             ExpiresAt = expiresAt,
             Entitlements =
             [
                 new Entitlement
                 {
-                    Id = Guid.NewGuid(), Product = "gcexp", Edition = "business",
+                    Id = Guid.NewGuid(), ProductDefinitionId = KnownProductId,
+                    ProductDefinition = null!, Product = "gcexp", Edition = "business",
                     LicenseType = "subscription", Seats = 1, License = null!
                 }
             ]
@@ -107,7 +114,7 @@ internal static class RoadmapTestSupport
 internal sealed record IssueLicenseContract(
     string CustomerName,
     string CustomerEmail,
-    string Product,
+    Guid ProductId,
     string Edition,
     string LicenseType,
     DateTimeOffset? ExpiresAt,

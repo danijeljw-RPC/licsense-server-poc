@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Globalization;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using LicenseServer.Authorization;
 
 namespace LicenseServer.Tests;
 
@@ -21,7 +22,9 @@ public sealed class DatabaseAndIdentityTests(PostgresWebFixture fixture)
     {
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        Assert.Equal(2, (await db.Database.GetAppliedMigrationsAsync()).Count());
+        Assert.Equal(
+            db.Database.GetMigrations().ToArray(),
+            (await db.Database.GetAppliedMigrationsAsync()).ToArray());
         Assert.True(await db.Database.CanConnectAsync());
         await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().InitializeAsync();
         await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().InitializeAsync();
@@ -30,9 +33,14 @@ public sealed class DatabaseAndIdentityTests(PostgresWebFixture fixture)
         Assert.NotNull(admin);
         Assert.True(admin!.MustChangePassword);
         Assert.True(await users.IsInRoleAsync(admin, DatabaseInitializer.AdministratorRole));
+        Assert.True(await users.IsInRoleAsync(admin, BuiltInRoles.SystemAdministrator));
         var authorization = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
         var administrator = new ClaimsPrincipal(new ClaimsIdentity(
-            [new Claim(ClaimTypes.Role, DatabaseInitializer.AdministratorRole)], "test"));
+            [
+                new Claim(ClaimTypes.Role, BuiltInRoles.SystemAdministrator),
+                new Claim(Permissions.ClaimType, Permissions.UsersManage),
+                new Claim("amr", "mfa")
+            ], "test"));
         var regularUser = new ClaimsPrincipal(new ClaimsIdentity([], "test"));
         Assert.True((await authorization.AuthorizeAsync(administrator, null, "Administrator")).Succeeded);
         Assert.False((await authorization.AuthorizeAsync(regularUser, null, "Administrator")).Succeeded);

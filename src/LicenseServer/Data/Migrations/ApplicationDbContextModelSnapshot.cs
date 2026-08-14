@@ -89,6 +89,78 @@ namespace LicenseServer.Data.Migrations
                     b.ToTable("Activations");
                 });
 
+            modelBuilder.Entity("LicenseServer.Data.ApiCredential", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("HashVersion")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("LastFour")
+                        .IsRequired()
+                        .HasMaxLength(4)
+                        .HasColumnType("character varying(4)");
+
+                    b.Property<DateTimeOffset?>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("OwnerUserId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PublicId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<Guid?>("ReplacedByCredentialId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RevokedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ScopesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<byte[]>("SecretHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("OwnerUserId");
+
+                    b.HasIndex("PublicId")
+                        .IsUnique();
+
+                    b.ToTable("ApiCredentials", t =>
+                        {
+                            t.HasCheckConstraint("CK_ApiCredentials_Lifecycle", "\"ExpiresAt\" IS NULL OR \"ExpiresAt\" > \"CreatedAt\"");
+                        });
+                });
+
             modelBuilder.Entity("LicenseServer.Data.ApplicationUser", b =>
                 {
                     b.Property<string>("Id")
@@ -97,6 +169,13 @@ namespace LicenseServer.Data.Migrations
                     b.Property<int>("AccessFailedCount")
                         .HasColumnType("integer");
 
+                    b.Property<string>("AccountType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("human");
+
                     b.Property<string>("ConcurrencyStamp")
                         .IsConcurrencyToken()
                         .HasColumnType("text");
@@ -104,12 +183,24 @@ namespace LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTimeOffset?>("DisabledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DisabledBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
                     b.Property<string>("Email")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
                     b.Property<bool>("EmailConfirmed")
                         .HasColumnType("boolean");
+
+                    b.Property<bool>("IsEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
 
                     b.Property<DateTimeOffset?>("LastLoginAt")
                         .HasColumnType("timestamp with time zone");
@@ -162,7 +253,12 @@ namespace LicenseServer.Data.Migrations
                         .IsUnique()
                         .HasDatabaseName("UserNameIndex");
 
-                    b.ToTable("AspNetUsers", (string)null);
+                    b.HasIndex("AccountType", "IsEnabled");
+
+                    b.ToTable("AspNetUsers", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_AspNetUsers_AccountType", "\"AccountType\" IN ('human', 'service')");
+                        });
                 });
 
             modelBuilder.Entity("LicenseServer.Data.AuditRecord", b =>
@@ -209,6 +305,75 @@ namespace LicenseServer.Data.Migrations
                     b.ToTable("AuditRecords");
                 });
 
+            modelBuilder.Entity("LicenseServer.Data.BillingContract", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("CancelAtPeriodEnd")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("CurrentPeriodEnd")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CustomerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Edition")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset?>("GraceUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LicenseRecordId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LicenseType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<Guid?>("ProductDefinitionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("ReviewRequired")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("Seats")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<DateTimeOffset?>("SuspendedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerId");
+
+                    b.HasIndex("LicenseRecordId");
+
+                    b.HasIndex("ProductDefinitionId");
+
+                    b.ToTable("BillingContracts");
+                });
+
             modelBuilder.Entity("LicenseServer.Data.Customer", b =>
                 {
                     b.Property<Guid>("Id")
@@ -218,6 +383,11 @@ namespace LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)");
+
                     b.Property<string>("ExternalId")
                         .HasColumnType("text");
 
@@ -226,12 +396,179 @@ namespace LicenseServer.Data.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<string>("NormalizedEmail")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ExternalId")
                         .IsUnique();
 
+                    b.HasIndex("NormalizedEmail");
+
                     b.ToTable("Customers");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.CustomerAccessChallenge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("IdentifierHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<byte[]>("RemoteAddressHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<byte[]>("TokenHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerId");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("IdentifierHash", "CreatedAt");
+
+                    b.HasIndex("RemoteAddressHash", "CreatedAt");
+
+                    b.ToTable("CustomerAccessChallenges");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.EmailDeliveryEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ProviderEventId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ProviderMessageId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProviderEventId")
+                        .IsUnique();
+
+                    b.HasIndex("ProviderMessageId");
+
+                    b.ToTable("EmailDeliveryEvents");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.EmailOutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("IdempotencyHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ProtectedPayload")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProviderMessageId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("RecipientHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("RetainUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("SentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("TemplateName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int>("TemplateVersion")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyHash")
+                        .IsUnique();
+
+                    b.HasIndex("ProviderMessageId");
+
+                    b.HasIndex("RetainUntil");
+
+                    b.HasIndex("Status", "NextAttemptAt");
+
+                    b.ToTable("EmailOutbox", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_EmailOutbox_Status", "\"Status\" IN ('pending','leased','retry','sent','delivered','bounced','complained','failed','uncertain')");
+                        });
                 });
 
             modelBuilder.Entity("LicenseServer.Data.Entitlement", b =>
@@ -259,6 +596,9 @@ namespace LicenseServer.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<Guid>("ProductDefinitionId")
+                        .HasColumnType("uuid");
+
                     b.Property<int>("Seats")
                         .HasColumnType("integer");
 
@@ -267,15 +607,58 @@ namespace LicenseServer.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("LicenseRecordId", "Product")
+                    b.HasIndex("LicenseRecordId")
                         .IsUnique();
+
+                    b.HasIndex("ProductDefinitionId");
 
                     b.ToTable("Entitlements", t =>
                         {
+                            t.HasCheckConstraint("CK_Entitlements_Edition", "\"Edition\" IN ('community', 'project', 'education', 'consumer', 'business', 'smb', 'enterprise', 'corporate')");
+
                             t.HasCheckConstraint("CK_Entitlements_LicenseType", "\"LicenseType\" IN ('perpetual', 'subscription', 'evaluation')");
 
                             t.HasCheckConstraint("CK_Entitlements_Seats", "\"Seats\" > 0");
                         });
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.IssuanceIdempotencyRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<byte[]>("KeyHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("PrincipalId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ProtectedResult")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<byte[]>("RequestHash")
+                        .IsRequired()
+                        .HasColumnType("bytea");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAt");
+
+                    b.HasIndex("PrincipalId", "KeyHash")
+                        .IsUnique();
+
+                    b.ToTable("IssuanceIdempotencyRecords");
                 });
 
             modelBuilder.Entity("LicenseServer.Data.LicenseIdCounter", b =>
@@ -294,6 +677,53 @@ namespace LicenseServer.Data.Migrations
                         });
                 });
 
+            modelBuilder.Entity("LicenseServer.Data.LicenseOrder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("BillingContractId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CustomerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<Guid?>("LicenseRecordId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ProductDefinitionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BillingContractId");
+
+                    b.HasIndex("CustomerId");
+
+                    b.HasIndex("LicenseRecordId");
+
+                    b.HasIndex("ProductDefinitionId");
+
+                    b.ToTable("LicenseOrders");
+                });
+
             modelBuilder.Entity("LicenseServer.Data.LicenseRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -303,6 +733,13 @@ namespace LicenseServer.Data.Migrations
                     b.Property<byte[]>("ActivationCodeHash")
                         .IsRequired()
                         .HasColumnType("bytea");
+
+                    b.Property<string>("ActivationCodeHashVersion")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("sha256-v0");
 
                     b.Property<string>("CancellationReason")
                         .HasMaxLength(500)
@@ -340,7 +777,7 @@ namespace LicenseServer.Data.Migrations
 
                     b.Property<string>("MetadataJson")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasColumnType("jsonb");
 
                     b.Property<string>("RevocationReason")
                         .HasMaxLength(500)
@@ -372,9 +809,51 @@ namespace LicenseServer.Data.Migrations
 
                     b.ToTable("Licenses", t =>
                         {
+                            t.HasCheckConstraint("CK_Licenses_ContactEmail", "COALESCE(jsonb_typeof(\"MetadataJson\" -> 'contactEmail') = 'string' AND (\"MetadataJson\" ->> 'contactEmail') = lower(btrim(\"MetadataJson\" ->> 'contactEmail')) AND (\"MetadataJson\" ->> 'contactEmail') ~ '^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$', FALSE)");
+
                             t.HasCheckConstraint("CK_Licenses_ExpiryPrecision", "\"ExpirySubMicrosecondTicks\" BETWEEN 0 AND 9");
 
                             t.HasCheckConstraint("CK_Licenses_TerminalState", "NOT (\"CancelledAt\" IS NOT NULL AND \"RevokedAt\" IS NOT NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.ProductDefinition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("ProductDefinitions", t =>
+                        {
+                            t.HasCheckConstraint("CK_ProductDefinitions_Code", "\"Code\" ~ '^[a-z0-9][a-z0-9-]{0,99}$'");
                         });
                 });
 
@@ -412,6 +891,278 @@ namespace LicenseServer.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("SigningKeys");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeCheckoutSessionMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("LicenseOrderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("StripeCheckoutSessionId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseOrderId")
+                        .IsUnique();
+
+                    b.HasIndex("StripeCheckoutSessionId")
+                        .IsUnique();
+
+                    b.ToTable("StripeCheckoutSessionMappings");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeCustomerMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CustomerId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("StripeCustomerId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerId")
+                        .IsUnique();
+
+                    b.HasIndex("StripeCustomerId")
+                        .IsUnique();
+
+                    b.ToTable("StripeCustomerMappings");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeInvoiceMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AppliedEventId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<DateTimeOffset?>("AppliedPeriodEnd")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("BillingContractId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("LicenseOrderId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("StripeInvoiceId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AppliedEventId")
+                        .IsUnique();
+
+                    b.HasIndex("BillingContractId");
+
+                    b.HasIndex("LicenseOrderId");
+
+                    b.HasIndex("StripeInvoiceId")
+                        .IsUnique();
+
+                    b.ToTable("StripeInvoiceMappings");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripePriceMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Edition")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("LicenseType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<Guid>("ProductDefinitionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Seats")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("StripePriceId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductDefinitionId");
+
+                    b.HasIndex("StripePriceId")
+                        .IsUnique();
+
+                    b.ToTable("StripePriceMappings");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeProductMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ProductDefinitionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("StripeProductId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductDefinitionId");
+
+                    b.HasIndex("StripeProductId")
+                        .IsUnique();
+
+                    b.ToTable("StripeProductMappings");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeSubscriptionMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BillingContractId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("StripeSubscriptionId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BillingContractId")
+                        .IsUnique();
+
+                    b.HasIndex("StripeSubscriptionId")
+                        .IsUnique();
+
+                    b.ToTable("StripeSubscriptionMappings");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.WebhookInbox", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ProcessedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ProtectedPayload")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset>("ProviderCreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ProviderEventId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<string>("ProviderObjectId")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProviderCreatedAt");
+
+                    b.HasIndex("ProviderEventId")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "NextAttemptAt");
+
+                    b.ToTable("WebhookInbox", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_WebhookInbox_Status", "\"Status\" IN ('pending','leased','retry','categorized','completed','ignored','quarantined','dead_letter')");
+                        });
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
@@ -578,6 +1329,52 @@ namespace LicenseServer.Data.Migrations
                     b.Navigation("License");
                 });
 
+            modelBuilder.Entity("LicenseServer.Data.ApiCredential", b =>
+                {
+                    b.HasOne("LicenseServer.Data.ApplicationUser", "OwnerUser")
+                        .WithMany()
+                        .HasForeignKey("OwnerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("OwnerUser");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.BillingContract", b =>
+                {
+                    b.HasOne("LicenseServer.Data.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("LicenseServer.Data.LicenseRecord", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseRecordId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("LicenseServer.Data.ProductDefinition", "ProductDefinition")
+                        .WithMany()
+                        .HasForeignKey("ProductDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("License");
+
+                    b.Navigation("ProductDefinition");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.CustomerAccessChallenge", b =>
+                {
+                    b.HasOne("LicenseServer.Data.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Customer");
+                });
+
             modelBuilder.Entity("LicenseServer.Data.Entitlement", b =>
                 {
                     b.HasOne("LicenseServer.Data.LicenseRecord", "License")
@@ -586,7 +1383,46 @@ namespace LicenseServer.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("LicenseServer.Data.ProductDefinition", "ProductDefinition")
+                        .WithMany("Entitlements")
+                        .HasForeignKey("ProductDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("License");
+
+                    b.Navigation("ProductDefinition");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.LicenseOrder", b =>
+                {
+                    b.HasOne("LicenseServer.Data.BillingContract", "BillingContract")
+                        .WithMany()
+                        .HasForeignKey("BillingContractId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("LicenseServer.Data.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("LicenseServer.Data.LicenseRecord", "License")
+                        .WithMany()
+                        .HasForeignKey("LicenseRecordId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("LicenseServer.Data.ProductDefinition", "ProductDefinition")
+                        .WithMany()
+                        .HasForeignKey("ProductDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("BillingContract");
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("License");
+
+                    b.Navigation("ProductDefinition");
                 });
 
             modelBuilder.Entity("LicenseServer.Data.LicenseRecord", b =>
@@ -598,6 +1434,80 @@ namespace LicenseServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeCheckoutSessionMapping", b =>
+                {
+                    b.HasOne("LicenseServer.Data.LicenseOrder", "LicenseOrder")
+                        .WithMany()
+                        .HasForeignKey("LicenseOrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("LicenseOrder");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeCustomerMapping", b =>
+                {
+                    b.HasOne("LicenseServer.Data.Customer", "Customer")
+                        .WithMany()
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Customer");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeInvoiceMapping", b =>
+                {
+                    b.HasOne("LicenseServer.Data.BillingContract", "BillingContract")
+                        .WithMany()
+                        .HasForeignKey("BillingContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("LicenseServer.Data.LicenseOrder", "LicenseOrder")
+                        .WithMany()
+                        .HasForeignKey("LicenseOrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("BillingContract");
+
+                    b.Navigation("LicenseOrder");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripePriceMapping", b =>
+                {
+                    b.HasOne("LicenseServer.Data.ProductDefinition", "ProductDefinition")
+                        .WithMany()
+                        .HasForeignKey("ProductDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("ProductDefinition");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeProductMapping", b =>
+                {
+                    b.HasOne("LicenseServer.Data.ProductDefinition", "ProductDefinition")
+                        .WithMany()
+                        .HasForeignKey("ProductDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("ProductDefinition");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.StripeSubscriptionMapping", b =>
+                {
+                    b.HasOne("LicenseServer.Data.BillingContract", "BillingContract")
+                        .WithMany()
+                        .HasForeignKey("BillingContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("BillingContract");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
@@ -711,6 +1621,11 @@ namespace LicenseServer.Data.Migrations
                 {
                     b.Navigation("Activations");
 
+                    b.Navigation("Entitlements");
+                });
+
+            modelBuilder.Entity("LicenseServer.Data.ProductDefinition", b =>
+                {
                     b.Navigation("Entitlements");
                 });
 #pragma warning restore 612, 618
