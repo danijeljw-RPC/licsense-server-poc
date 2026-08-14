@@ -42,31 +42,77 @@ namespace LicenseServer.Data.Migrations
                 nullable: true);
 
             migrationBuilder.Sql("""
+                -- The new "ProductDefinitions"."Code" column only accepts ^[a-z0-9][a-z0-9-]{0,99}$,
+                -- but the legacy free-form Entitlements.Product column allowed any nonempty string
+                -- (spaces, punctuation, over 100 chars). Sanitize each distinct legacy value into a
+                -- valid, unique code before it is inserted, instead of inserting it unchanged.
+                CREATE TEMPORARY TABLE "LegacyProductCodeMap" (
+                    "OriginalCode" text PRIMARY KEY,
+                    "Code" text NOT NULL,
+                    "DisplayName" text NOT NULL
+                ) ON COMMIT DROP;
+
+                INSERT INTO "LegacyProductCodeMap" ("OriginalCode", "Code", "DisplayName")
+                SELECT
+                    original_code,
+                    CASE WHEN rn = 1
+                        THEN base_code
+                        ELSE left(base_code, 100 - length('-' || rn::text)) || '-' || rn::text
+                    END,
+                    display_name
+                FROM (
+                    SELECT
+                        original_code,
+                        display_name,
+                        base_code,
+                        row_number() OVER (PARTITION BY base_code ORDER BY original_code) AS rn
+                    FROM (
+                        SELECT
+                            lower(entitlement."Product") AS original_code,
+                            CASE WHEN lower(entitlement."Product") = 'gcexp'
+                                THEN 'GCE Experience'
+                                ELSE min(entitlement."Product")
+                            END AS display_name,
+                            COALESCE(
+                                NULLIF(
+                                    left(
+                                        regexp_replace(
+                                            regexp_replace(lower(entitlement."Product"), '[^a-z0-9-]', '-', 'g'),
+                                            '^-+', ''),
+                                        100),
+                                    ''),
+                                'legacy-' || substr(md5(lower(entitlement."Product")), 1, 12)
+                            ) AS base_code
+                        FROM "Entitlements" AS entitlement
+                        GROUP BY lower(entitlement."Product")
+                    ) AS grouped
+                ) AS ranked;
+
                 INSERT INTO "ProductDefinitions"
                     ("Id", "Code", "DisplayName", "Description", "IsActive", "CreatedAt", "UpdatedAt")
                 SELECT
-                    CASE WHEN lower(entitlement."Product") = 'gcexp'
+                    CASE WHEN "OriginalCode" = 'gcexp'
                         THEN '11111111-1111-1111-1111-111111111111'::uuid
                         ELSE (
-                            substr(md5(lower(entitlement."Product")), 1, 8) || '-' ||
-                            substr(md5(lower(entitlement."Product")), 9, 4) || '-' ||
-                            substr(md5(lower(entitlement."Product")), 13, 4) || '-' ||
-                            substr(md5(lower(entitlement."Product")), 17, 4) || '-' ||
-                            substr(md5(lower(entitlement."Product")), 21, 12))::uuid
+                            substr(md5("OriginalCode"), 1, 8) || '-' ||
+                            substr(md5("OriginalCode"), 9, 4) || '-' ||
+                            substr(md5("OriginalCode"), 13, 4) || '-' ||
+                            substr(md5("OriginalCode"), 17, 4) || '-' ||
+                            substr(md5("OriginalCode"), 21, 12))::uuid
                     END,
-                    lower(entitlement."Product"),
-                    CASE WHEN lower(entitlement."Product") = 'gcexp' THEN 'GCE Experience' ELSE min(entitlement."Product") END,
+                    "Code",
+                    "DisplayName",
                     'Migrated from an existing immutable entitlement snapshot.',
                     TRUE,
                     CURRENT_TIMESTAMP,
                     CURRENT_TIMESTAMP
-                FROM "Entitlements" AS entitlement
-                GROUP BY lower(entitlement."Product");
+                FROM "LegacyProductCodeMap";
 
                 UPDATE "Entitlements" AS entitlement
                 SET "ProductDefinitionId" = product."Id"
                 FROM "ProductDefinitions" AS product
-                WHERE product."Code" = lower(entitlement."Product");
+                JOIN "LegacyProductCodeMap" AS map ON map."Code" = product."Code"
+                WHERE map."OriginalCode" = lower(entitlement."Product");
 
                 ALTER TABLE "Entitlements"
                     ALTER COLUMN "ProductDefinitionId" SET NOT NULL;

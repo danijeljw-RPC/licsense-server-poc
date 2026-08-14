@@ -172,6 +172,8 @@ internal sealed class UserAdministrationService(
         if (remove.Length > 0) EnsureSucceeded(await users.RemoveFromRolesAsync(user, remove), "remove old user roles");
         if (add.Length > 0) EnsureSucceeded(await users.AddToRolesAsync(user, add), "add new user roles");
         EnsureSucceeded(await users.UpdateSecurityStampAsync(user), "invalidate sessions after role change");
+        if (remove.Length > 0)
+            await credentialRevoker.RevokeAllAsync(user.Id, actor, clock.GetUtcNow(), cancellationToken);
         await AuditAsync(actor, "user.roles-changed", user.Id, new { roles = expected }, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return new UserMutationResult(await ProjectAsync(user));

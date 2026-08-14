@@ -98,8 +98,10 @@ internal sealed class CustomerAccessService(
         Guid customerId,
         CancellationToken cancellationToken = default)
     {
+        var normalizedEmail = await ResolveNormalizedEmailAsync(customerId, cancellationToken);
+        if (normalizedEmail is null) return [];
         var records = await db.Licenses.AsNoTracking()
-            .Where(item => item.CustomerId == customerId)
+            .Where(item => item.Customer.NormalizedEmail == normalizedEmail)
             .Include(item => item.Entitlements).Include(item => item.Activations)
             .AsSplitQuery()
             .OrderByDescending(item => item.IssuedAt).ThenBy(item => item.LicenseId)
@@ -112,13 +114,25 @@ internal sealed class CustomerAccessService(
         string licenseId,
         CancellationToken cancellationToken = default)
     {
+        var normalizedEmail = await ResolveNormalizedEmailAsync(customerId, cancellationToken);
+        if (normalizedEmail is null) return null;
         var record = await db.Licenses.AsNoTracking()
-            .Where(item => item.CustomerId == customerId && item.LicenseId == licenseId)
+            .Where(item => item.Customer.NormalizedEmail == normalizedEmail && item.LicenseId == licenseId)
             .Include(item => item.Entitlements).Include(item => item.Activations)
             .AsSplitQuery()
             .SingleOrDefaultAsync(cancellationToken);
         return record is null ? null : Project(record);
     }
+
+    // The same email can own several Customer rows (one per issuance), so the portal
+    // session's anchor customer is resolved to its email and every record sharing that
+    // email is in scope, rather than only the single Customer row the session was signed
+    // in against.
+    private Task<string?> ResolveNormalizedEmailAsync(Guid customerId, CancellationToken cancellationToken) =>
+        db.Customers.AsNoTracking()
+            .Where(item => item.Id == customerId)
+            .Select(item => item.NormalizedEmail)
+            .SingleOrDefaultAsync(cancellationToken);
 
     private static CustomerLicenseView Project(LicenseRecord record)
     {

@@ -662,12 +662,10 @@ internal sealed class StripeBillingEventProcessor(IServiceScopeFactory scopes) :
         await using var scope = scopes.CreateAsyncScope();
         var state = scope.ServiceProvider.GetRequiredService<IStripeBillingStateProvider>();
         var policy = scope.ServiceProvider.GetRequiredService<StripeBillingPolicyProcessor>();
-        BillingSnapshot? snapshot;
-        try { snapshot = await state.ResolveAsync(row, cancellationToken); }
-        catch (InvalidOperationException exception) when (exception.Message.Contains("current Stripe state is unavailable", StringComparison.OrdinalIgnoreCase))
-        {
-            return new BillingEventProcessResult(BillingInboxStatus.Categorized, "current_state_unavailable");
-        }
+        // Let ResolveAsync's "current Stripe state is unavailable" failure propagate so the
+        // caller's retry-with-backoff/dead-letter handling applies instead of silently
+        // dropping the event by marking it terminally categorized.
+        var snapshot = await state.ResolveAsync(row, cancellationToken);
         return snapshot is null ? BillingEventProcessResult.Ignored() : await policy.ApplyAsync(snapshot, cancellationToken);
     }
 }

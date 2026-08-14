@@ -88,7 +88,7 @@ public sealed class StripeWebhookTests(PostgresWebFixture fixture)
         var olderId = $"evt_old_{marker}";
         var now = DateTimeOffset.UtcNow;
         using var client = fixture.Factory.CreateClient();
-        await SendVerifiedAsync(client, EventJson(newerId, "customer.subscription.updated", $"sub_new_{marker}", now));
+        await SendVerifiedAsync(client, EventJson(newerId, "customer.subscription.deleted", $"sub_new_{marker}", now));
         await SendVerifiedAsync(client, EventJson(olderId, "invoice.payment_failed", $"in_old_{marker}", now.AddDays(-2)));
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
@@ -112,8 +112,9 @@ public sealed class StripeWebhookTests(PostgresWebFixture fixture)
         Assert.Equal(BillingInboxStatus.Quarantined, newer.Status);
         Assert.Equal("unknown_subscription_mapping", newer.LastErrorCode);
         Assert.Equal("payment_failure", olderResult.Category);
-        Assert.Equal(BillingInboxStatus.Categorized, olderResult.Status);
-        Assert.Equal("current_state_unavailable", olderResult.LastErrorCode);
+        Assert.Equal(BillingInboxStatus.Retry, olderResult.Status);
+        Assert.Equal("processor_failure", olderResult.LastErrorCode);
+        Assert.True(olderResult.NextAttemptAt > now);
         Assert.All(rows, row => Assert.Null(row.LeaseId));
     }
 
