@@ -76,10 +76,16 @@ activates it as the lifecycle-state store for the new key-ring.
 
 - `EcdsaKeyPairs` — new static helper. Loads a PEM pair and cryptographically
   confirms they belong together by deriving the public key from the private key
-  (`ECDsa.ImportFromPem` + `ExportSubjectPublicKeyInfoPem`) and comparing it
-  byte-for-byte against the supplied public PEM. Used by both the server's key
-  directory scanner and `LicenseGenerator`'s `sign`/`keygen` commands, so the
-  "do these two files actually match" check exists exactly once.
+  and comparing **decoded key material**, not PEM text: both the derived and
+  the supplied public key are exported via `ECDsa.ExportSubjectPublicKeyInfo()`
+  (DER bytes) and compared byte-for-byte at that level. Comparing raw PEM text
+  instead would reject valid matching pairs whenever the supplied PEM differs
+  only in line-wrap width, line endings (CRLF vs LF), or trailing whitespace —
+  representational differences common between .NET's own PEM export and
+  PEMs produced by OpenSSL or Windows tooling, even though both decode to the
+  identical key. Used by both the server's key directory scanner and
+  `LicenseGenerator`'s `sign`/`keygen` commands, so the "do these two files
+  actually match" check exists exactly once.
 - `LicenseEnvelope` — new static helper extracting the envelope construction
   and signing logic that is currently duplicated almost verbatim between
   `LicenseServer/LicenseEnvelopeSigner.cs` and
@@ -170,13 +176,20 @@ not just by convention.
     `RevocationReason` (new permission `signingKeys.manage`, System
     Administrator only; requires confirmation + reason, same pattern as
     licence revoke).
+  - `POST /signing-keys/{keyId}/set-default` — requires the target key to
+    currently have `CanSign == true`; sets `IsDefault = true` on that row and
+    `false` on every other row in one transaction (permission
+    `signingKeys.manage`).
   - `POST /licenses/import` — multipart upload, 256 KB body limit, new
     permission `licenses.import`.
-- New UI: a read-only signing-key status panel, an "Import license" page, and a
-  key-selector `<select>` added to the two existing operator-facing signing
-  forms (Offline.razor, LicenseDetails.razor activate/refresh), all reusing
-  existing permission-gated `<AuthorizeView>` patterns already used throughout
-  this codebase.
+- New UI: a signing-key status panel (read-only for most viewers; a
+  "Set as default" action next to any Active key, gated by
+  `signingKeys.manage`, following the existing API-key rotate/revoke button
+  pattern), an "Import license" page, and a key-selector `<select>` added to
+  the two existing operator-facing signing forms (Offline.razor,
+  LicenseDetails.razor activate/refresh), all reusing existing
+  permission-gated `<AuthorizeView>` patterns already used throughout this
+  codebase.
 
 ### `LicenseGenerator`
 
@@ -217,17 +230,21 @@ Scanning rules:
 - A file whose name doesn't end in exactly `.private.pem` or `.public.pem`, or
   whose derived `keyId` fails the pattern above, is ignored (not an error) —
   operators may keep unrelated files (README, checksums) in the same directory.
-- A `<id>.private.pem` with no matching `<id>.public.pem`, or vice versa, is
-  skipped with a warning log; that `keyId` does not appear in the ring for this
-  reload. (A public-only file is not an error case in general — see lifecycle,
-  below — but a *private-only* file is always a misconfiguration worth
-  flagging, since a private key with no known public counterpart cannot be
-  verified against.)
+- A `<id>.private.pem` with **no matching** `<id>.public.pem` is skipped with a
+  warning log and does not appear in the ring at all: a private key with no
+  known public counterpart can't be verified against, so it is never trusted
+  for signing either.
+- A `<id>.public.pem` with no matching private file is **never skipped**. This
+  is the expected, normal shape of a verification-only/historical key (see
+  lifecycle, below), and it always appears in the ring as `VerificationOnly`.
+  Retiring a key by deleting only its private file — the primary retirement
+  workflow this design specifies — depends on this asymmetry; treating the two
+  "missing half" cases the same way would silently break retirement by
+  dropping the retired key out of the ring entirely instead of demoting it to
+  verification-only.
 - Every complete pair is cryptographically validated via `EcdsaKeyPairs`; a
   mismatched pair is skipped with an error log, not fatal to the rest of the
   scan.
-- A public-only file (no private) is the expected, normal shape for a
-  verification-only/historical key.
 
 Existing development keys are renamed to fit the convention exactly:
 `keys/license-primary-2026-private.pem` → `keys/primary-2026.private.pem`,
@@ -261,10 +278,20 @@ hasn't removed from disk yet.
 
 Operational actions map onto this model directly:
 
-- **Rotate the default** — edit `Licensing:DefaultSigningKey` in mounted
-  configuration. No DB action, no restart: ASP.NET Core's JSON configuration
-  provider already watches the file and raises a reload token, which
-  `IOptionsMonitor<LicensingOptions>` observes automatically.
+- **Rotate the default** — `POST /signing-keys/{keyId}/set-default` (see
+  revised Database changes below). The default signing key is DB-backed, not
+  purely config-driven: `IOptionsMonitor`'s reload-on-change only works for
+  file-based configuration providers with `reloadOnChange` (the default for
+  `appsettings.json`), and this project's own container deployment supplies
+  `Licensing__*` values as Compose environment variables — Compose's
+  environment-variable provider has no reload support at all, and changing it
+  requires recreating the container. Making the default DB-backed instead
+  means default-key rotation works identically and without a restart in both
+  local development and the container deployment, and reuses the
+  reconciliation loop `SigningKeyRingService` already runs for revocation —
+  no second reload mechanism is needed. `Licensing:DefaultSigningKey` in
+  config is retained only as the **bootstrap seed value**, applied once if no
+  `SigningKeyRecord` is yet marked default.
 - **Retire a key from signing, keep it trusted** — delete only the
   `<keyId>.private.pem` file from the mounted directory. The public key and its
   `SigningKeys` row are untouched, so historical licences keep validating.
@@ -277,7 +304,20 @@ Operational actions map onto this model directly:
   needed.
 - **Revoke a compromised key** — `POST /signing-keys/{keyId}/revoke` with a
   reason. This is explicit, audited, and intentionally destructive to every
-  licence that key ever signed — the runbook update spells this out.
+  licence that key ever signed — but **only within `LicenseServer`'s own live
+  verification** (its `ILicenseVerifier`, and the new import feature). It has
+  no effect on the standalone `LicenseValidator` already embedded in shipped
+  products: per Non-goals, that tool is unchanged and keeps resolving trust
+  from the compiled `TrustedPublicKeys.ByKeyId`
+  (`Licensing.Core/LicenseVerifier.cs:60`), which has no concept of
+  revocation at all. A licence — or a forgery made with the compromised
+  private key — still validates successfully inside any already-shipped
+  product until that product is rebuilt with an updated
+  `TrustedPublicKeys.cs` and customers upgrade to it. The runbook update must
+  say this explicitly, so operators do not mistake this endpoint for in-field
+  revocation: propagating a compromise to already-shipped products is a
+  separate, out-of-scope release process, not a side effect of calling this
+  endpoint.
 
 ### Database changes
 
@@ -291,6 +331,13 @@ New EF Core migration extending `SigningKeyRecord`:
 - `RetiredAt` already exists on the entity and was previously written only at
   seed time with no ongoing meaning; this design activates it as described
   above (auto-stamped on first observed loss of the private key file).
+- `IsDefault bool` (default `false`) — exactly one row may be `true` at a
+  time, enforced with a Postgres partial unique index
+  (`CREATE UNIQUE INDEX ... ON "SigningKeys" ("IsDefault") WHERE "IsDefault"`)
+  so the constraint holds even though most rows are `false`. Seeded `true` for
+  whichever key matches `Licensing:DefaultSigningKey` the first time the
+  application starts against a database with no default set yet; every
+  subsequent rotation goes through `set-default`, not configuration.
 
 On each reload, `SigningKeyRingService` upserts a `SigningKeyRecord` for every
 key found on disk (creating a row with `Provider = "file-directory"` for
@@ -380,6 +427,25 @@ fidelity by storing the verbatim artifact and only building a relational
 *index* of it is simpler and satisfies "avoid regenerating or resigning unless
 there is an explicit reason to."
 
+Building that index for a multi-product licence requires a schema change of
+its own: `ApplicationDbContext.cs:186` currently defines
+`HasIndex(x => x.LicenseRecordId).IsUnique()` on `Entitlement`, enforcing at
+most one entitlement per license record — a real constraint today because
+every existing issuance path (portal, API) creates exactly one. The same
+migration that adds the `Provenance`/`Imported*` columns must replace that
+index with a composite unique index on `(LicenseRecordId, Product)` (still
+preventing two entitlements for the same product on one license, matching the
+in-JSON duplicate-product check `LicenseSchema.Parse` already performs, while
+allowing multiple distinct products). Every other path that assumed exactly
+one entitlement — e.g. `LicenseDetails.razor`'s use of
+`license.Entitlements.Single()` for the seats/updates-until edit panels —
+must be reviewed as part of this migration and either guarded to the
+single-entitlement case (portal-issued licences remain single-product) or
+extended; imported multi-product licences are read/searched/revoked as a
+whole but are not edited product-by-product through the portal's terms-editing
+UI, which stays scoped to the one-entitlement-per-portal-license invariant
+`docs/README.md` already documents.
+
 Pipeline for `POST /api/v1/admin/licenses/import` (permission
 `licenses.import`, multipart upload, 256 KB limit):
 
@@ -419,12 +485,19 @@ this as a file upload form gated by `licenses.import`.
 
 `Licensing` configuration becomes a strongly-typed, `IOptionsMonitor`-bound
 `LicensingOptions { IdTimeZone, KeyDirectory, DefaultSigningKey }`.
-`PrivateKeyPath`/`PublicKeyPath` are removed.
+`PrivateKeyPath`/`PublicKeyPath` are removed. `DefaultSigningKey` here is a
+**bootstrap seed only** (see Database changes) — it is read once, at seed
+time, to pick the initial `IsDefault` row, and is not consulted again at
+runtime. Live rotation always goes through `set-default`, so it works the
+same way locally and in the container regardless of which configuration
+provider is in play.
 
 - `appsettings.json` (dev): `"KeyDirectory": "../../keys"`,
   `"DefaultSigningKey": "primary-2026"`.
 - `appsettings.Container.json`: `"KeyDirectory": "/var/lib/licsense/keys"`,
-  `DefaultSigningKey` supplied via environment/config overlay.
+  `DefaultSigningKey` supplied via Compose environment variable, exactly like
+  every other `Licensing__*` value already is — safe now that it is only ever
+  read once at seed time, not watched for live changes.
 - `Dockerfile`: the `COPY ... keys/license-primary-2026-public.pem ...` line is
   removed entirely — the built image contains zero key material, public or
   private.
@@ -499,13 +572,20 @@ key cannot sign; a verification-only key can still verify; multiple keys
 coexist in one ring; the signed licence contains the correct `keyId`; mutating
 `keyId` post-signature invalidates the signature; a licence signed by key A
 verifies with key A and fails with key B; adding a key to the directory is
-usable without a server restart; rotating `DefaultSigningKey` in config takes
-effect without a restart; removing a private key stops new signing but leaves
-historical verification working; revoking a key fails verification even though
-the public PEM is still present; concurrent signing requests during a reload
-never observe a torn/partial key ring; legacy `primary-2026`/`secondary-2026`
-licences continue to verify unchanged; import happy path, multi-product import,
-invalid-signature import, unknown-key import, revoked-key import, and
+usable without a server restart; calling `set-default` rotates the default
+key and takes effect for the very next signing call with no restart, and
+leaves exactly one row with `IsDefault = true`; removing a private key stops
+new signing but leaves historical verification working; revoking a key fails
+verification even though the public PEM is still present, while confirming
+that revocation does **not** retroactively affect the separate, unchanged
+`LicenseValidator`/`TrustedPublicKeys` path (an explicit test exercising both
+verifiers against the same revoked-key licence, asserting opposite outcomes);
+concurrent signing requests during a reload never observe a torn/partial key
+ring; a multi-product import creates one `Entitlement` row per product
+without violating a per-license uniqueness constraint; legacy
+`primary-2026`/`secondary-2026` licences continue to verify unchanged; import
+happy path, multi-product import, invalid-signature import, unknown-key
+import, revoked-key import, and
 path-traversal-flavored `keyId` in an uploaded licence all behave as specified.
 
 **CLI/offline round-trip (extending `Test-LicenseFlow.ps1` and/or a small new
@@ -549,3 +629,12 @@ mismatch.
   in favor of short-lived per-operation instances, since .NET crypto types are
   not documented as thread-safe for concurrent use and this workload has no
   need for the marginal performance gain.
+- **Rotating the default signing key purely through mounted configuration**
+  (the original draft of this design) — rejected after review: ASP.NET Core's
+  environment-variable configuration provider, which is how this project's
+  own Compose deployment supplies every `Licensing__*` value, has no
+  reload-on-change support, so a container deployment following this
+  project's existing pattern could not actually rotate the default without a
+  restart, contradicting the no-restart requirement. Moved to a DB-backed
+  `IsDefault` flag reconciled by the same loop that already handles
+  revocation, which works identically in both deployment shapes.
