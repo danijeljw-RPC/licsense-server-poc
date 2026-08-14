@@ -9,7 +9,7 @@ RUN dotnet restore src/LicenseServer/LicenseServer.csproj --configfile NuGet.Con
 FROM restore AS build
 COPY src/Licensing.Core/ src/Licensing.Core/
 COPY src/LicenseServer/ src/LicenseServer/
-RUN dotnet publish src/LicenseServer/LicenseServer.csproj -c Release --no-restore -o /out /p:UseAppHost=false /p:AnalysisMode=Recommended
+RUN dotnet publish src/LicenseServer/LicenseServer.csproj -c Release -o /out /p:UseAppHost=false /p:AnalysisMode=Recommended
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 USER root

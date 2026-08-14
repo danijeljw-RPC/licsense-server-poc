@@ -32,7 +32,7 @@ internal static class PermissionAuthorizationExtensions
     {
         var enforceMfa = configuration.GetValue(
             "Security:RequireMfaForHighRiskPermissions",
-            !environment.IsDevelopment());
+            environment.IsProduction());
         var authorization = services.AddAuthorizationBuilder();
         foreach (var permission in Permissions.All)
         {
