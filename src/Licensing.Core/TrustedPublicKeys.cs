@@ -10,16 +10,16 @@ public static class TrustedPublicKeys
             ["primary-2026"] =
                 """
                 -----BEGIN PUBLIC KEY-----
-                MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyhRLsZBPHjGwCg9scoztdyAC3IDc
-                wjnytX6fjU/u44Mvm57xrlyJwXvJWZEfFMVSVjrZo7bpnq2hbZ8prBIqDA==
+                MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6LRnpzOZyedrb1xwkrzklCtpwPZw
+                sF1JtPAAblmWcqfwLcAsEYXgaJbMdvkkynm8ap06K5XD45glll0S6Satkw==
                 -----END PUBLIC KEY-----
                 """,
 
             ["secondary-2026"] =
                 """
                 -----BEGIN PUBLIC KEY-----
-                MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEvlmYPNBCgU50AIVzrXNpPcUU7PrP
-                /93veInk5aHL41yk0MIvBoGEvusKhl5sZMjkxFX2pnJm9lVYvZxc5s0UvA==
+                MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEjtzhfUytpgvZQocYHeWPGLTvYsrg
+                m69//572655IypI2BmsGasEMgLTjcNYklarnXh+4SM8i0nWbLEWFF9aDxg==
                 -----END PUBLIC KEY-----
                 """
         };
