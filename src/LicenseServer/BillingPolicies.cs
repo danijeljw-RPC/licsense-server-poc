@@ -33,7 +33,8 @@ internal sealed record BillingSnapshot(
     string? InvoiceId,
     DateTimeOffset? CurrentPeriodEnd,
     bool CancelAtPeriodEnd,
-    int Seats);
+    int Seats,
+    string? PaymentStatus);
 
 internal sealed class BillingPolicyOptions
 {
@@ -83,6 +84,8 @@ internal sealed class StripeBillingPolicyProcessor(
         if (snapshot.CheckoutSessionId is null || snapshot.SubscriptionId is null || snapshot.CustomerId is null
             || snapshot.ProductId is null || snapshot.PriceId is null || snapshot.CurrentPeriodEnd is null)
             return Quarantine("incomplete_purchase_state");
+        if (snapshot.PaymentStatus is not ("paid" or "no_payment_required"))
+            return BillingEventProcessResult.Ignored();
         if (await db.StripeCheckoutSessionMappings.AnyAsync(
                 item => item.StripeCheckoutSessionId == snapshot.CheckoutSessionId, cancellationToken))
             return Completed();
@@ -289,6 +292,8 @@ internal sealed class StripeBillingPolicyProcessor(
     private async Task<BillingEventProcessResult> PaymentFailedAsync(BillingSnapshot snapshot, CancellationToken cancellationToken)
     {
         if (snapshot.InvoiceId is null) return Quarantine("incomplete_invoice_state");
+        if (await db.StripeInvoiceMappings.AnyAsync(item => item.StripeInvoiceId == snapshot.InvoiceId, cancellationToken))
+            return Completed();
         var contract = await ContractAsync(snapshot, cancellationToken);
         if (contract?.License is null || contract.ProductDefinition is null)
             return Quarantine("unknown_subscription_mapping");
@@ -537,7 +542,7 @@ internal sealed class StripeBillingStateProvider(
             ?? Unix(line, "current_period_end");
         var kind = row.EventType switch
         {
-            "checkout.session.completed" => BillingEventKind.PurchaseCompleted,
+            "checkout.session.completed" or "checkout.session.async_payment_succeeded" => BillingEventKind.PurchaseCompleted,
             "invoice.paid" => BillingEventKind.RenewalPaid,
             "invoice.payment_failed" => BillingEventKind.PaymentFailed,
             "customer.subscription.created" or "customer.subscription.updated" => BillingEventKind.SubscriptionChanged,
@@ -554,7 +559,8 @@ internal sealed class StripeBillingStateProvider(
             ElementId(price) ?? String(priceDetails, "price") ?? StringOrId(value, "price"),
             subscription, checkout, invoice, periodEnd,
             Bool(value, "cancel_at_period_end") || Bool(subscriptionValue, "cancel_at_period_end"),
-            Int(line, "quantity") ?? Int(value, "quantity") ?? 1);
+            Int(line, "quantity") ?? Int(value, "quantity") ?? 1,
+            String(value, "payment_status"));
     }
 
     private static bool NeedsCurrentState(string eventType, JsonElement value)
@@ -571,10 +577,11 @@ internal sealed class StripeBillingStateProvider(
         var snapshot = Parse(row, value);
         return eventType switch
         {
-            "checkout.session.completed" => snapshot is null || snapshot.CustomerId is null
+            "checkout.session.completed" or "checkout.session.async_payment_succeeded" => snapshot is null || snapshot.CustomerId is null
                 || snapshot.CustomerName is null || snapshot.CustomerEmail is null
                 || snapshot.SubscriptionId is null || snapshot.ProductId is null
-                || snapshot.PriceId is null || snapshot.CurrentPeriodEnd is null,
+                || snapshot.PriceId is null || snapshot.CurrentPeriodEnd is null
+                || snapshot.PaymentStatus is null,
             "invoice.paid" => snapshot is null || snapshot.CustomerId is null
                 || snapshot.SubscriptionId is null || snapshot.InvoiceId is null
                 || snapshot.ProductId is null || snapshot.PriceId is null
@@ -583,13 +590,14 @@ internal sealed class StripeBillingStateProvider(
                 || snapshot.InvoiceId is null,
             "charge.refunded" or "charge.dispute.created" => snapshot is null
                 || (snapshot.SubscriptionId is null && snapshot.InvoiceId is null),
+            "customer.subscription.created" or "customer.subscription.updated" => true,
             _ => false
         };
     }
 
     private static string ObjectType(string eventType) => eventType switch
     {
-        "checkout.session.completed" => "checkout.session",
+        "checkout.session.completed" or "checkout.session.async_payment_succeeded" => "checkout.session",
         "invoice.paid" or "invoice.payment_failed" => "invoice",
         "charge.refunded" => "charge",
         "charge.dispute.created" => "dispute",

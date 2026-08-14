@@ -365,7 +365,8 @@ public sealed class BillingPolicyTests(PostgresWebFixture fixture)
         InvoiceId: $"in_initial_{marker}",
         CurrentPeriodEnd: DateTimeOffset.UtcNow.AddYears(1),
         CancelAtPeriodEnd: false,
-        Seats: 2);
+        Seats: 2,
+        PaymentStatus: "paid");
 
     private static string HashEmail(string email) => Convert.ToHexStringLower(
         System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(email)));

@@ -29,7 +29,7 @@ internal sealed class StripeOptions
 
 internal sealed class BillingWorkerOptions
 {
-    public bool Enabled { get; set; } = true;
+    public bool WorkerEnabled { get; set; } = true;
     public int BatchSize { get; set; } = 10;
     public int MaxAttempts { get; set; } = 8;
     public int LeaseSeconds { get; set; } = 120;
@@ -127,7 +127,7 @@ internal static class StripeEventCategories
 {
     public static string For(string eventType) => eventType switch
     {
-        "checkout.session.completed" => "checkout",
+        "checkout.session.completed" or "checkout.session.async_payment_succeeded" => "checkout",
         "invoice.paid" => "renewal",
         "invoice.payment_failed" => "payment_failure",
         "customer.subscription.created" or "customer.subscription.updated" or "customer.subscription.deleted" => "subscription",
@@ -229,7 +229,7 @@ internal sealed partial class BillingInboxWorker(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!options.Value.Enabled) return;
+        if (!options.Value.WorkerEnabled) return;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
