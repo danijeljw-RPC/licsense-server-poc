@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # Keep the container SDK aligned with the exact version required by global.json.
 FROM mcr.microsoft.com/dotnet/sdk:10.0.400 AS restore
 WORKDIR /src

@@ -200,7 +200,12 @@ try {
 
     $csrf = Invoke-RestMethod -Uri "$serverUrl/api/v1/admin/antiforgery" -WebSession $adminSession
     $csrfToken = $csrf.requestToken
-    $revoked = Invoke-WebRequest -Uri "$serverUrl/api/v1/admin/licenses/$demoLicenseId/revoke" -Method Post -WebSession $adminSession -ContentType 'application/json' -Headers @{ 'X-CSRF-TOKEN' = $csrfToken } -Body (@{ reason = 'integration test' } | ConvertTo-Json) -SkipHttpErrorCheck
+    $licenseDetail = Invoke-RestMethod -Uri "$serverUrl/api/v1/admin/licenses/$demoLicenseId" -WebSession $adminSession
+    $revoked = Invoke-WebRequest -Uri "$serverUrl/api/v1/admin/licenses/$demoLicenseId/revoke" -Method Post -WebSession $adminSession -ContentType 'application/json' -Headers @{ 'X-CSRF-TOKEN' = $csrfToken } -Body (@{
+        confirmed = $true
+        reason = 'integration test'
+        version = $licenseDetail.version
+    } | ConvertTo-Json) -SkipHttpErrorCheck
     if ($revoked.StatusCode -ne 200) { Write-Host "Revocation response: $($revoked.Content)" }
     Assert-Equal 'admin revocation succeeds' $revoked.StatusCode 200
 

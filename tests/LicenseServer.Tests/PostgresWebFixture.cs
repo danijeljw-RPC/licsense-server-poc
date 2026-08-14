@@ -18,6 +18,7 @@ namespace LicenseServer.Tests;
 public sealed class PostgresWebFixture : IAsyncLifetime
 {
     internal const string MailerSendWebhookSecret = "stage12-mailersend-webhook-secret-with-32-bytes";
+    internal const string StripeWebhookSecret = "whsec_stage14_test_webhook_secret";
     private readonly List<WebApplicationFactory<Program>> authenticatedFactories = [];
     private string? temporaryKeyDirectory;
     private string? originalTrustedPublicKey;
@@ -148,6 +149,8 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["ApiCredentials:Pepper"] = "HyQjIiEgHx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwY=",
                 ["Email:WorkerEnabled"] = "false",
                 ["MailerSend:WebhookSecret"] = MailerSendWebhookSecret,
+                ["Stripe:WebhookSecret"] = StripeWebhookSecret,
+                ["Billing:WorkerEnabled"] = "false",
                 ["Security:UseHttpsRedirection"] = "false",
                 ["Security:RequireMfaForHighRiskPermissions"] = "true",
                 ["RateLimits:AdminPermitLimit"] = "5000"
