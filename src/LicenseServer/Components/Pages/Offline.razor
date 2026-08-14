@@ -1,4 +1,5 @@
 @page "/offline"
+@rendermode InteractiveServer
 @attribute [Authorize(Policy = Permissions.LicensesIssue)]
 @using System.Text.Json
 @inject LicenseStore Store
