@@ -8,50 +8,6 @@ using SoftwareLicensing;
 
 namespace LicenseServer;
 
-public enum SigningKeyStatus
-{
-    Active,
-    VerificationOnly,
-    Revoked,
-    Invalid
-}
-
-public sealed record SigningKeyInfo(
-    string KeyId,
-    string Algorithm,
-    bool HasPrivateKey,
-    bool HasPublicKey,
-    bool CanSign,
-    bool CanVerify,
-    SigningKeyStatus Status,
-    string? StatusDetail,
-    bool IsDefault,
-    DateTimeOffset DiscoveredAt,
-    DateTimeOffset LastSeenAt,
-    DateTimeOffset? RetiredAt,
-    DateTimeOffset? RevokedAt,
-    string? RevokedBy,
-    string? RevocationReason);
-
-public interface ILicenseKeyRing
-{
-    string? DefaultKeyId { get; }
-    IReadOnlyList<SigningKeyInfo> Keys { get; }
-    SigningKeyInfo? Find(string keyId);
-}
-
-public sealed record LicenseSigningResult(bool Success, JsonObject? Envelope, string? ErrorCode, string? ErrorMessage);
-
-public interface ILicenseSigner
-{
-    LicenseSigningResult Sign(JsonObject license, string? requestedKeyId);
-}
-
-public interface ILicenseVerifier
-{
-    VerifiedLicense Verify(string signedLicenseJson);
-}
-
 /// <summary>
 /// Filesystem/crypto-only key discovery: given a directory, finds "&lt;keyId&gt;.private.pem" /
 /// "&lt;keyId&gt;.public.pem" pairs. Never throws for a single bad file — records the problem
