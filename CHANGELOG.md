@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
 - Design specification for a multi-key **key-ring signing and rotation**
   architecture (`docs/superpowers/specs/2026-08-14-key-ring-signing-design.md`).
   It replaces the single configured signing key with hot-reloadable, directory-
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and integration-test flows from macOS/Linux shells.
 
 ### Changed
+
 - Repository-local `.claude/settings.json` now ships a minimal, schema-valid
   permission set (`dotnet build`/`test`/`restore`, read-only `git` commands)
   in place of an earlier overly broad, non-schema-valid draft.
@@ -36,6 +38,7 @@ over the project's first development cycle.
 ### Added
 
 **Signing and validation toolchain**
+
 - `Licensing.Core`: shared license contract, canonical JSON, and schema
   validation used by every signer and verifier so their interpretation of a
   license cannot drift independently.
@@ -49,6 +52,7 @@ over the project's first development cycle.
   (`available → active → deactivated → active`, with `revoked` as terminal).
 
 **LicenseServer core lifecycle**
+
 - Server-generated, immutable `LIC-{yyyy}-{MMdd}{value:X6}` license IDs,
   allocated atomically through a PostgreSQL counter upsert with per-day
   rollover protection.
@@ -65,6 +69,7 @@ over the project's first development cycle.
   product entry, with archival that preserves historical references.
 
 **Administration, identity, and access**
+
 - Permission-based RBAC with seven built-in roles (System Administrator,
   License Manager, License Issuer, Support Agent, Product Administrator,
   Auditor, Billing Automation) enforced at the action level on both UI and API.
@@ -79,6 +84,7 @@ over the project's first development cycle.
   atomic rotation/revocation.
 
 **API surface**
+
 - Versioned `/api/v1/admin` REST API mirroring UI authorization policies, with
   bounded DTOs, ETag/`If-Match` concurrency on terms updates,
   `Idempotency-Key` support on issuance, `X-Correlation-ID` on every response,
@@ -86,6 +92,7 @@ over the project's first development cycle.
 - Public device APIs for activation, validation, refresh, and deactivation.
 
 **Notifications and customer access**
+
 - Durable transactional email outbox (MailerSend-backed) covering purchase,
   renewal, payment failure, invoice, operator invitation, Identity, and
   magic-link templates, with `FOR UPDATE SKIP LOCKED` batch claiming, bounded
@@ -95,6 +102,7 @@ over the project's first development cycle.
   redacted license/device projections.
 
 **Billing**
+
 - Verified, idempotent Stripe webhook ingestion (raw-body signature check
   before any parsing or side effects) with a `WebhookInbox` and
   `FOR UPDATE SKIP LOCKED` billing worker.
@@ -106,6 +114,7 @@ over the project's first development cycle.
   `/api/v1/admin/billing/events`.
 
 **Operations and delivery**
+
 - Append-only audit trail for every sensitive mutation, with actor, action,
   target, and correlation context.
 - Hardened Docker Compose deployment: non-root app user, read-only root
@@ -118,6 +127,7 @@ over the project's first development cycle.
   traceability matrix (`docs/roadmap-traceability.md`).
 
 ### Fixed
+
 - Gated Stripe purchase fulfillment on `payment_status` and handled the
   `async_payment_succeeded` follow-up event for delayed payment methods.
 - Ignored `invoice.payment_failed` once an invoice is already recorded paid,
@@ -139,6 +149,7 @@ over the project's first development cycle.
 - Aligned the container SDK image with the `global.json` pin.
 
 ### Security
+
 - Activation codes and bearer tokens are never stored in plaintext — only
   SHA-256 or versioned HMAC-SHA-256 digests.
 - Stripe and MailerSend webhooks are verified against the raw request body
