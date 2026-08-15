@@ -645,7 +645,7 @@ adminApi.MapGet("/signing-keys", (ILicenseKeyRing ring) =>
 adminApi.MapPost("/signing-keys/rescan", async (SigningKeyRingService keyRing, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
 {
     if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
-    await keyRing.ReloadAsync(ct);
+    await keyRing.RescanAsync(context.User.Identity?.Name ?? "unknown", ct);
     return Results.NoContent();
 }).RequireAuthorization(Permissions.SigningKeysManage)
   .WithDescription("Triggers an immediate re-scan of the key directory instead of waiting for the periodic reload.");

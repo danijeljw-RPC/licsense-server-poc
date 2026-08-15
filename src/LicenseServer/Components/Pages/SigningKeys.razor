@@ -66,7 +66,7 @@
 
     private async Task<string> ActorAsync() => (await AuthenticationState.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
 
-    private async Task RescanAsync() => await ExecuteAsync(async () => { await KeyRing.ReloadAsync(); message = "Key directory rescanned."; });
+    private async Task RescanAsync() => await ExecuteAsync(async () => { await KeyRing.RescanAsync(await ActorAsync()); message = "Key directory rescanned."; });
 
     private async Task SetDefaultAsync(SigningKeyInfo key) => await ExecuteAsync(async () =>
     {

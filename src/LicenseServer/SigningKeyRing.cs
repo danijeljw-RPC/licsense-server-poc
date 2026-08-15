@@ -301,6 +301,31 @@ public sealed partial class SigningKeyRingService(
 
     // --- Admin-facing mutations, reused by both the Blazor UI and the /api/v1/admin/signing-keys endpoints ---
 
+    /// <summary>
+    /// The operator's fast path for making a newly dropped-in key live without waiting for the
+    /// periodic reload - a privileged action gated on <c>Permissions.SigningKeysManage</c> that
+    /// changes what the server will sign with, so who triggered it is audited like set-default and
+    /// revoke. Logged unconditionally, not only when the reload actually changes the published
+    /// snapshot: <see cref="ReloadAsync"/> republishes a snapshot on every call regardless of
+    /// whether anything on disk changed, and there is no snapshot-diff signal to condition on
+    /// without adding one solely for this. An audit trail of a privileged endpoint should answer
+    /// "who invoked this and when," not "did this particular invocation happen to change
+    /// anything" - the latter reads as under-reporting to anyone auditing rescan activity later.
+    /// </summary>
+    public async Task RescanAsync(string actor, CancellationToken cancellationToken = default)
+    {
+        await ReloadAsync(cancellationToken);
+
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        db.AuditRecords.Add(new AuditRecord
+        {
+            Actor = actor, Action = "signingKey.rescan", TargetType = "signingKey", TargetId = options.Value.KeyDirectory,
+            Result = "success", TimestampUtc = clock.GetUtcNow()
+        });
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
     public async Task SetDefaultAsync(string keyId, string actor, CancellationToken cancellationToken = default)
     {
         var info = Find(keyId);

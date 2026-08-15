@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   catalog handling for unknown products, the email source for metadata-free
   imports, activation credentials on pre-activated imports, and verbatim
   artifact storage. Decisions only; the import endpoint is still unimplemented.
+- `POST /api/v1/admin/signing-keys/rescan` (and the Blazor "Rescan key
+  directory" button, which now goes through the same `RescanAsync` method)
+  write an `AuditRecord` (`signingKey.rescan`), matching `set-default` and
+  `revoke`. Written unconditionally, on every invocation, not only when the
+  rescan changes the published key-ring snapshot.
+- CI now runs on pull requests and pushes to `dev`, not only `main`.
+- A `test-bash-license-flow` CI job runs `scripts/test-license-flow.sh` on
+  `ubuntu-latest`, covering the bash port of the license-flow scripts that
+  CI previously never exercised.
 - Bash equivalents of the PowerShell scripts in `scripts/`
   (`new-demo-licenses.sh`, `new-offline-activation-request.sh`,
   `test-database-and-auth.sh`, `test-activation-flow.sh`,
@@ -83,6 +92,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README's production-hardening guidance referenced `LicenseEnvelopeSigner`,
   a class deleted when the signing key ring landed. It now names the current
   signing component (`SigningKeyRingService` behind `ILicenseSigner`).
+- CI's "Database and authentication" test leg filtered on `Suite=Baseline`, an
+  allowlist matching only 4 of 152 tests. Every other suite — including the
+  entire signing-key-ring test suite and several test classes with no `Suite`
+  trait at all — silently never ran in CI. Switched to excluding
+  `Suite=Phase0Roadmap` (the intentional-red executable specification)
+  instead, so everything meant to pass runs: 106 of 152 tests, all green.
 
 ## [0.1.0] - 2026-08-14
 
