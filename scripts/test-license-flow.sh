@@ -194,7 +194,7 @@ assert_contains 'signer rejects private key and key ID mismatch' "$mismatched_ke
 # anything wrong with it - but every released validator embeds the *original* primary-2026
 # public key and will reject licences signed with the new one. This is the guarantee #24 gave
 # up by moving the pair check off TrustedPublicKeys; the asymmetric check restores it without
-# reintroducing #24 (an unknown key ID like dropped-2027, above, still signs freely).
+# reintroducing #24 (an unknown key ID like dropped-2027, below, still signs freely).
 regenerated_key_directory="$work_directory/regenerated-keys"
 invoke_license_tool "$generator_project" 0 \
     keygen --id primary-2026 --output "$regenerated_key_directory" >/dev/null
