@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generator immediately, with no `TrustedPublicKeys.cs` edit or CLI rebuild.
   The public half is located by key ID rather than by rewriting the private
   key's filename, so the check still catches a private-key/key-ID mismatch.
+  Two consequences: signing a private key stored outside the
+  `<keyId>.private.pem` convention, with no public half beside it, now requires
+  the new `--public-key`; and the check no longer proves the key ID is one
+  shipped products trust, so a locally regenerated pair reusing an existing key
+  ID will sign without complaint. Validate a new key with `LicenseValidator`
+  before issuing with it.
 - `LicenseGenerator sign --key-id` is optional, derived from a
   `<keyId>.private.pem` filename and still overridable.
 - The key-ring contracts (`ILicenseKeyRing`, `ILicenseSigner`,

@@ -747,9 +747,11 @@ mismatch.
   configurable via `Licensing:KeyRingReloadIntervalSeconds`), on a rare,
   deliberate, operator-driven action — and the operator performing that action
   already has a strictly better tool: `POST /signing-keys/rescan` and the
-  "Rescan key directory" button, which pick the key up immediately, on demand,
-  and produce an audit record, rather than at some point after an event the
-  operator cannot observe.
+  "Rescan key directory" button, which pick the key up immediately and on
+  demand, rather than at some point after an event the operator cannot observe.
+  (Unlike `set-default` and `revoke`, rescan currently writes no `AuditRecord`;
+  it changes no key state of its own, but adding one would make the operator's
+  faster path as traceable as the slower ones.)
   Against that, `FileSystemWatcher` carries real cost: silent event loss on
   `InternalBufferOverflowException`, per-platform behavioral differences,
   duplicate/partial events during multi-file key installs requiring the

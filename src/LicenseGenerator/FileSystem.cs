@@ -11,11 +11,12 @@ internal static class FileSystem
     }
 
     /// <summary>
-    /// Writes private key material owner-read/write only. The mode is requested at creation time so
-    /// the key material is never briefly world-readable, and re-applied afterwards because
-    /// <see cref="FileStreamOptions.UnixCreateMode"/> has no effect when --force overwrites a file
-    /// that already exists. Best-effort by design: Windows has no POSIX mode, so restricting the
-    /// file there is the operator's job via NTFS ACLs (the caller says so on stdout).
+    /// Writes private key material owner-read/write only, so the key is never world-readable even
+    /// momentarily. Two cases have to be handled separately: for a new file the mode is requested at
+    /// creation time, but <see cref="FileStreamOptions.UnixCreateMode"/> is ignored for an inode
+    /// that already exists, so a --force overwrite is narrowed to mode 600 *before* the stream
+    /// truncates it and writes the new key. Best-effort by design: Windows has no POSIX mode, so
+    /// restricting the file there is the operator's job via NTFS ACLs (the caller says so on stdout).
     /// </summary>
     public static void WritePrivateKey(string path, string pem)
     {
@@ -26,6 +27,10 @@ internal static class FileSystem
         }
 
         const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        if (File.Exists(path))
+            File.SetUnixFileMode(path, ownerOnly);
+
         var options = new FileStreamOptions
         {
             Mode = FileMode.Create,

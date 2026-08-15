@@ -111,7 +111,7 @@ public static class KeyDirectoryScanner
 /// and test correctly than a debounced watcher for a POC-scale key ring. Settled decision, not a
 /// deferral: see "Explicitly rejected alternatives" in
 /// docs/superpowers/specs/2026-08-14-key-ring-signing-design.md. Operators who need a key picked up
-/// sooner than the interval use the admin rescan action, which is immediate and audited.
+/// sooner than the interval use the admin rescan action, which is immediate and on demand.
 /// </summary>
 public sealed partial class SigningKeyRingService(
     IOptions<LicensingOptions> options,

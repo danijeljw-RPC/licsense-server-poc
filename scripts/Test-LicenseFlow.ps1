@@ -269,9 +269,17 @@ try {
     Write-Host 'PASS  keygen --id writes both halves under the convention names'
 
     if (-not $IsWindows) {
-        $droppedKeyMode = (& stat @('-f', '%OLp', $droppedPrivateKey) 2>$null)
-        if (-not $droppedKeyMode) { $droppedKeyMode = (& stat @('-c', '%a', $droppedPrivateKey)) }
-        Assert-Equal 'keygen restricts the private key to mode 600' ($droppedKeyMode | Out-String).Trim() '600'
+        # GNU stat first, then BSD/macOS. Order matters: BSD 'stat -f' means --file-system on GNU and
+        # succeeds while printing something that is not a mode at all, so probing it first would
+        # silently skip the real check.
+        $droppedKeyMode = (& stat @('-c', '%a', $droppedPrivateKey) 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $droppedKeyMode) {
+            $droppedKeyMode = (& stat @('-f', '%OLp', $droppedPrivateKey) 2>$null | Out-String).Trim()
+        }
+        if ($droppedKeyMode -notmatch '^[0-7]+$') {
+            throw "Could not read the file mode of the generated private key (got '$droppedKeyMode')."
+        }
+        Assert-Equal 'keygen restricts the private key to mode 600' $droppedKeyMode '600'
     }
 
     $keygenOverwriteResult = Invoke-LicenseTool -Project $generatorProject -ExpectedExitCode 1 -ToolArguments @(

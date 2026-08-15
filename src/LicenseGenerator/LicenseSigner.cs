@@ -27,6 +27,14 @@ internal static class LicenseSigner
         // validator will therefore reject. The check is against the key pair on disk rather than the
         // compiled TrustedPublicKeys map, so a key that exists only by having been dropped into the
         // server's key directory - the whole point of the key ring - can be signed with here too.
+        //
+        // What it deliberately no longer proves, since the key ring is the authority on which keys
+        // exist and this CLI runs offline against a directory it cannot validate for freshness:
+        // that the key ID is one any *consumer* trusts. A locally regenerated pair reusing an
+        // existing key ID is self-consistent and signs cleanly here while producing a licence
+        // shipped validators reject; so does an explicit --public-key naming the private key's own
+        // counterpart under a different --key-id. Both are operator errors this check cannot catch,
+        // and the derived path below is what keeps the common case honest.
         if (!EcdsaKeyPairs.TryValidatePair(privateKeyPem, File.ReadAllText(publicKeyPath), out var pairError))
         {
             throw new InvalidOperationException(
@@ -91,7 +99,9 @@ internal static class LicenseSigner
     /// private key's own filename. Deriving it from the private key's name would make the pair
     /// check tautological - signing with 'secondary-2026.private.pem' under
     /// '--key-id primary-2026' would compare secondary against secondary and pass, which is
-    /// precisely the mistake this check exists to catch.
+    /// precisely the mistake this check exists to catch. An explicit --public-key can still be
+    /// pointed at that same tautology; it exists for key material stored outside the naming
+    /// convention, and it moves responsibility for the pairing onto the operator.
     /// </summary>
     private static string ResolvePublicKeyPath(string[] args, string privateKeyPath, string keyId)
     {

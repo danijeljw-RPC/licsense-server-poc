@@ -199,8 +199,16 @@ assert_contains 'keygen --id reports the convention private key path' "$keygen_r
 [ -f "$dropped_key_directory/dropped-2027.public.pem" ] || fail 'keygen --id did not create <keyId>.public.pem'
 echo 'PASS  keygen --id writes both halves under the convention names'
 
-dropped_key_mode="$(stat -f '%OLp' "$dropped_key_directory/dropped-2027.private.pem" 2>/dev/null \
-    || stat -c '%a' "$dropped_key_directory/dropped-2027.private.pem")"
+# GNU stat first, then BSD/macOS. Order matters: BSD 'stat -f' means --file-system on GNU and
+# succeeds while printing something that is not a mode at all, so probing it first would silently
+# skip the real check.
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%OLp' "$1" 2>/dev/null
+}
+dropped_key_mode="$(file_mode "$dropped_key_directory/dropped-2027.private.pem")"
+case "$dropped_key_mode" in
+    ''|*[!0-7]*) fail "Could not read the file mode of the generated private key (got '$dropped_key_mode')." ;;
+esac
 assert_equal 'keygen restricts the private key to mode 600' "$dropped_key_mode" '600'
 
 keygen_overwrite_result="$(invoke_license_tool "$generator_project" 1 \
