@@ -15,8 +15,6 @@ namespace LicenseServer;
 /// </summary>
 public static class KeyDirectoryScanner
 {
-    private static readonly Regex KeyIdPattern = new("^[a-z0-9]+(-[a-z0-9]+)*$", RegexOptions.Compiled);
-
     public sealed record ScannedKey(
         string KeyId, string? PrivatePem, string? PublicPem, bool Valid, string? Error);
 
@@ -34,21 +32,21 @@ public static class KeyDirectoryScanner
             string? keyId = null;
             var isPrivate = false;
 
-            if (name.EndsWith(".private.pem", StringComparison.Ordinal))
+            if (name.EndsWith(SigningKeyFiles.PrivateSuffix, StringComparison.Ordinal))
             {
-                keyId = name[..^".private.pem".Length];
+                keyId = name[..^SigningKeyFiles.PrivateSuffix.Length];
                 isPrivate = true;
             }
-            else if (name.EndsWith(".public.pem", StringComparison.Ordinal))
+            else if (name.EndsWith(SigningKeyFiles.PublicSuffix, StringComparison.Ordinal))
             {
-                keyId = name[..^".public.pem".Length];
+                keyId = name[..^SigningKeyFiles.PublicSuffix.Length];
             }
             else
             {
                 continue; // not a recognized key filename; ignore (README, checksums, etc.)
             }
 
-            if (keyId.Length is < 3 or > 64 || !KeyIdPattern.IsMatch(keyId))
+            if (!SigningKeyFiles.IsValidKeyId(keyId))
                 continue; // invalid keyId shape; ignore rather than fail the whole scan
 
             try

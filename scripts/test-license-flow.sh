@@ -187,7 +187,47 @@ assert_contains 'signer rejects nested metadata values' "$nested_metadata_result
 mismatched_key_result="$(invoke_license_tool "$generator_project" 1 \
     sign --input "$input_path" --output "$work_directory/mismatched-key.license" \
     --private-key "$secondary_private_key" --key-id primary-2026)"
-assert_contains 'signer rejects private key and key ID mismatch' "$mismatched_key_result" 'does not match trusted key ID'
+assert_contains 'signer rejects private key and key ID mismatch' "$mismatched_key_result" 'does not match the public key for key ID'
+
+# A key that exists only as a dropped-in PEM pair - never added to TrustedPublicKeys.cs - must be
+# usable by the offline signer, since that is the whole point of the key-ring workflow.
+dropped_key_directory="$work_directory/dropped-keys"
+keygen_result="$(invoke_license_tool "$generator_project" 0 \
+    keygen --id dropped-2027 --output "$dropped_key_directory")"
+assert_contains 'keygen --id reports the convention private key path' "$keygen_result" "dropped-2027.private.pem"
+[ -f "$dropped_key_directory/dropped-2027.private.pem" ] || fail 'keygen --id did not create <keyId>.private.pem'
+[ -f "$dropped_key_directory/dropped-2027.public.pem" ] || fail 'keygen --id did not create <keyId>.public.pem'
+echo 'PASS  keygen --id writes both halves under the convention names'
+
+dropped_key_mode="$(stat -f '%OLp' "$dropped_key_directory/dropped-2027.private.pem" 2>/dev/null \
+    || stat -c '%a' "$dropped_key_directory/dropped-2027.private.pem")"
+assert_equal 'keygen restricts the private key to mode 600' "$dropped_key_mode" '600'
+
+keygen_overwrite_result="$(invoke_license_tool "$generator_project" 1 \
+    keygen --id dropped-2027 --output "$dropped_key_directory")"
+assert_contains 'keygen --id still refuses to overwrite' "$keygen_overwrite_result" 'already exists'
+
+keygen_bad_id_result="$(invoke_license_tool "$generator_project" 1 \
+    keygen --id 'Bad_Id' --output "$dropped_key_directory")"
+assert_contains 'keygen rejects key IDs the server could not discover' "$keygen_bad_id_result" "Invalid --id"
+
+# No --key-id: it is derived from the '<keyId>.private.pem' filename.
+dropped_license_path="$work_directory/dropped.license"
+invoke_license_tool "$generator_project" 0 \
+    sign --input "$input_path" --output "$dropped_license_path" \
+    --private-key "$dropped_key_directory/dropped-2027.private.pem" >/dev/null
+dropped_key_id="$(jq -r '.keyId' "$dropped_license_path")"
+assert_equal 'sign derives --key-id from the private key filename' "$dropped_key_id" 'dropped-2027'
+
+# The signature is real: LicenseValidator rejects it only because the key is untrusted there, which
+# is the expected embedded-trust behavior, not a signing failure.
+dropped_validation_result="$(invoke_license_tool "$validator_project" 1 --license "$dropped_license_path")"
+assert_contains 'a dropped-in key signs without TrustedPublicKeys edits' "$dropped_validation_result" 'Unknown signing key: dropped-2027'
+
+undeducible_key_id_result="$(invoke_license_tool "$generator_project" 1 \
+    sign --input "$input_path" --output "$work_directory/undeducible.license" \
+    --private-key "$input_path")"
+assert_contains 'sign explains an underivable key ID' "$undeducible_key_id_result" 'could not be derived'
 
 invoke_license_tool "$generator_project" 0 \
     sign --input "$input_path" --output "$primary_license_path" \
