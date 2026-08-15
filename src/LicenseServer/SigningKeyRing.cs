@@ -108,7 +108,10 @@ public static class KeyDirectoryScanner
 /// snapshot readers see atomically. Deliberately uses a periodic timer only, not a FileSystemWatcher -
 /// bind-mounted volumes don't reliably deliver watcher events in Docker anyway (the full design's own
 /// fallback timer would be needed regardless), and a bounded-delay poll is far simpler to reason about
-/// and test correctly than a debounced watcher for a POC-scale key ring.
+/// and test correctly than a debounced watcher for a POC-scale key ring. Settled decision, not a
+/// deferral: see "Explicitly rejected alternatives" in
+/// docs/superpowers/specs/2026-08-14-key-ring-signing-design.md. Operators who need a key picked up
+/// sooner than the interval use the admin rescan action, which is immediate and audited.
 /// </summary>
 public sealed partial class SigningKeyRingService(
     IOptions<LicensingOptions> options,

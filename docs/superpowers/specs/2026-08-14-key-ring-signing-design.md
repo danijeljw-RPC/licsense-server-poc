@@ -365,6 +365,13 @@ parsing.
 
 ## Hot reload mechanism
 
+> **Superseded in implementation.** Trigger 1 below (the `FileSystemWatcher`)
+> was rejected on review and is not implemented — see
+> [Explicitly rejected alternatives](#explicitly-rejected-alternatives) for the
+> reasoning. What ships is trigger 2 (interval configurable via
+> `Licensing:KeyRingReloadIntervalSeconds`, default 30s), an admin-triggered
+> rescan endpoint, and a synchronous republish inside `set-default`/`revoke`.
+
 `SigningKeyRingService.ReloadAsync()` is the single entry point, invoked by:
 
 1. The debounced `FileSystemWatcher` handler (any create/change/delete/rename
@@ -373,6 +380,10 @@ parsing.
    reload, not several).
 2. An unconditional periodic timer every 60 seconds, as a fallback for missed
    or unreliable watcher events on bind-mounted volumes.
+3. Every admin mutation that changes key state (`set-default`, `revoke`) and
+   the explicit admin rescan action, each awaiting the reload before returning
+   so a successful admin response never reports state the ring has not yet
+   published.
 
 `ReloadAsync` is guarded so overlapping triggers coalesce into a single
 in-flight reload rather than running concurrently. It always: scans the
@@ -638,3 +649,31 @@ mismatch.
   restart, contradicting the no-restart requirement. Moved to a DB-backed
   `IsDefault` flag reconciled by the same loop that already handles
   revocation, which works identically in both deployment shapes.
+- **A debounced `FileSystemWatcher` alongside the periodic reload** (specified
+  in "Hot reload mechanism" above) — rejected after implementation review; the
+  shipped key ring reloads on a periodic timer plus an admin-triggered rescan
+  only. The watcher was always specified as an optimization *on top of* an
+  unconditional timer that has to exist anyway, precisely because bind-mounted
+  volumes do not reliably deliver inotify events — which is exactly the
+  deployment shape this project ships (`docker-compose` mounts the key
+  directory read-only). So the watcher could never be the mechanism relied
+  upon; it could only shorten the happy path.
+  What it would shorten is at most one reload interval (default 30s,
+  configurable via `Licensing:KeyRingReloadIntervalSeconds`), on a rare,
+  deliberate, operator-driven action — and the operator performing that action
+  already has a strictly better tool: `POST /signing-keys/rescan` and the
+  "Rescan key directory" button, which pick the key up immediately, on demand,
+  and produce an audit record, rather than at some point after an event the
+  operator cannot observe.
+  Against that, `FileSystemWatcher` carries real cost: silent event loss on
+  `InternalBufferOverflowException`, per-platform behavioral differences,
+  duplicate/partial events during multi-file key installs requiring the
+  debounce window to be tuned, and inotify handle limits. Testing it means
+  timing-dependent tests around filesystem events, which is a poor trade for
+  saving a bounded delay on an infrequent action.
+  Revisit if a deployment shape appears where keys land in a directory the
+  process watches natively, no operator is present to trigger a rescan, and
+  sub-30-second pickup is a stated requirement. Note that this affects only
+  *filesystem* pickup latency: admin mutations (`set-default`, `revoke`)
+  republish the ring snapshot synchronously before returning and never wait for
+  the timer at all.
