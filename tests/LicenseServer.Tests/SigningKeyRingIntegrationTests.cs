@@ -196,6 +196,66 @@ public sealed class SigningKeyRingIntegrationTests(PostgresWebFixture fixture)
     }
 
     [Fact]
+    public async Task SetDefaultAndRevokePublishTheNewSnapshotBeforeReturning()
+    {
+        // The design's original hot-reload section listed only two things that republish the
+        // in-memory snapshot: the filesystem watcher and the periodic timer. Neither is triggered by
+        // set-default or revoke, which write straight to Postgres - so between a successful admin
+        // mutation and the next timer tick the ring would still be serving the old answer. Signing
+        // would keep using the previous default key after set-default reported success, and
+        // verification would keep accepting a just-revoked key after revoke reported success, which
+        // contradicts fail-closed revocation.
+        //
+        // Both mutations therefore await ReloadAsync before returning. Every assertion below runs
+        // immediately after its await, with no sleep and no explicit reload; the periodic timer is
+        // floored at 5 seconds and defaults to 30, so nothing but that synchronous republish could
+        // have updated the snapshot in between. Deleting either ReloadAsync call fails this test.
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var keyRing = scope.ServiceProvider.GetRequiredService<SigningKeyRingService>();
+        var signer = scope.ServiceProvider.GetRequiredService<ILicenseSigner>();
+        var verifier = scope.ServiceProvider.GetRequiredService<ILicenseVerifier>();
+        var license = BuildLicense("no-stale-window");
+
+        Assert.Equal("primary-2026", keyRing.DefaultKeyId);
+
+        try
+        {
+            await keyRing.SetDefaultAsync("secondary-2026", "test-admin");
+
+            Assert.Equal("secondary-2026", keyRing.DefaultKeyId);
+            var signedWithNewDefault = signer.Sign(license, requestedKeyId: null);
+            Assert.True(signedWithNewDefault.Success);
+            Assert.Equal("secondary-2026", signedWithNewDefault.Envelope!["keyId"]!.GetValue<string>());
+
+            var signedJson = signedWithNewDefault.Envelope.ToJsonString();
+            Assert.Equal("secondary-2026", verifier.Verify(signedJson).KeyId);
+
+            await keyRing.RevokeAsync("secondary-2026", "no-stale-window check", "test-admin");
+
+            Assert.Throws<LicenseValidationException>(() => verifier.Verify(signedJson));
+            Assert.False(signer.Sign(license, "secondary-2026").Success);
+            // Revoking the default clears it rather than substituting another key, so the very next
+            // default-key signing attempt fails closed instead of silently using a different key.
+            Assert.Null(keyRing.DefaultKeyId);
+            Assert.Equal("no_default_key", signer.Sign(license, requestedKeyId: null).ErrorCode);
+        }
+        finally
+        {
+            await using var restoreScope = fixture.Factory.Services.CreateAsyncScope();
+            var restoreDb = restoreScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var row = await restoreDb.SigningKeys.SingleAsync(x => x.KeyId == "secondary-2026");
+            row.RevokedAt = null;
+            row.RevokedBy = null;
+            row.RevocationReason = null;
+            await restoreDb.SaveChangesAsync();
+            await keyRing.ReloadAsync();
+            // Deliberately no assertion here: a failing assert inside finally would replace the
+            // real failure from the try block with a confusing one about restore state.
+            await keyRing.SetDefaultAsync("primary-2026", "test-admin");
+        }
+    }
+
+    [Fact]
     public async Task AdminEndpointsEnforcePermissionsAndListsReflectTheRing()
     {
         var reader = fixture.CreateAuthenticatedClient(false, Permissions.LicensesRead);
