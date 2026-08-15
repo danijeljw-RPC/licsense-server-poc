@@ -10,7 +10,6 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
-using SoftwareLicensing;
 using LicenseServer.Authorization;
 
 namespace LicenseServer.Tests;
@@ -21,7 +20,6 @@ public sealed class PostgresWebFixture : IAsyncLifetime
     internal const string StripeWebhookSecret = "whsec_stage14_test_webhook_secret";
     private readonly List<WebApplicationFactory<Program>> authenticatedFactories = [];
     private string? temporaryKeyDirectory;
-    private string? originalTrustedPublicKey;
     public WebApplicationFactory<Program> Factory { get; private set; } = null!;
     public SecretCaptureLoggerProvider CapturedLogs { get; } = new();
 
@@ -31,9 +29,8 @@ public sealed class PostgresWebFixture : IAsyncLifetime
             ?? throw new InvalidOperationException("Run tests through scripts/Test-DatabaseAndAuth.ps1 so they receive an isolated PostgreSQL database.");
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", connectionString);
         Environment.SetEnvironmentVariable("Security__RequireMfaForHighRiskPermissions", "true");
-        var keys = ResolveSigningKeys();
-        Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", keys.PrivateKeyPath);
-        Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", keys.PublicKeyPath);
+        Environment.SetEnvironmentVariable("Licensing__KeyDirectory", ResolveKeyDirectory());
+        Environment.SetEnvironmentVariable("Licensing__DefaultSigningKey", "primary-2026");
         Factory = new LicenseServerFactory(connectionString);
         using var client = Factory.CreateClient();
         using var ready = await client.GetAsync("/health/ready");
@@ -50,27 +47,27 @@ public sealed class PostgresWebFixture : IAsyncLifetime
         throw new FileNotFoundException($"Could not locate repository file '{relativePath}'.");
     }
 
-    private (string PrivateKeyPath, string PublicKeyPath) ResolveSigningKeys()
+    /// <summary>
+    /// Points the key-ring at the repository's real "keys/" directory when the (gitignored) private
+    /// key files are present locally or in CI; otherwise generates a throwaway "primary-2026" pair
+    /// into a temp directory. Because signing/verification are both key-ring-backed now, there is no
+    /// longer a separate TrustedPublicKeys monkey-patch needed for the fallback case - dropping a
+    /// correctly-named pair into a directory is the one mechanism both paths share.
+    /// </summary>
+    private string ResolveKeyDirectory()
     {
         try
         {
-            return (
-                FindRepositoryFile("keys/license-primary-2026-private.pem"),
-                FindRepositoryFile("keys/license-primary-2026-public.pem"));
+            return Path.GetDirectoryName(FindRepositoryFile("keys/primary-2026.private.pem"))!;
         }
         catch (FileNotFoundException)
         {
             temporaryKeyDirectory = Path.Combine(Path.GetTempPath(), $"license-server-test-keys-{Guid.NewGuid():N}");
             Directory.CreateDirectory(temporaryKeyDirectory);
-            var privateKeyPath = Path.Combine(temporaryKeyDirectory, "private.pem");
-            var publicKeyPath = Path.Combine(temporaryKeyDirectory, "public.pem");
             using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-            File.WriteAllText(privateKeyPath, key.ExportPkcs8PrivateKeyPem());
-            var publicKeyPem = key.ExportSubjectPublicKeyInfoPem();
-            File.WriteAllText(publicKeyPath, publicKeyPem);
-            originalTrustedPublicKey = TrustedPublicKeys.ByKeyId["primary-2026"];
-            ((IDictionary<string, string>)TrustedPublicKeys.ByKeyId)["primary-2026"] = publicKeyPem;
-            return (privateKeyPath, publicKeyPath);
+            File.WriteAllText(Path.Combine(temporaryKeyDirectory, "primary-2026.private.pem"), key.ExportPkcs8PrivateKeyPem());
+            File.WriteAllText(Path.Combine(temporaryKeyDirectory, "primary-2026.public.pem"), key.ExportSubjectPublicKeyInfoPem());
+            return temporaryKeyDirectory;
         }
     }
 
@@ -80,13 +77,11 @@ public sealed class PostgresWebFixture : IAsyncLifetime
             await factory.DisposeAsync();
         await Factory.DisposeAsync();
         Environment.SetEnvironmentVariable("ConnectionStrings__DefaultConnection", null);
-        Environment.SetEnvironmentVariable("Licensing__PrivateKeyPath", null);
-        Environment.SetEnvironmentVariable("Licensing__PublicKeyPath", null);
+        Environment.SetEnvironmentVariable("Licensing__KeyDirectory", null);
+        Environment.SetEnvironmentVariable("Licensing__DefaultSigningKey", null);
         Environment.SetEnvironmentVariable("Security__RequireMfaForHighRiskPermissions", null);
         if (temporaryKeyDirectory is not null && Directory.Exists(temporaryKeyDirectory))
             Directory.Delete(temporaryKeyDirectory, recursive: true);
-        if (originalTrustedPublicKey is not null)
-            ((IDictionary<string, string>)TrustedPublicKeys.ByKeyId)["primary-2026"] = originalTrustedPublicKey;
     }
 
     public HttpClient CreateAuthenticatedClient(bool administrator, params string[] permissions)

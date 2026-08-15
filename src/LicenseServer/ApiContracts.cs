@@ -35,6 +35,8 @@ public sealed record DeactivationResponse(
 
 public sealed record RevokeRequest(bool Confirmed, string? Reason, long? Version);
 
+public sealed record RevokeSigningKeyRequest(bool Confirmed, string? Reason);
+
 public sealed record CancelRequest(bool Confirmed, string? Reason, long Version, string? Reference = null);
 
 public sealed record AdminDeactivateRequest(bool Confirmed, string? Reason, long Version);

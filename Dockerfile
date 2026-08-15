@@ -20,7 +20,6 @@ RUN apt-get update \
     && chown -R "$APP_UID:$APP_UID" /var/lib/licenseserver
 WORKDIR /app
 COPY --from=build --chown=$APP_UID:$APP_UID /out/ ./
-COPY --chown=$APP_UID:$APP_UID keys/license-primary-2026-public.pem /app/keys/license-primary-2026-public.pem
 USER $APP_UID
 ENV ASPNETCORE_HTTP_PORTS=8080 \
     ASPNETCORE_ENVIRONMENT=Container \

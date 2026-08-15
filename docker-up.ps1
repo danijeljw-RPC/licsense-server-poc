@@ -50,8 +50,8 @@ try {
         Copy-Item -LiteralPath '.env.example' -Destination '.env'
         throw "Created .env from .env.example. Replace its example passwords, then run this script again."
     }
-    if (-not (Test-Path -LiteralPath 'keys\license-primary-2026-private.pem')) {
-        throw 'The development signing key keys\license-primary-2026-private.pem is missing.'
+    if (-not (Test-Path -LiteralPath 'keys\primary-2026.private.pem')) {
+        throw 'The development signing key keys\primary-2026.private.pem is missing.'
     }
 
     $envText = Get-Content -LiteralPath '.env' -Raw

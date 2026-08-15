@@ -25,7 +25,11 @@ public static class LicenseVerifier
         return Verify(File.ReadAllText(licensePath));
     }
 
-    public static VerifiedLicense Verify(string signedLicenseJson)
+    public static VerifiedLicense Verify(string signedLicenseJson) =>
+        Verify(signedLicenseJson, TrustedPublicKeys.ByKeyId);
+
+    public static VerifiedLicense Verify(
+        string signedLicenseJson, IReadOnlyDictionary<string, string> trustedPublicKeysByKeyId)
     {
         JsonObject root;
 
@@ -57,7 +61,7 @@ public static class LicenseVerifier
         if (!string.Equals(algorithm, LicenseConstants.Algorithm, StringComparison.Ordinal))
             throw new LicenseValidationException($"Unsupported algorithm: {algorithm}");
 
-        if (!TrustedPublicKeys.ByKeyId.TryGetValue(keyId, out var publicKeyPem))
+        if (!trustedPublicKeysByKeyId.TryGetValue(keyId, out var publicKeyPem))
             throw new LicenseValidationException($"Unknown signing key: {keyId}");
 
         if (root["license"] is not JsonObject licenseJson)

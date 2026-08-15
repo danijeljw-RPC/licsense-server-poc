@@ -44,6 +44,7 @@ services:
       DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:?Set DEFAULT_ADMIN_PASSWORD in .env}
       SEED_DEMO_LICENSE: ${SEED_DEMO_LICENSE:-true}
       Licensing__IdTimeZone: ${LICENSE_ID_TIME_ZONE:-Australia/Adelaide}
+      Licensing__DefaultSigningKey: ${LICENSE_DEFAULT_SIGNING_KEY:-primary-2026}
       ActivationCodes__Pepper: ${ACTIVATION_CODE_PEPPER:?Set ACTIVATION_CODE_PEPPER in .env}
       ApiCredentials__Pepper: ${API_CREDENTIAL_PEPPER:?Set API_CREDENTIAL_PEPPER in .env}
       MailerSend__ApiToken: ${MAILERSEND_API_TOKEN:?Set MAILERSEND_API_TOKEN in .env}
@@ -63,7 +64,7 @@ services:
       - "${APP_PORT:-8080}:8080"
     volumes:
       - license-data-protection:/var/lib/licenseserver/data-protection
-      - ${LICENSE_SIGNING_KEY_PATH:?Set LICENSE_SIGNING_KEY_PATH in .env}:/run/secrets/license-signing-key.pem:ro
+      - ${LICENSE_SIGNING_KEY_DIR:?Set LICENSE_SIGNING_KEY_DIR in .env}:/var/lib/licenseserver/keys:ro
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777

@@ -7,8 +7,8 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $generatorProject = Join-Path $repositoryRoot 'src\LicenseGenerator\LicenseGenerator.csproj'
 $validatorProject = Join-Path $repositoryRoot 'src\LicenseValidator\LicenseValidator.csproj'
-$primaryPrivateKey = Join-Path $repositoryRoot 'keys\license-primary-2026-private.pem'
-$secondaryPrivateKey = Join-Path $repositoryRoot 'keys\license-secondary-2026-private.pem'
+$primaryPrivateKey = Join-Path $repositoryRoot 'keys\primary-2026.private.pem'
+$secondaryPrivateKey = Join-Path $repositoryRoot 'keys\secondary-2026.private.pem'
 $workDirectory = Join-Path ([IO.Path]::GetTempPath()) ("software-license-test-" + [Guid]::NewGuid())
 
 function Invoke-LicenseTool {
@@ -423,7 +423,7 @@ try {
 
     $publicKeyOptionResult = Invoke-LicenseTool -Project $validatorProject -ExpectedExitCode 2 -ToolArguments @(
         '--license', $primaryLicensePath,
-        '--public-key', (Join-Path $repositoryRoot 'keys\license-primary-2026-public.pem')
+        '--public-key', (Join-Path $repositoryRoot 'keys\primary-2026.public.pem')
     )
     Assert-Contains 'caller-supplied public keys are rejected' $publicKeyOptionResult '--public-key is no longer accepted'
 

@@ -2,7 +2,7 @@
 **/obj/
 artifacts/
 server-data/
-keys/*-private.pem
+keys/*.private.pem
 licenses/*.license
 .env
 .env.*

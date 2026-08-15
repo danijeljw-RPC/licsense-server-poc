@@ -35,7 +35,7 @@ try {
         foreach ($pair in @{
             POSTGRES_PASSWORD = 'down-only-not-used'
             DEFAULT_ADMIN_PASSWORD = 'DownOnly!9Xv4-Qr7-Ws2'
-            LICENSE_SIGNING_KEY_PATH = './keys/license-primary-2026-private.pem'
+            LICENSE_SIGNING_KEY_DIR = './keys'
         }.GetEnumerator()) {
             if (-not (Test-Path "Env:\$($pair.Key)")) {
                 Set-Item "Env:\$($pair.Key)" $pair.Value

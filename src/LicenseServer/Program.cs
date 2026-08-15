@@ -281,7 +281,11 @@ builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<ApiCredentialService>();
 builder.Services.AddScoped<CustomerAccessService>();
 builder.Services.AddScoped<IOwnedCredentialRevoker>(services => services.GetRequiredService<ApiCredentialService>());
-builder.Services.AddSingleton<LicenseEnvelopeSigner>();
+builder.Services.AddSingleton<SigningKeyRingService>();
+builder.Services.AddSingleton<ILicenseKeyRing>(sp => sp.GetRequiredService<SigningKeyRingService>());
+builder.Services.AddSingleton<ILicenseSigner>(sp => sp.GetRequiredService<SigningKeyRingService>());
+builder.Services.AddSingleton<ILicenseVerifier>(sp => sp.GetRequiredService<SigningKeyRingService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SigningKeyRingService>());
 builder.Services.AddScoped<DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
 var adminPermitLimit = builder.Configuration.GetValue("RateLimits:AdminPermitLimit", 600);
@@ -497,12 +501,12 @@ app.MapPost("/customer/logout", async (HttpContext context) =>
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = "CustomerPortal" });
 
 app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
-    string licenseId, ActivateRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>
+    string licenseId, ActivateRequest request, LicenseStore store, ILicenseSigner signer, ILicenseVerifier verifier, CancellationToken cancellationToken) =>
 {
     var now = DateTimeOffset.UtcNow;
     var result = await store.ActivateAsync(licenseId, request, now, cancellationToken);
     return result.Success
-        ? await SignedResponse(result.Value!, store, signer, now, cancellationToken)
+        ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
         : Problem(result);
 }).AllowAnonymous().RequireRateLimiting("device-api");
 
@@ -516,12 +520,12 @@ app.MapPost("/api/v1/activations/{activationId}/validate", async (
 }).AllowAnonymous().RequireRateLimiting("device-api");
 
 app.MapPost("/api/v1/activations/{activationId}/refresh", async (
-    string activationId, ActivationCredentialRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>
+    string activationId, ActivationCredentialRequest request, LicenseStore store, ILicenseSigner signer, ILicenseVerifier verifier, CancellationToken cancellationToken) =>
 {
     var now = DateTimeOffset.UtcNow;
     var result = await store.RefreshAsync(activationId, request, now, cancellationToken);
     return result.Success
-        ? await SignedResponse(result.Value!, store, signer, now, cancellationToken)
+        ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
         : Problem(result);
 }).AllowAnonymous().RequireRateLimiting("device-api");
 
@@ -633,6 +637,39 @@ adminApi.MapPost("/api-keys/{id:guid}/revoke", async (
     try { await service.RevokeAsync(id, context.User.Identity?.Name ?? "unknown", ct); return Results.NoContent(); }
     catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["apiKey"] = [exception.Message] }); }
 }).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapGet("/signing-keys", (ILicenseKeyRing ring) =>
+    Results.Ok(ring.Keys.OrderByDescending(k => k.IsDefault).ThenBy(k => k.KeyId, StringComparer.Ordinal)))
+    .RequireAuthorization(Permissions.LicensesRead)
+    .WithDescription("Read-only operational status of every key the server has ever seen; never returns key material.");
+adminApi.MapPost("/signing-keys/rescan", async (SigningKeyRingService keyRing, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    await keyRing.ReloadAsync(ct);
+    return Results.NoContent();
+}).RequireAuthorization(Permissions.SigningKeysManage)
+  .WithDescription("Triggers an immediate re-scan of the key directory instead of waiting for the periodic reload.");
+adminApi.MapPost("/signing-keys/{keyId}/set-default", async (
+    string keyId, SigningKeyRingService keyRing, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { await keyRing.SetDefaultAsync(keyId, context.User.Identity?.Name ?? "unknown", ct); return Results.NoContent(); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["signingKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.SigningKeysManage);
+adminApi.MapPost("/signing-keys/{keyId}/revoke", async (
+    string keyId, RevokeSigningKeyRequest request, SigningKeyRingService keyRing,
+    IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    if (!request.Confirmed)
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["confirmed"] = ["Revocation requires explicit confirmation."] });
+    try
+    {
+        await keyRing.RevokeAsync(keyId, request.Reason ?? "", context.User.Identity?.Name ?? "unknown", ct);
+        return Results.NoContent();
+    }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["signingKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.SigningKeysManage)
+  .WithDescription("Destructive: fails verification for every license this key ever signed, within this server's own key ring only.");
 adminApi.MapPost("/users", async (
     CreateUserRequest request, UserAdministrationService service, IAntiforgery antiforgery,
     HttpContext context, CancellationToken ct) =>
@@ -854,17 +891,30 @@ app.MapAdditionalIdentityEndpoints();
 await using (var scope = app.Services.CreateAsyncScope())
     await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().InitializeAsync();
 
+// Populate the signing key ring synchronously before accepting traffic: BackgroundService.StartAsync
+// does not await ExecuteAsync's completion, so without this the app could serve requests before the
+// first scan/reconcile pass has run.
+await app.Services.GetRequiredService<SigningKeyRingService>().ReloadAsync();
+
 await app.RunAsync();
 
 static async Task<IResult> SignedResponse(
     LicenseStore.ActiveActivation activation,
     LicenseStore store,
-    LicenseEnvelopeSigner signer,
+    ILicenseSigner signer,
+    ILicenseVerifier verifier,
     DateTimeOffset now,
     CancellationToken cancellationToken)
 {
-    var signed = signer.Sign(await store.CreateLicenseAsync(activation, now, cancellationToken));
-    var parsed = SoftwareLicensing.LicenseVerifier.Verify(signed.ToJsonString()).Data.Activation!;
+    // Anonymous device-facing endpoints never accept a caller-chosen key: always sign with the
+    // configured default, per the key-ring design's "no client influence over server signing
+    // material for unauthenticated callers" decision.
+    var result = signer.Sign(await store.CreateLicenseAsync(activation, now, cancellationToken), requestedKeyId: null);
+    if (!result.Success)
+        return Results.Problem(title: "Signing failed", detail: result.ErrorMessage, statusCode: StatusCodes.Status500InternalServerError);
+
+    var signed = result.Envelope!;
+    var parsed = verifier.Verify(signed.ToJsonString()).Data.Activation!;
     return Results.Ok(new ActivationResponse(
         activation.LicenseId,
         activation.ActivationId,

@@ -290,6 +290,12 @@ public sealed class SigningKeyRecord
     public required string Provider { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? RetiredAt { get; set; }
+    public bool IsDefault { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public string? RevokedBy { get; set; }
+    public string? RevocationReason { get; set; }
+    public DateTimeOffset DiscoveredAt { get; set; }
+    public DateTimeOffset LastSeenAt { get; set; }
 }
 
 public sealed class AuditRecord

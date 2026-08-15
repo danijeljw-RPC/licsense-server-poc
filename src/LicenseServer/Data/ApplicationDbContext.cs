@@ -197,6 +197,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<Activation>().HasIndex(x => x.LicenseRecordId).IsUnique().HasFilter("\"DeactivatedAt\" IS NULL");
         builder.Entity<Activation>().HasIndex(x => x.LeaseExpiresAt);
         builder.Entity<SigningKeyRecord>().HasIndex(x => x.KeyId).IsUnique();
+        builder.Entity<SigningKeyRecord>().HasIndex(x => x.IsDefault).IsUnique().HasFilter("\"IsDefault\"");
         builder.Entity<AuditRecord>().HasIndex(x => x.TimestampUtc);
         builder.Entity<AuditRecord>().Property(x => x.Actor).HasMaxLength(256);
         builder.Entity<AuditRecord>().Property(x => x.Action).HasMaxLength(100);

@@ -83,8 +83,8 @@ try {
     $env:DEFAULT_ADMIN_PASSWORD = $adminPassword
     $env:SEED_DEMO_LICENSE = 'true'
     $env:ASPNETCORE_ENVIRONMENT = 'Development'
-    $env:Licensing__PrivateKeyPath = Join-Path $repositoryRoot 'keys\license-primary-2026-private.pem'
-    $env:Licensing__PublicKeyPath = Join-Path $repositoryRoot 'keys\license-primary-2026-public.pem'
+    $env:Licensing__KeyDirectory = Join-Path $repositoryRoot 'keys'
+    $env:Licensing__DefaultSigningKey = 'primary-2026'
     $startProcessArguments = @{
         FilePath = 'dotnet'
         ArgumentList = @($serverAssembly, '--urls', $serverUrl)
@@ -223,7 +223,7 @@ try {
     Write-Host 'All activation, transfer, revocation, and offline tests passed.' -ForegroundColor Green
 }
 finally {
-    Remove-Item Env:\ConnectionStrings__DefaultConnection,Env:\SEED_DEFAULT_ADMIN,Env:\DEFAULT_ADMIN_EMAIL,Env:\DEFAULT_ADMIN_PASSWORD,Env:\SEED_DEMO_LICENSE,Env:\ASPNETCORE_ENVIRONMENT,Env:\Licensing__PrivateKeyPath,Env:\Licensing__PublicKeyPath -ErrorAction SilentlyContinue
+    Remove-Item Env:\ConnectionStrings__DefaultConnection,Env:\SEED_DEFAULT_ADMIN,Env:\DEFAULT_ADMIN_EMAIL,Env:\DEFAULT_ADMIN_PASSWORD,Env:\SEED_DEMO_LICENSE,Env:\ASPNETCORE_ENVIRONMENT,Env:\Licensing__KeyDirectory,Env:\Licensing__DefaultSigningKey -ErrorAction SilentlyContinue
     if ($null -ne $serverProcess) {
         try {
             if (-not $serverProcess.HasExited) {

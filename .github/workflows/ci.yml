@@ -125,13 +125,13 @@ jobs:
           }
 
           Set-Content `
-            -LiteralPath keys/license-primary-2026-private.pem `
+            -LiteralPath keys/primary-2026.private.pem `
             -Value $env:PRIMARY_PRIVATE_KEY.Trim() `
             -Encoding utf8NoBOM
 
           if (-not [string]::IsNullOrWhiteSpace($env:SECONDARY_PRIVATE_KEY)) {
             Set-Content `
-              -LiteralPath keys/license-secondary-2026-private.pem `
+              -LiteralPath keys/secondary-2026.private.pem `
               -Value $env:SECONDARY_PRIVATE_KEY.Trim() `
               -Encoding utf8NoBOM
           }
@@ -157,8 +157,8 @@ jobs:
         if: always()
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue `
-            keys/license-primary-2026-private.pem, `
-            keys/license-secondary-2026-private.pem
+            keys/primary-2026.private.pem, `
+            keys/secondary-2026.private.pem
 
       - name: Upload test log
         if: always()

@@ -41,7 +41,7 @@ $demos = @(
         Name = 'primary-2026'
         Input = Join-Path $repositoryRoot 'input\demo-primary-license-data.json'
         Output = Join-Path $licensesDirectory 'demo-primary.license'
-        PrivateKey = Join-Path $repositoryRoot 'keys\license-primary-2026-private.pem'
+        PrivateKey = Join-Path $repositoryRoot 'keys\primary-2026.private.pem'
         Product = 'gcexp'
         ReleaseDate = '2028-12-31'
     },
@@ -49,7 +49,7 @@ $demos = @(
         Name = 'secondary-2026'
         Input = Join-Path $repositoryRoot 'input\demo-secondary-license-data.json'
         Output = Join-Path $licensesDirectory 'demo-secondary.license'
-        PrivateKey = Join-Path $repositoryRoot 'keys\license-secondary-2026-private.pem'
+        PrivateKey = Join-Path $repositoryRoot 'keys\secondary-2026.private.pem'
         Product = 'winupd'
         ReleaseDate = '2030-12-31'
     }
