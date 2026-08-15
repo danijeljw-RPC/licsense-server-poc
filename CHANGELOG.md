@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced offline by `LicenseGenerator`. **Design only — no implementation
   yet**; `LicenseValidator`'s embedded trust model is explicitly out of scope
   and unchanged.
+- Bash equivalents of the PowerShell scripts in `scripts/`
+  (`new-demo-licenses.sh`, `new-offline-activation-request.sh`,
+  `test-database-and-auth.sh`, `test-activation-flow.sh`,
+  `test-license-flow.sh`) for running the demo-licensing, offline-activation,
+  and integration-test flows from macOS/Linux shells.
 
 ### Changed
 - Repository-local `.claude/settings.json` now ships a minimal, schema-valid
