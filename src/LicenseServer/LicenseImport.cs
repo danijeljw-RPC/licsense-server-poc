@@ -71,7 +71,12 @@ internal sealed partial class LicenseImportService(
             return StoreResult<ImportedLicense>.BadRequest(exception.Message, "file");
         }
 
-        if (TryGetArtifactContactEmail(verified.Data.Metadata, out var artifactContactEmail))
+        // ArtifactHasContactEmail is true whenever the key is present at all, even if its value
+        // isn't a string - LicenseSchema.Parse allows any metadata value to be a string, number,
+        // or boolean, so a non-string contactEmail must still be cross-checked (and rejected,
+        // since it can never normalize-equal an email) rather than silently treated the same as
+        // the key being absent entirely.
+        if (ArtifactHasContactEmail(verified.Data.Metadata, out var artifactContactEmail))
         {
             if (!CustomerEmails.TryNormalize(artifactContactEmail, out var normalizedArtifactEmail, out _)
                 || !string.Equals(normalizedArtifactEmail, normalizedContactEmail, StringComparison.Ordinal))
@@ -287,18 +292,18 @@ internal sealed partial class LicenseImportService(
             autoCreatedProducts.Select(p => p.Code).ToArray()));
     }
 
-    private static bool TryGetArtifactContactEmail(JsonObject? metadata, out string? contactEmail)
+    private static bool ArtifactHasContactEmail(JsonObject? metadata, out string? contactEmail)
     {
         contactEmail = null;
-        if (metadata is null
-            || !metadata.TryGetPropertyValue("contactEmail", out var node)
-            || node is not JsonValue value
-            || !value.TryGetValue<string>(out var text))
-        {
+        if (metadata is null || !metadata.TryGetPropertyValue("contactEmail", out var node))
             return false;
-        }
 
-        contactEmail = text;
+        // The key is present either way; only extract a string value into contactEmail when
+        // there is one. A present-but-non-string value leaves contactEmail null, which
+        // CustomerEmails.TryNormalize(null, ...) rejects, so the caller's mismatch path fires
+        // instead of the check being skipped as if the key were absent.
+        if (node is JsonValue value && value.TryGetValue<string>(out var text))
+            contactEmail = text;
         return true;
     }
 

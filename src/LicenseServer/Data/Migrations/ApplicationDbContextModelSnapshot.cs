@@ -833,7 +833,7 @@ namespace LicenseServer.Data.Migrations
 
                             t.HasCheckConstraint("CK_Licenses_ExpiryPrecision", "\"ExpirySubMicrosecondTicks\" BETWEEN 0 AND 9");
 
-                            t.HasCheckConstraint("CK_Licenses_ImportProvenance", "(\"Provenance\" = 'imported') = (\"ImportedSignedEnvelope\" IS NOT NULL AND \"ImportedSignedEnvelopeSha256\" IS NOT NULL AND \"ImportedAt\" IS NOT NULL AND \"ImportedBy\" IS NOT NULL)");
+                            t.HasCheckConstraint("CK_Licenses_ImportProvenance", "(\"Provenance\" = 'imported' AND \"ImportedSignedEnvelope\" IS NOT NULL AND \"ImportedSignedEnvelopeSha256\" IS NOT NULL AND \"ImportedAt\" IS NOT NULL AND \"ImportedBy\" IS NOT NULL) OR (\"Provenance\" != 'imported' AND \"ImportedSignedEnvelope\" IS NULL AND \"ImportedSignedEnvelopeSha256\" IS NULL AND \"ImportedAt\" IS NULL AND \"ImportedBy\" IS NULL)");
 
                             t.HasCheckConstraint("CK_Licenses_Provenance", "\"Provenance\" IN ('issued', 'imported')");
 

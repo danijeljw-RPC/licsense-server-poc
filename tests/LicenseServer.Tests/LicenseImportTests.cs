@@ -117,6 +117,24 @@ public sealed class LicenseImportTests(PostgresWebFixture fixture)
     }
 
     [Fact]
+    public async Task ImportRejectsWhenArtifactContactEmailIsNotAString()
+    {
+        // LicenseSchema.Parse allows any metadata value to be a string, number, or boolean, so a
+        // non-string metadata.contactEmail is a legitimately-signable artifact. It must still be
+        // treated as "present" and rejected on mismatch, not silently skipped as if absent.
+        var licenseId = UniqueLicenseId();
+        var operatorEmail = $"non-string-{Guid.NewGuid():N}@example.com";
+        var license = BuildLicense(licenseId, "Non-String Metadata Customer");
+        license["metadata"] = new JsonObject { ["contactEmail"] = 12345 };
+        var (bytes, _) = await SignAsync(license);
+        using var client = fixture.CreateAuthenticatedClient(false, Permissions.LicensesImport);
+
+        using var response = await PostImportAsync(client, bytes, "non-string-email.license", operatorEmail);
+        await RoadmapTestSupport.AssertProblemAsync(response, HttpStatusCode.BadRequest);
+        Assert.Equal(0, await CountLicensesAsync(licenseId));
+    }
+
+    [Fact]
     public async Task ImportedActivationFailsClosedForRefreshAndDeactivate()
     {
         var licenseId = UniqueLicenseId();

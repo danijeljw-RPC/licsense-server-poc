@@ -775,13 +775,16 @@ adminApi.MapPost("/licenses", async (
 adminApi.MapPost("/licenses/import", async (
     HttpRequest request, LicenseImportService importer, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
 {
-    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
     if (!request.HasFormContentType)
         return Results.Problem(title: "Invalid request", detail: "multipart/form-data is required.", statusCode: 400);
     // Mirrors the webhook payload-size check: reject before ever reading the body, rather than
-    // trusting a client-supplied header alone to bound how much we buffer.
+    // trusting a client-supplied header alone to bound how much we buffer. Deliberately ordered
+    // before ValidAntiforgeryAsync below - antiforgery validation with no header token present
+    // falls back to reading the request form itself looking for one, which would buffer the
+    // whole body before this check ever ran.
     if (request.ContentLength is null or > LicenseImportService.MaxUploadBytes)
         return Results.Problem(title: "License file is too large", statusCode: StatusCodes.Status413PayloadTooLarge);
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
 
     var form = await request.ReadFormAsync(ct);
     var file = form.Files["file"];

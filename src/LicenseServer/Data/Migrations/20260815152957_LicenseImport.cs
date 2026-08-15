@@ -52,7 +52,7 @@ namespace LicenseServer.Data.Migrations
             migrationBuilder.AddCheckConstraint(
                 name: "CK_Licenses_ImportProvenance",
                 table: "Licenses",
-                sql: "(\"Provenance\" = 'imported') = (\"ImportedSignedEnvelope\" IS NOT NULL AND \"ImportedSignedEnvelopeSha256\" IS NOT NULL AND \"ImportedAt\" IS NOT NULL AND \"ImportedBy\" IS NOT NULL)");
+                sql: "(\"Provenance\" = 'imported' AND \"ImportedSignedEnvelope\" IS NOT NULL AND \"ImportedSignedEnvelopeSha256\" IS NOT NULL AND \"ImportedAt\" IS NOT NULL AND \"ImportedBy\" IS NOT NULL) OR (\"Provenance\" != 'imported' AND \"ImportedSignedEnvelope\" IS NULL AND \"ImportedSignedEnvelopeSha256\" IS NULL AND \"ImportedAt\" IS NULL AND \"ImportedBy\" IS NULL)");
 
             migrationBuilder.AddCheckConstraint(
                 name: "CK_Licenses_Provenance",

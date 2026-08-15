@@ -82,13 +82,20 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<LicenseRecord>().ToTable(table => table.HasCheckConstraint(
             "CK_Licenses_Provenance", "\"Provenance\" IN ('issued', 'imported')"));
         // Every Imported* column is populated together or not at all, and exactly tracks Provenance -
-        // an "imported" row with no stored artifact (or an "issued" row with one) would mean the
-        // provenance label and the data backing it have drifted apart.
+        // an "imported" row with no stored artifact (or an "issued" row with one, even partially)
+        // would mean the provenance label and the data backing it have drifted apart. Written as
+        // two explicit branches rather than a single biconditional on the conjunction: the
+        // biconditional form only ties the *conjunction* to Provenance = 'imported', which would
+        // still accept an "issued" row with, say, three of the four Imported* columns set and one
+        // left null - each branch below independently requires all four or none.
         builder.Entity<LicenseRecord>().ToTable(table => table.HasCheckConstraint(
             "CK_Licenses_ImportProvenance",
-            "(\"Provenance\" = 'imported') = (\"ImportedSignedEnvelope\" IS NOT NULL " +
-            "AND \"ImportedSignedEnvelopeSha256\" IS NOT NULL " +
-            "AND \"ImportedAt\" IS NOT NULL AND \"ImportedBy\" IS NOT NULL)"));
+            "(\"Provenance\" = 'imported' " +
+            "AND \"ImportedSignedEnvelope\" IS NOT NULL AND \"ImportedSignedEnvelopeSha256\" IS NOT NULL " +
+            "AND \"ImportedAt\" IS NOT NULL AND \"ImportedBy\" IS NOT NULL) " +
+            "OR (\"Provenance\" != 'imported' " +
+            "AND \"ImportedSignedEnvelope\" IS NULL AND \"ImportedSignedEnvelopeSha256\" IS NULL " +
+            "AND \"ImportedAt\" IS NULL AND \"ImportedBy\" IS NULL)"));
         builder.Entity<LicenseRecord>().HasMany(x => x.Entitlements).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Cascade);
         builder.Entity<LicenseRecord>().HasMany(x => x.Activations).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<IssuanceIdempotencyRecord>().Property(x => x.PrincipalId).HasMaxLength(256);
