@@ -189,6 +189,21 @@ mismatched_key_result="$(invoke_license_tool "$generator_project" 1 \
     --private-key "$secondary_private_key" --key-id primary-2026)"
 assert_contains 'signer rejects private key and key ID mismatch' "$mismatched_key_result" 'does not match the public key for key ID'
 
+# A locally regenerated key pair that reuses a key ID shipped products already trust
+# (TrustedPublicKeys.ByKeyId) is internally self-consistent - the pair check above cannot see
+# anything wrong with it - but every released validator embeds the *original* primary-2026
+# public key and will reject licences signed with the new one. This is the guarantee #24 gave
+# up by moving the pair check off TrustedPublicKeys; the asymmetric check restores it without
+# reintroducing #24 (an unknown key ID like dropped-2027, above, still signs freely).
+regenerated_key_directory="$work_directory/regenerated-keys"
+invoke_license_tool "$generator_project" 0 \
+    keygen --id primary-2026 --output "$regenerated_key_directory" >/dev/null
+regenerated_primary_result="$(invoke_license_tool "$generator_project" 1 \
+    sign --input "$input_path" --output "$work_directory/regenerated-primary.license" \
+    --private-key "$regenerated_key_directory/primary-2026.private.pem")"
+assert_contains 'a regenerated primary-2026 pair is rejected' "$regenerated_primary_result" \
+    'already trusted by shipped products under a different public key'
+
 # A key that exists only as a dropped-in PEM pair - never added to TrustedPublicKeys.cs - must be
 # usable by the offline signer, since that is the whole point of the key-ring workflow.
 dropped_key_directory="$work_directory/dropped-keys"

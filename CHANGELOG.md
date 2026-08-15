@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows has no POSIX mode and the command says so.
 - `LicenseGenerator sign --public-key <path>`, overriding the public key the
   private-key/key-ID pair check runs against.
+- `LicenseGenerator sign` now hard-fails before signing if the resolved key ID
+  is present in `TrustedPublicKeys.ByKeyId` and the on-disk public key doesn't
+  match the compiled entry. This restores the guarantee moving the pair check
+  off `TrustedPublicKeys` gave up: a locally regenerated pair reusing an
+  existing key ID (e.g. `keygen --id primary-2026 --force`) is rejected before
+  anything is signed, instead of quietly producing licences every released
+  validator rejects. A key ID absent from `TrustedPublicKeys` — the normal
+  key-ring case — still signs exactly as before, with no warning; the map is
+  consulted only as a negative check, never as an allowlist for which key IDs
+  may sign.
 - Recorded decisions for the four open license-import design questions —
   catalog handling for unknown products, the email source for metadata-free
   imports, activation credentials on pre-activated imports, and verbatim
@@ -50,12 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generator immediately, with no `TrustedPublicKeys.cs` edit or CLI rebuild.
   The public half is located by key ID rather than by rewriting the private
   key's filename, so the check still catches a private-key/key-ID mismatch.
-  Two consequences: signing a private key stored outside the
+  One consequence: signing a private key stored outside the
   `<keyId>.private.pem` convention, with no public half beside it, now requires
-  the new `--public-key`; and the check no longer proves the key ID is one
-  shipped products trust, so a locally regenerated pair reusing an existing key
-  ID will sign without complaint. Validate a new key with `LicenseValidator`
-  before issuing with it.
+  the new `--public-key`. A second consequence — the check no longer proving
+  the key ID is one shipped products trust — is addressed below.
 - `LicenseGenerator sign --key-id` is optional, derived from a
   `<keyId>.private.pem` filename and still overridable.
 - The key-ring contracts (`ILicenseKeyRing`, `ILicenseSigner`,

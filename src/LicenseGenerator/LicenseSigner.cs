@@ -21,25 +21,46 @@ internal static class LicenseSigner
         var publicKeyPath = ResolvePublicKeyPath(args, privateKeyPath, keyId);
 
         var privateKeyPem = File.ReadAllText(privateKeyPath);
+        var publicKeyPem = File.ReadAllText(publicKeyPath);
 
         // Confirms the private key really is the one this key ID names, so an operator cannot issue
         // a licence stamped 'primary-2026' that was signed with some other key and that every
         // validator will therefore reject. The check is against the key pair on disk rather than the
         // compiled TrustedPublicKeys map, so a key that exists only by having been dropped into the
         // server's key directory - the whole point of the key ring - can be signed with here too.
-        //
-        // What it deliberately no longer proves, since the key ring is the authority on which keys
-        // exist and this CLI runs offline against a directory it cannot validate for freshness:
-        // that the key ID is one any *consumer* trusts. A locally regenerated pair reusing an
-        // existing key ID is self-consistent and signs cleanly here while producing a licence
-        // shipped validators reject; so does an explicit --public-key naming the private key's own
-        // counterpart under a different --key-id. Both are operator errors this check cannot catch,
-        // and the derived path below is what keeps the common case honest.
-        if (!EcdsaKeyPairs.TryValidatePair(privateKeyPem, File.ReadAllText(publicKeyPath), out var pairError))
+        if (!EcdsaKeyPairs.TryValidatePair(privateKeyPem, publicKeyPem, out var pairError))
         {
             throw new InvalidOperationException(
                 $"The private key does not match the public key for key ID '{keyId}' " +
                 $"({publicKeyPath}). {pairError}");
+        }
+
+        // TrustedPublicKeys is consulted here only as a negative check, never as the source of
+        // truth for which key IDs are *allowed* to sign - that would reintroduce the #24 gap,
+        // where a key created the key-ring way (dropping <keyId>.private.pem / <keyId>.public.pem
+        // into the key directory) needed a TrustedPublicKeys.cs edit and a CLI rebuild before it
+        // could be signed with. A key ID absent from this map is the normal, supported key-ring
+        // case and proceeds exactly as before, with no warning, no prompt, and no lookup cost
+        // beyond the dictionary miss.
+        //
+        // What it does catch: this key ID already being one that shipped products trust, under a
+        // *different* public key than the one about to sign. That is unambiguously an operator
+        // mistake - most likely the key pair was regenerated locally (e.g. reusing an existing ID
+        // with 'keygen --id primary-2026 --force') - and every released validator will reject
+        // anything signed with it. This also covers an explicit --public-key that points at some
+        // other key's counterpart under a trusted --key-id: the comparison is against the resolved
+        // public key's bytes, not against how that path was resolved, so the same check applies
+        // regardless of the convention path or --public-key.
+        if (TrustedPublicKeys.ByKeyId.TryGetValue(keyId, out var trustedPublicKeyPem) &&
+            !EcdsaKeyPairs.PublicKeysMatch(publicKeyPem, trustedPublicKeyPem))
+        {
+            throw new InvalidOperationException(
+                $"Key ID '{keyId}' is already trusted by shipped products under a different public " +
+                $"key. The public key at '{publicKeyPath}' does not match the compiled " +
+                $"TrustedPublicKeys entry for '{keyId}'; licences signed with it will be rejected by " +
+                "every released validator. If this key pair was regenerated locally, choose a " +
+                "different --key-id for it. If this is unexpected, restore the original key pair for " +
+                $"'{keyId}'.");
         }
 
         var licenseNode = JsonNode.Parse(File.ReadAllText(inputPath))
@@ -100,8 +121,12 @@ internal static class LicenseSigner
     /// check tautological - signing with 'secondary-2026.private.pem' under
     /// '--key-id primary-2026' would compare secondary against secondary and pass, which is
     /// precisely the mistake this check exists to catch. An explicit --public-key can still be
-    /// pointed at that same tautology; it exists for key material stored outside the naming
-    /// convention, and it moves responsibility for the pairing onto the operator.
+    /// pointed at that same tautology for a key ID <c>TrustedPublicKeys</c> has never heard of;
+    /// it exists for key material stored outside the naming convention, and for that case it
+    /// still moves responsibility for the pairing onto the operator. It stops being tautological
+    /// for a trusted key ID, though: the caller in <see cref="Sign"/> checks the resolved public
+    /// key's bytes against the compiled trust map regardless of how this path was found, so
+    /// '--key-id primary-2026 --public-key secondary-2026.public.pem' is caught there.
     /// </summary>
     private static string ResolvePublicKeyPath(string[] args, string privateKeyPath, string keyId)
     {

@@ -41,6 +41,32 @@ public sealed class EcdsaKeyPairsTests
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         Assert.True(EcdsaKeyPairs.TryValidatePublicKey(key.ExportSubjectPublicKeyInfoPem(), out _));
     }
+
+    [Fact]
+    public void PublicKeysMatchAcceptsTheSameKeyEvenWithDifferentPemFormatting()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var pem = key.ExportSubjectPublicKeyInfoPem();
+
+        // Re-import/re-export to produce a byte-identical key with different PEM text (line
+        // wrap can differ between export paths), pinning that the comparison is on decoded
+        // SubjectPublicKeyInfo bytes rather than the PEM string.
+        using var reimported = ECDsa.Create();
+        reimported.ImportFromPem(pem);
+        var rewrappedPem = reimported.ExportSubjectPublicKeyInfoPem().Replace("\n", "\r\n");
+
+        Assert.True(EcdsaKeyPairs.PublicKeysMatch(pem, rewrappedPem));
+    }
+
+    [Fact]
+    public void PublicKeysMatchRejectsDifferentKeys()
+    {
+        using var key1 = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var key2 = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+
+        Assert.False(EcdsaKeyPairs.PublicKeysMatch(
+            key1.ExportSubjectPublicKeyInfoPem(), key2.ExportSubjectPublicKeyInfoPem()));
+    }
 }
 
 /// <summary>
