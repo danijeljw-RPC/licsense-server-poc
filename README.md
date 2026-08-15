@@ -311,7 +311,7 @@ docker compose down
 
 ### Security boundaries and production work
 
-The development private key is intentionally mounted as a file for this PoC. Production must replace `LicenseEnvelopeSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database, MailerSend, Stripe, webhook, and TLS secrets in a secret manager, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, add monitoring, and back up PostgreSQL, Data Protection keys, and signing-key metadata as one recovery set.
+The development private keys are intentionally mounted as files for this PoC. Production must replace the file-backed `SigningKeyRingService` behind `ILicenseSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database, MailerSend, Stripe, webhook, and TLS secrets in a secret manager, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, add monitoring, and back up PostgreSQL, Data Protection keys, and signing-key metadata as one recovery set.
 
 Signed license JSON provides authenticity, not confidentiality. Do not put secrets or unnecessary personal information in it. Device IDs remain spoofable software identifiers rather than hardware proof. Offline files cannot receive immediate revocation, and system-clock rollback remains a concern unless the client periodically obtains trusted server time. Passkey credentials in PostgreSQL are public keys and counters; private credentials remain in the user's authenticator.
 
