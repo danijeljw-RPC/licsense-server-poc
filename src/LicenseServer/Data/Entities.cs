@@ -49,8 +49,19 @@ public sealed class LicenseRecord
     public string? CancelledBy { get; set; }
     public string? CancellationReference { get; set; }
     public long Version { get; set; }
+    public string Provenance { get; set; } = LicenseProvenance.Issued;
+    public byte[]? ImportedSignedEnvelope { get; set; }
+    public byte[]? ImportedSignedEnvelopeSha256 { get; set; }
+    public DateTimeOffset? ImportedAt { get; set; }
+    public string? ImportedBy { get; set; }
     public List<Entitlement> Entitlements { get; set; } = [];
     public List<Activation> Activations { get; set; } = [];
+}
+
+public static class LicenseProvenance
+{
+    public const string Issued = "issued";
+    public const string Imported = "imported";
 }
 
 public sealed class IssuanceIdempotencyRecord

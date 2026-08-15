@@ -277,6 +277,7 @@ builder.Services.AddScoped<LicenseIdAllocator>();
 builder.Services.AddScoped<LicenseStore>();
 builder.Services.AddScoped<AdminDataService>();
 builder.Services.AddScoped<ProductCatalogService>();
+builder.Services.AddScoped<LicenseImportService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<ApiCredentialService>();
@@ -768,9 +769,40 @@ adminApi.MapPost("/licenses", async (
         ct);
     return result.Success
         ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
-        : IssueProblem(result);
+        : FieldProblem(result);
 }).RequireAuthorization(Permissions.LicensesIssue)
   .WithDescription("Issues one license transactionally. Online lifecycle changes are immediate; previously downloaded offline files cannot be recalled.");
+adminApi.MapPost("/licenses/import", async (
+    HttpRequest request, LicenseImportService importer, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    if (!request.HasFormContentType)
+        return Results.Problem(title: "Invalid request", detail: "multipart/form-data is required.", statusCode: 400);
+    // Mirrors the webhook payload-size check: reject before ever reading the body, rather than
+    // trusting a client-supplied header alone to bound how much we buffer.
+    if (request.ContentLength is null or > LicenseImportService.MaxUploadBytes)
+        return Results.Problem(title: "License file is too large", statusCode: StatusCodes.Status413PayloadTooLarge);
+
+    var form = await request.ReadFormAsync(ct);
+    var file = form.Files["file"];
+    if (file is null)
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["file"] = ["A license file is required."] });
+    if (file.Length > LicenseImportService.MaxUploadBytes)
+        return Results.Problem(title: "License file is too large", statusCode: StatusCodes.Status413PayloadTooLarge);
+
+    await using var stream = file.OpenReadStream();
+    using var buffer = new MemoryStream();
+    await stream.CopyToAsync(buffer, ct);
+
+    var result = await importer.ImportAsync(
+        buffer.ToArray(), file.FileName, form["contactEmail"].ToString(), context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success
+        ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
+        : FieldProblem(result);
+}).RequireAuthorization(Permissions.LicensesImport)
+  .WithDescription("Imports an offline-signed license artifact: verifies it against the live key ring, then stores it " +
+      "verbatim alongside a relational search index. contactEmail is required and is the source of truth for the " +
+      "resolved customer.");
 adminApi.MapPost("/licenses/{licenseId}/revoke", async (
     string licenseId, RevokeRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext httpContext, CancellationToken ct) =>
 {
@@ -944,7 +976,7 @@ static IResult Problem<T>(StoreResult<T> result) => Results.Problem(
     detail: result.Error,
     statusCode: result.StatusCode);
 
-static IResult IssueProblem(StoreResult<LicenseStore.IssuedLicense> result) =>
+static IResult FieldProblem<T>(StoreResult<T> result) =>
     result.StatusCode == StatusCodes.Status400BadRequest && result.Field is not null
         ? Results.ValidationProblem(new Dictionary<string, string[]> { [result.Field] = [result.Error ?? "Invalid value."] })
         : Problem(result);

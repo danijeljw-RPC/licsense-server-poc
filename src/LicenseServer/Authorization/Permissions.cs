@@ -8,6 +8,7 @@ internal static class Permissions
     public const string LicensesUpdate = "licenses.update";
     public const string LicensesCancel = "licenses.cancel";
     public const string LicensesRevoke = "licenses.revoke";
+    public const string LicensesImport = "licenses.import";
     public const string ActivationsManage = "activations.manage";
     public const string CustomersRead = "customers.read";
     public const string CustomersManage = "customers.manage";
@@ -23,7 +24,7 @@ internal static class Permissions
 
     public static readonly IReadOnlyList<string> All =
     [
-        LicensesRead, LicensesIssue, LicensesUpdate, LicensesCancel, LicensesRevoke,
+        LicensesRead, LicensesIssue, LicensesUpdate, LicensesCancel, LicensesRevoke, LicensesImport,
         ActivationsManage, CustomersRead, CustomersManage, ProductsRead, ProductsManage,
         UsersRead, UsersManage, ApiKeysManageSelf, ApiKeysManageAll, AuditRead, BillingManage,
         SigningKeysManage

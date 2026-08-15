@@ -45,7 +45,12 @@ else
         </article>
     </div>
 
-    @if (!IsTerminal)
+    @if (!IsTerminal && license.Entitlements.Count != 1)
+    {
+        <p class="notice">This license has more than one product entitlement (an imported license), so its terms
+            cannot be edited product-by-product through this page. Use admin-side revoke to terminate it if needed.</p>
+    }
+    @if (!IsTerminal && license.Entitlements.Count == 1)
     {
         <AuthorizeView Policy="@Permissions.LicensesUpdate">
             <Authorized>
