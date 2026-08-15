@@ -3,10 +3,14 @@ using System.Security.Cryptography;
 namespace SoftwareLicensing;
 
 /// <summary>
-/// Cryptographically confirms that a private/public PEM pair belong together, by comparing
-/// decoded SubjectPublicKeyInfo bytes rather than PEM text (line-wrap, CRLF/LF, and trailing
-/// whitespace differ between .NET's own PEM export and PEMs produced by OpenSSL/Windows tooling
-/// even when both decode to the identical key).
+/// Validates ECDSA key material used throughout the signing key ring: that a private/public PEM
+/// pair belong together, that a standalone public key is well-formed, and that two public keys
+/// are the same key - all by comparing decoded SubjectPublicKeyInfo bytes rather than PEM text
+/// (line-wrap, CRLF/LF, and trailing whitespace differ between .NET's own PEM export and PEMs
+/// produced by OpenSSL/Windows tooling even when both decode to the identical key). Every method
+/// also rejects any key not on the NIST P-256 curve, since every key this codebase issues or
+/// verifies against is P-256 and <c>LicenseConstants.Algorithm</c> is a hardcoded constant, not
+/// derived from the key that actually signed.
 /// </summary>
 public static class EcdsaKeyPairs
 {
