@@ -98,6 +98,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trait at all — silently never ran in CI. Switched to excluding
   `Suite=Phase0Roadmap` (the intentional-red executable specification)
   instead, so everything meant to pass runs: 106 of 152 tests, all green.
+- `EcdsaKeyPairs.TryValidatePair`, `TryValidatePublicKey`, and
+  `PublicKeysMatch` never checked that imported key material was actually on
+  the NIST P-256 curve. A self-consistent key pair generated on another curve
+  (e.g. P-384) passed `TryValidatePair` cleanly, while `LicenseEnvelope.Sign`
+  still hardcoded the envelope's `algorithm` field to `ECDSA-P256-SHA256`
+  regardless of the curve actually used, producing a mislabeled artifact. All
+  three methods now reject any key not on P-256; the two `Try*` methods
+  return `false` with an explanatory error, and `PublicKeysMatch` throws
+  `CryptographicException`, consistent with its existing exception-based
+  contract for malformed input. Purely additive: every key in `keys/` and
+  every key `LicenseGenerator keygen` produces is already P-256. (#32)
 
 ## [0.1.0] - 2026-08-14
 

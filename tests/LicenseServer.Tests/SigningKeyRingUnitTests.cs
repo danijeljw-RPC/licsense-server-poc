@@ -67,6 +67,39 @@ public sealed class EcdsaKeyPairsTests
         Assert.False(EcdsaKeyPairs.PublicKeysMatch(
             key1.ExportSubjectPublicKeyInfoPem(), key2.ExportSubjectPublicKeyInfoPem()));
     }
+
+    [Fact]
+    public void TryValidatePairRejectsASelfConsistentNonP256Pair()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        var privatePem = key.ExportPkcs8PrivateKeyPem();
+        var publicPem = key.ExportSubjectPublicKeyInfoPem();
+
+        Assert.False(EcdsaKeyPairs.TryValidatePair(privatePem, publicPem, out var error));
+        Assert.NotNull(error);
+        Assert.Contains("P-256", error);
+    }
+
+    [Fact]
+    public void TryValidatePublicKeyRejectsANonP256PublicKey()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+
+        Assert.False(EcdsaKeyPairs.TryValidatePublicKey(key.ExportSubjectPublicKeyInfoPem(), out var error));
+        Assert.NotNull(error);
+        Assert.Contains("P-256", error);
+    }
+
+    [Fact]
+    public void PublicKeysMatchThrowsForNonP256Keys()
+    {
+        using var key1 = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        using var key2 = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+
+        var ex = Assert.Throws<CryptographicException>(() => EcdsaKeyPairs.PublicKeysMatch(
+            key1.ExportSubjectPublicKeyInfoPem(), key2.ExportSubjectPublicKeyInfoPem()));
+        Assert.Contains("P-256", ex.Message);
+    }
 }
 
 /// <summary>
