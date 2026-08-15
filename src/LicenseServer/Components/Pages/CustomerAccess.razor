@@ -6,18 +6,12 @@
 <main class="auth-card" aria-labelledby="customer-access-heading">
     <h1 id="customer-access-heading">Access your licenses</h1>
     <p>Enter your customer email. You may also provide a license ID to narrow the request.</p>
-    @if (Sent) { <p role="status">@CustomerAccessService.GenericMessage</p> }
+    @if (Sent) { <p role="status" class="alert success">@CustomerAccessService.GenericMessage</p> }
     <form method="post" action="/customer/access/request">
         <AntiforgeryToken />
-        <div>
-            <label for="customer-email">Email</label>
-            <input id="customer-email" name="Email" type="email" autocomplete="email" required maxlength="320" />
-        </div>
-        <div>
-            <label for="customer-license">License ID <span>(optional)</span></label>
-            <input id="customer-license" name="LicenseId" autocomplete="off" maxlength="64" />
-        </div>
-        <button type="submit">Email sign-in link</button>
+        <label>Email<input name="Email" type="email" autocomplete="email" required maxlength="320" /></label>
+        <label>License ID <span>(optional)</span><input name="LicenseId" autocomplete="off" maxlength="64" /></label>
+        <button class="button" type="submit">Email sign-in link</button>
     </form>
 </main>
 
