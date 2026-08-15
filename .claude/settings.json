@@ -11,7 +11,8 @@
       "WebFetch(domain:claude.ai)",
       "Skill(code-review:code-review)",
       "Skill(code-review:code-review:*)",
-      "Bash(gh run *)"
+      "Bash(gh run *)",
+      "Bash(gh issue *)"
     ]
   }
 }
