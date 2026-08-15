@@ -283,25 +283,10 @@ public sealed partial class SigningKeyRingService(
         if (!current.Pem.TryGetValue(keyId, out var pemPair) || pemPair.PrivatePem is null)
             return new LicenseSigningResult(false, null, "cannot_sign", $"Private key material for '{keyId}' is unavailable.");
 
-        LicenseSchema.Parse(license);
-
-        var envelope = new JsonObject
-        {
-            ["format"] = LicenseConstants.Format,
-            ["algorithm"] = LicenseConstants.Algorithm,
-            ["keyId"] = keyId,
-            ["license"] = license.DeepClone()
-        };
-
         using var key = ECDsa.Create();
         key.ImportFromPem(pemPair.PrivatePem);
-        var signature = key.SignData(
-            CanonicalJson.Serialize(envelope),
-            HashAlgorithmName.SHA256,
-            DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-        envelope["signature"] = Convert.ToBase64String(signature);
 
-        return new LicenseSigningResult(true, envelope, null, null);
+        return new LicenseSigningResult(true, LicenseEnvelope.Sign(license, keyId, key), null, null);
     }
 
     public VerifiedLicense Verify(string signedLicenseJson)
