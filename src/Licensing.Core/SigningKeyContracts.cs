@@ -45,6 +45,15 @@ public sealed record LicenseSigningResult(bool Success, JsonObject? Envelope, st
 public interface ILicenseSigner
 {
     LicenseSigningResult Sign(JsonObject license, string? requestedKeyId);
+
+    /// <summary>
+    /// True if <see cref="Sign"/> would currently succeed for this key selection - the same
+    /// default/lookup/status resolution, without the cost of a private-key import or signature.
+    /// Callers that mutate durable state before signing (activation, lease refresh) use this to
+    /// fail before that mutation instead of after, since state committed ahead of a signing
+    /// failure cannot be un-committed.
+    /// </summary>
+    bool CanSign(string? requestedKeyId);
 }
 
 public interface ILicenseVerifier

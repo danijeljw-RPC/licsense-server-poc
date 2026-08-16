@@ -192,6 +192,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new snapshot; a failed rescan throws instead of writing a misleading
   success record, matching how every other signing-key mutation here already
   fails before auditing.
+- Upgrading an existing database straight into the key-ring feature never
+  elected a default signing key. The pre-key-ring `DatabaseInitializer` had
+  already unconditionally seeded a `primary-2026` `SigningKeys` row on every
+  startup, so by the time `SigningKeyRingService.ReloadAsync`'s bootstrap-seed
+  check ran against an upgraded database, `SigningKeys` was no longer empty
+  and the check never fired — every activation/refresh signing request then
+  failed with `no_default_key` until an administrator picked a default by
+  hand. New migration `SeedDefaultSigningKeyForUpgrade` backfills
+  `IsDefault = true` onto that lone pre-existing row. A brand-new install has
+  zero `SigningKeys` rows at migration time and is unaffected, still relying
+  on the runtime bootstrap seed; a database with more than one pre-existing
+  row never went through the old single-key initializer, so it is left for an
+  administrator to pick a default explicitly rather than guessed at here.
+- `appsettings.Container.json` set `RequireMfaForHighRiskPermissions: false`,
+  and the published container image bakes in `ASPNETCORE_ENVIRONMENT=Container`
+  by default, so a production deployment run as shipped — with no explicit
+  override — silently disabled the MFA requirement for `users.manage`,
+  `apiKeys.manageAll`, `licenses.revoke`, and `signingKeys.manage`. Reverted to
+  `true`. The local-only reason it had been flipped (the seeded Compose admin
+  has no MFA enrolled, which hid the Users page's "Add identity" panel) is now
+  an explicit `Security__RequireMfaForHighRiskPermissions=false` override in
+  `compose.yaml` instead of the shared container default.
+- `/activate` and `/refresh` (and their Blazor admin equivalents on the
+  license-details and offline-issuance pages) committed the activation or
+  lease refresh before attempting to sign the returned license artifact. When
+  the key ring had no usable signing key at that moment — no default
+  configured, or the selected/default key had just been retired or revoked —
+  the caller received a failure with no artifact, and activation's own
+  request-ID idempotency check then reported the license as already active on
+  any retry with a fresh request ID, leaving it permanently stuck. `ILicenseSigner`
+  gained `CanSign(requestedKeyId)`, a cheap pre-flight version of `Sign`'s
+  key-resolution logic with no private-key import or signature; `LicenseStore
+  .ActivateAsync`/`RefreshAsync` now call it before mutating any state and
+  return `503` instead of committing when no key can currently sign.
 
 ## [0.1.0] - 2026-08-14
 

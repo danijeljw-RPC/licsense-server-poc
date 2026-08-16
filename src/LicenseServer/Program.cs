@@ -506,7 +506,7 @@ app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
     string licenseId, ActivateRequest request, LicenseStore store, ILicenseSigner signer, ILicenseVerifier verifier, CancellationToken cancellationToken) =>
 {
     var now = DateTimeOffset.UtcNow;
-    var result = await store.ActivateAsync(licenseId, request, now, cancellationToken);
+    var result = await store.ActivateAsync(licenseId, request, now, cancellationToken: cancellationToken);
     return result.Success
         ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
         : Problem(result);
@@ -525,7 +525,7 @@ app.MapPost("/api/v1/activations/{activationId}/refresh", async (
     string activationId, ActivationCredentialRequest request, LicenseStore store, ILicenseSigner signer, ILicenseVerifier verifier, CancellationToken cancellationToken) =>
 {
     var now = DateTimeOffset.UtcNow;
-    var result = await store.RefreshAsync(activationId, request, now, cancellationToken);
+    var result = await store.RefreshAsync(activationId, request, now, cancellationToken: cancellationToken);
     return result.Success
         ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
         : Problem(result);
@@ -981,6 +981,7 @@ static IResult Problem<T>(StoreResult<T> result) => Results.Problem(
         403 => "Operation forbidden",
         404 => "Resource not found",
         409 => "License state conflict",
+        503 => "Signing key unavailable",
         _ => "Request failed"
     },
     detail: result.Error,

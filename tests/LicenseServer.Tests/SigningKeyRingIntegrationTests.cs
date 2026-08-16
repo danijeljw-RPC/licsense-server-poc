@@ -37,6 +37,57 @@ public sealed class SigningKeyRingIntegrationTests(PostgresWebFixture fixture)
     }
 
     [Fact]
+    public async Task ActivatingWithNoUsableSigningKeyFailsWithoutCreatingAnActivationRow()
+    {
+        // Regression test: ActivateAsync used to commit the new Activation row before ever
+        // attempting to sign the response artifact, so a signing failure discovered afterward
+        // (e.g. the default key was just revoked) still left the activation committed with no
+        // artifact ever issued - and its request ID permanently unable to retry, since a retry
+        // would find the license already active. The store now checks ILicenseSigner.CanSign
+        // before mutating anything, so a request that can never be signed leaves no trace at all.
+        var licenseRecord = await RoadmapTestSupport.AddLicenseAsync(fixture, "no-usable-key-check");
+        var client = fixture.Factory.CreateClient();
+        var device = new string('E', 64);
+        var request = new ActivateRequest(
+            Guid.NewGuid().ToString("D"), "PHASE0-no-usable-key-check-ACTIVATION-CODE",
+            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)), "offline",
+            new DeviceRequest("os-machine-id-sha256-v1", device, "test-device"));
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var keyRing = scope.ServiceProvider.GetRequiredService<SigningKeyRingService>();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        try
+        {
+            await keyRing.RevokeAsync("primary-2026", "test: leave no usable default key", "test-admin");
+            Assert.Null(keyRing.DefaultKeyId);
+
+            var activated = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseRecord.LicenseId}/activate", request);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, activated.StatusCode);
+
+            var activationCount = await db.Activations.CountAsync(x => x.LicenseRecordId == licenseRecord.Id);
+            Assert.Equal(0, activationCount);
+        }
+        finally
+        {
+            await using var restoreScope = fixture.Factory.Services.CreateAsyncScope();
+            var restoreDb = restoreScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var row = await restoreDb.SigningKeys.SingleAsync(x => x.KeyId == "primary-2026");
+            row.RevokedAt = null;
+            row.RevokedBy = null;
+            row.RevocationReason = null;
+            row.IsDefault = true;
+            await restoreDb.SaveChangesAsync();
+            await keyRing.ReloadAsync();
+        }
+
+        // The same request now succeeds once a default is restored, proving the earlier failed
+        // attempt never consumed its request ID.
+        var retried = await client.PostAsJsonAsync($"/api/v1/licenses/{licenseRecord.LicenseId}/activate", request);
+        retried.EnsureSuccessStatusCode();
+    }
+
+    [Fact]
     public void ExplicitlySelectedKeyIsUsedAndUnknownKeyFailsClosed()
     {
         using var scope = fixture.Factory.Services.CreateScope();
@@ -53,6 +104,17 @@ public sealed class SigningKeyRingIntegrationTests(PostgresWebFixture fixture)
         var unknown = signer.Sign(license, requestedKeyId: "does-not-exist");
         Assert.False(unknown.Success);
         Assert.Equal("unknown_key", unknown.ErrorCode);
+    }
+
+    [Fact]
+    public void CanSignMatchesWhetherSignWouldSucceedWithoutSigningAnything()
+    {
+        using var scope = fixture.Factory.Services.CreateScope();
+        var signer = scope.ServiceProvider.GetRequiredService<ILicenseSigner>();
+
+        Assert.True(signer.CanSign(null));
+        Assert.True(signer.CanSign("secondary-2026"));
+        Assert.False(signer.CanSign("does-not-exist"));
     }
 
     [Fact]

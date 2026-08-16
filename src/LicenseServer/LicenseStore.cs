@@ -21,7 +21,8 @@ internal sealed class LicenseStore(
     IActivationCodeHasher activationCodeHasher,
     IDataProtectionProvider dataProtectionProvider,
     IOptions<ActivationCodeOptions> activationCodeOptions,
-    PermissionGuard permissions)
+    PermissionGuard permissions,
+    ILicenseSigner signer)
 {
     private readonly IDataProtector issuanceResultProtector = dataProtectionProvider.CreateProtector(
         "LicenseServer.IssuanceResult.v1");
@@ -272,11 +273,20 @@ internal sealed class LicenseStore(
         string licenseId,
         ActivateRequest request,
         DateTimeOffset now,
+        string? requestedSigningKeyId = null,
         CancellationToken cancellationToken = default)
     {
         var validation = ValidateActivationRequest(request);
         if (validation is not null)
             return StoreResult<ActiveActivation>.BadRequest(validation);
+
+        // Checked before any state is mutated: signing happens after this method commits (the
+        // caller needs the committed activation's ID/timestamps to build the license artifact), so
+        // a signing failure discovered only after commit would leave the activation - and the
+        // request ID that made it idempotent - unusably stuck with no artifact ever issued.
+        if (!signer.CanSign(requestedSigningKeyId))
+            return StoreResult<ActiveActivation>.ServiceUnavailable(
+                "No signing key is currently able to sign. Try again once an administrator restores a default or active signing key.");
 
         var requestId = Guid.Parse(request.RequestId!);
         var tokenHash = Hash(request.ActivationToken!);
@@ -391,8 +401,16 @@ internal sealed class LicenseStore(
         string activationId,
         ActivationCredentialRequest request,
         DateTimeOffset now,
+        string? requestedSigningKeyId = null,
         CancellationToken cancellationToken = default)
     {
+        // See ActivateAsync's identical check: the lease extension below commits before signing
+        // runs, so a signing failure discovered afterward would leave the lease extended with no
+        // artifact ever issued to the caller.
+        if (!signer.CanSign(requestedSigningKeyId))
+            return StoreResult<ActiveActivation>.ServiceUnavailable(
+                "No signing key is currently able to sign. Try again once an administrator restores a default or active signing key.");
+
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         var authorized = await AuthorizeAsync(activationId, request, cancellationToken);
         if (!authorized.Success)
@@ -866,4 +884,5 @@ internal sealed record StoreResult<T>(bool Success, int StatusCode, string? Erro
     public static StoreResult<T> Forbidden(string error) => new(false, 403, error, default);
     public static StoreResult<T> NotFound(string error) => new(false, 404, error, default);
     public static StoreResult<T> Conflict(string error) => new(false, 409, error, default);
+    public static StoreResult<T> ServiceUnavailable(string error) => new(false, 503, error, default);
 }

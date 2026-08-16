@@ -263,16 +263,36 @@ public sealed partial class SigningKeyRingService(
     public LicenseSigningResult Sign(JsonObject license, string? requestedKeyId)
     {
         var current = snapshot;
-        string keyId;
+        var (info, pemPair, errorCode, errorMessage) = ResolveSignable(current, requestedKeyId);
+        if (info is null || pemPair is null)
+        {
+            if (errorCode == "no_default_key") LogNoDefaultKey(logger);
+            return new LicenseSigningResult(false, null, errorCode, errorMessage);
+        }
 
+        using var key = ECDsa.Create();
+        key.ImportFromPem(pemPair.PrivatePem);
+
+        return new LicenseSigningResult(true, LicenseEnvelope.Sign(license, info.KeyId, key), null, null);
+    }
+
+    /// <summary>
+    /// Same default/lookup/status resolution <see cref="Sign"/> uses, without importing the
+    /// private key or producing a signature - cheap enough to call as a pre-flight check before a
+    /// caller commits durable state it would otherwise have to leave half-finished on a signing
+    /// failure that happened after the commit.
+    /// </summary>
+    public bool CanSign(string? requestedKeyId) =>
+        ResolveSignable(snapshot, requestedKeyId).Info is not null;
+
+    private static (SigningKeyInfo? Info, PemPair? Pem, string? ErrorCode, string? ErrorMessage) ResolveSignable(
+        KeyRingSnapshot current, string? requestedKeyId)
+    {
+        string keyId;
         if (string.IsNullOrWhiteSpace(requestedKeyId))
         {
             if (current.DefaultKeyId is null)
-            {
-                LogNoDefaultKey(logger);
-                return new LicenseSigningResult(false, null, "no_default_key", "No default signing key is configured.");
-            }
-
+                return (null, null, "no_default_key", "No default signing key is configured.");
             keyId = current.DefaultKeyId;
         }
         else
@@ -282,17 +302,13 @@ public sealed partial class SigningKeyRingService(
 
         var info = current.Keys.FirstOrDefault(k => k.KeyId == keyId);
         if (info is null)
-            return new LicenseSigningResult(false, null, "unknown_key", $"Signing key '{keyId}' is not registered.");
+            return (null, null, "unknown_key", $"Signing key '{keyId}' is not registered.");
         if (!info.CanSign)
-            return new LicenseSigningResult(
-                false, null, "cannot_sign", $"Signing key '{keyId}' cannot currently sign (status: {info.Status}).");
+            return (null, null, "cannot_sign", $"Signing key '{keyId}' cannot currently sign (status: {info.Status}).");
         if (!current.Pem.TryGetValue(keyId, out var pemPair) || pemPair.PrivatePem is null)
-            return new LicenseSigningResult(false, null, "cannot_sign", $"Private key material for '{keyId}' is unavailable.");
+            return (null, null, "cannot_sign", $"Private key material for '{keyId}' is unavailable.");
 
-        using var key = ECDsa.Create();
-        key.ImportFromPem(pemPair.PrivatePem);
-
-        return new LicenseSigningResult(true, LicenseEnvelope.Sign(license, keyId, key), null, null);
+        return (info, pemPair, null, null);
     }
 
     public VerifiedLicense Verify(string signedLicenseJson)

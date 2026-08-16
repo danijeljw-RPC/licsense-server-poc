@@ -38,6 +38,11 @@ services:
         condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Container
+      # Local-only opt-out: the seeded admin has no MFA enrolled, so requiring it here would hide
+      # the Users page's "Add identity" panel. appsettings.Container.json defaults this to true
+      # (matching the operator-runbook's "MFA required in production" policy) because the same
+      # image and environment name ship to real deployments; only this Compose file overrides it.
+      Security__RequireMfaForHighRiskPermissions: "false"
       ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=${POSTGRES_DB:-license_server};Username=${POSTGRES_USER:-license_app};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       SEED_DEFAULT_ADMIN: ${SEED_DEFAULT_ADMIN:-true}
       DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@localhost.com}
