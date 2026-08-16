@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write # also needed to create the GitHub release below
   packages: write
 
 env:
@@ -45,6 +45,35 @@ jobs:
             exit 1
           fi
 
+      # CHANGELOG.md follows Keep a Changelog: "## [X.Y.Z] - YYYY-MM-DD" headings, one
+      # section per release. Pulling the section for this tag's version out now, before
+      # anything is built, means a missing changelog entry fails fast instead of leaving
+      # a pushed image with no matching release notes.
+      - name: Extract changelog section for this release
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          awk -v ver="$version" '
+            /^## \[/ {
+              if (found) exit
+              if ($0 == "## [" ver "]" || index($0, "## [" ver "] - ") == 1) { found = 1; next }
+              next
+            }
+            # Stop before the trailing "[label]: url" reference-link block at the end of
+            # the file, in case this version is ever the last section (e.g. the oldest
+            # release, or CHANGELOG entries added in reverse of the usual order).
+            found && /^\[.*\]: / { exit }
+            found && !started && /^[[:space:]]*$/ { next } # drop the blank line right after the heading
+            found { started = 1; print }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "No '## [$version]' section found in CHANGELOG.md for tag $TAG_NAME." >&2
+            echo "Add a dated changelog section for this version before tagging." >&2
+            exit 1
+          fi
+
       # ghcr.io rejects mixed-case paths; the GitHub org for this repo (danijeljw-RPC)
       # is not all lowercase, so the owner segment has to be normalized before use.
       - name: Lowercase the image owner
@@ -69,3 +98,12 @@ jobs:
           tags: |
             ghcr.io/${{ steps.owner.outputs.name }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             ghcr.io/${{ steps.owner.outputs.name }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" \
+            --title "$TAG_NAME" \
+            --notes-file release-notes.md
