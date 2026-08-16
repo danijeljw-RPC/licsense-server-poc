@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scanned keys, an authoritative Postgres-backed default, distinct
   rotate/retire/revoke operations, and a supported path for importing licenses
   produced offline by `LicenseGenerator`. Implemented since as a reduced core
-  slice; the license-import feature remains design-only.
+  slice; the license-import feature now has a working API (see below) with its
+  admin UI page still to follow.
   `LicenseValidator`'s embedded trust model is explicitly out of scope and
   unchanged.
 - `Licensing.Core.LicenseEnvelope` — the single envelope-construction and
@@ -44,7 +45,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recorded decisions for the four open license-import design questions —
   catalog handling for unknown products, the email source for metadata-free
   imports, activation credentials on pre-activated imports, and verbatim
-  artifact storage. Decisions only; the import endpoint is still unimplemented.
+  artifact storage — and then implemented all four (see below).
+- `POST /api/v1/admin/licenses/import` (permission `licenses.import`,
+  multipart, 256 KB limit): verifies an offline `LicenseGenerator`-signed
+  artifact against the live signing-key ring, then stores it byte-for-byte in
+  new `bytea` columns (`LicenseRecord.ImportedSignedEnvelope` /
+  `ImportedSignedEnvelopeSha256`) alongside a relational `Entitlement` index
+  built from it — the stored bytes remain the source of truth, never
+  regenerated or resigned. `contactEmail` is a required form field and the
+  source of truth for the resolved customer, validated to match the
+  artifact's own `metadata.contactEmail` when present rather than silently
+  preferring either one. A product absent from the catalog is auto-created
+  with `IsActive = false`, so an import can never silently add a sellable
+  catalog entry. A pre-activated import gets an `Activation` row with a
+  random, discarded-preimage token, so device-facing refresh and
+  deactivation both fail closed by construction; admin-side license revoke
+  is the supported lifecycle action for it. Writes a `license.imported`
+  audit record, plus one `product.auto-created` record per auto-created
+  product. No admin UI page yet — API only; see `README.md`'s "License
+  import" section. New migration `LicenseImport` also replaces
+  `Entitlement`'s one-per-license unique index with a composite
+  `(LicenseRecordId, Product)` index, since an imported multi-product
+  license legitimately has more than one `Entitlement` row per
+  `LicenseRecord`; the admin license-terms edit panels and the customer
+  portal's license view are guarded against that case rather than crashing
+  on the entitlement list's now-possible multiple rows. Term amendments are
+  also blocked for every imported license, including the common
+  single-product case that has exactly one entitlement: the signed
+  artifact, not this relational index, remains the source of truth, and
+  amending here would silently diverge from it.
 - `POST /api/v1/admin/signing-keys/rescan` (and the Blazor "Rescan key
   directory" button, which now goes through the same `RescanAsync` method)
   write an `AuditRecord` (`signingKey.rescan`), matching `set-default` and
@@ -98,6 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trait at all — silently never ran in CI. Switched to excluding
   `Suite=Phase0Roadmap` (the intentional-red executable specification)
   instead, so everything meant to pass runs: 106 of 152 tests, all green.
+- `POST /api/v1/admin/licenses/import`'s pre-parse size guard rejected some
+  legitimately-sized files: it bounded `request.ContentLength` (the whole
+  multipart body, including boundaries, per-part headers, and the
+  `contactEmail` field) against the 256 KB artifact limit itself, so a file
+  right at that limit could be rejected before the accurate post-parse
+  `file.Length` check ever ran. The pre-check now allows headroom for
+  multipart framing overhead; the artifact limit is still enforced exactly
+  against `file.Length`.
 - `EcdsaKeyPairs.TryValidatePair`, `TryValidatePublicKey`, and
   `PublicKeysMatch` never checked that imported key material was actually on
   the NIST P-256 curve. A self-consistent key pair generated on another curve

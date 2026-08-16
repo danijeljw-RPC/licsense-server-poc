@@ -105,6 +105,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             x.ExpiresAt?.AddTicks(x.ExpirySubMicrosecondTicks),
             x.CancelledAt, x.CancellationReason, x.CancelledBy, x.RevokedAt, x.RevocationReason, x.Version,
             LicenseStore.GetLifecycleState(x, active is not null, DateTimeOffset.UtcNow),
+            x.Provenance,
             x.Entitlements.OrderBy(e => e.Product).Select(e => new EntitlementView(e.Product, e.Edition, e.LicenseType, e.Seats, e.UpdatesUntil)).ToList(),
             active is null ? null : new ActivationView(active.ActivationId, active.Mode, active.DeviceIdSuffix, active.DeviceName, active.ActivatedAt, active.RefreshAfter, active.LeaseExpiresAt),
             x.Activations.OrderByDescending(a => a.ActivatedAt).Select(a => new ActivationHistoryView(a.ActivationId, a.Mode, a.DeviceIdSuffix, a.ActivatedAt, a.DeactivatedAt)).ToList(),
@@ -230,6 +231,7 @@ public sealed record LicenseDetailView(
     string LicenseId, string Customer, string CustomerEmail, string SignedContactEmail, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
     DateTimeOffset? CancelledAt, string? CancellationReason, string? CancelledBy,
     DateTimeOffset? RevokedAt, string? RevocationReason, long Version, string Status,
+    string Provenance,
     IReadOnlyList<EntitlementView> Entitlements, ActivationView? ActiveActivation,
     IReadOnlyList<ActivationHistoryView> IssuanceHistory, IReadOnlyList<AuditView> History);
 

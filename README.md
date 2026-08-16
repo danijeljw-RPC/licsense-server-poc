@@ -397,6 +397,7 @@ The seeded PoC license receives a generated `LIC-YYYY-MMDDXXXXXX` ID; find it on
 | `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires `licenses.revoke`, MFA in production, and an antiforgery token for cookie requests. |
 | `GET /api/v1/admin/products` | Search the readable product catalog; requires `products.read`. |
 | `POST/PATCH /api/v1/admin/products` | Add, edit, activate, or archive products; requires `products.manage`. |
+| `POST /api/v1/admin/licenses/import` | Import an offline-signed `.license` artifact (multipart, 256 KB limit); requires `licenses.import`. See [License import](#license-import). |
 
 The service uses PostgreSQL transactions, database uniqueness constraints, ASP.NET Core Identity, and immutable audit records. The web process loads a mounted development PEM only for this PoC; move signing behind a KMS/HSM boundary before production.
 
@@ -415,6 +416,17 @@ POST /api/v1/licenses/<generated-demo-id>/activate
 ```
 
 The response contains `signedLicense` as a JSON string; save that string unchanged as a `.license` file and carry it back to the target. Keeping the signed document opaque avoids date/string normalization by intermediary JSON tooling. Signature, product, expiry, and device checks then work with no server connection. Keep the request credentials in OS-protected storage because they are needed to submit a future deactivation. In production, an offline deactivation command should disable local state and create a signed/request-authenticated receipt for the operator to import before transfer. It still cannot force deletion of copied offline files.
+
+### License import
+
+`POST /api/v1/admin/licenses/import` brings a `LicenseGenerator`-signed artifact — one built entirely outside the online issuance flow — into this server's admin tracking, for cases such as migrating a customer's pre-existing offline license into central visibility. It requires `licenses.import` and a `multipart/form-data` body:
+
+- `file` — the signed `.license` JSON, unmodified, up to 256 KB.
+- `contactEmail` — required. The operator-supplied source of truth for the resolved customer; if the artifact also carries `metadata.contactEmail`, it must normalize-equal this value or the import is rejected. See ["Resolved design questions"](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md#resolved-design-questions) for why the field isn't optional and doesn't silently prefer either source.
+
+The pipeline verifies the artifact against this server's own live key ring (the same verifier the online paths use), then stores it byte-for-byte in `bytea` columns (`ImportedSignedEnvelope`/`ImportedSignedEnvelopeSha256`) alongside a relational `LicenseRecord`/`Entitlement` index built from it — the stored bytes remain the source of truth, not the index. A product the catalog doesn't recognize is auto-created as `IsActive = false`, so an import can never silently add a sellable catalog entry. A pre-activated import (the artifact carries `deviceBinding`/`activation`) gets an `Activation` row with a random, discarded-preimage token, so device-facing refresh and deactivation both fail closed; admin-side license revoke is the supported lifecycle action for it. Every import writes a `license.imported` audit record, and every auto-created product writes its own `product.auto-created` record.
+
+There is currently no admin UI page for this endpoint — only the API. A UI page adjacent to the Offline issuance page above is tracked as a follow-up.
 
 ## Licence design
 
@@ -638,7 +650,7 @@ The larger `Test-LicenseFlow.ps1` also proves that a private key/key ID mismatch
 - Exactly one key is the **default** signing key at a time (`SigningKeys.IsDefault`, enforced by a partial unique index). `Licensing:DefaultSigningKey` is only a bootstrap seed, applied once if the database has no default yet — rotate the live default through the admin UI's "Set as default" action, not by editing configuration, since Compose environment variables don't reload without a container restart.
 - Issuance forms (`/offline`, and `/licenses/{id}` activate/refresh) let an authorized operator override the signing key per request; anonymous device-facing endpoints (`/api/v1/licenses/{id}/activate`, `/api/v1/activations/{id}/refresh`) always sign with the default and accept no key parameter.
 
-This is a deliberately reduced slice of a fuller key-ring design — see [`docs/superpowers/specs/2026-08-14-key-ring-signing-design.md`](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md) for the complete design and the currently-deferred piece (the license-import feature). Two earlier gaps are now closed: `LicenseGenerator` shares the server's signing implementation via `Licensing.Core.LicenseEnvelope`, and the periodic reload is a settled decision rather than a deferral — see [Explicitly rejected alternatives](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md#explicitly-rejected-alternatives) for why there is no `FileSystemWatcher`.
+This is a deliberately reduced slice of a fuller key-ring design — see [`docs/superpowers/specs/2026-08-14-key-ring-signing-design.md`](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md) for the complete design. Two earlier gaps are now closed: `LicenseGenerator` shares the server's signing implementation via `Licensing.Core.LicenseEnvelope`, and the periodic reload is a settled decision rather than a deferral — see [Explicitly rejected alternatives](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md#explicitly-rejected-alternatives) for why there is no `FileSystemWatcher`. [License import](#license-import) now has a working API; only its admin UI page remains deferred.
 
 ## Keys and trust
 

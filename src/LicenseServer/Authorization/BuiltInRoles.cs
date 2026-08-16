@@ -24,7 +24,8 @@ internal static class BuiltInRoles
             [LicenseManager] =
             [
                 Permissions.LicensesRead, Permissions.LicensesIssue, Permissions.LicensesUpdate,
-                Permissions.LicensesCancel, Permissions.LicensesRevoke, Permissions.ActivationsManage,
+                Permissions.LicensesCancel, Permissions.LicensesRevoke, Permissions.LicensesImport,
+                Permissions.ActivationsManage,
                 Permissions.CustomersRead, Permissions.CustomersManage, Permissions.ProductsRead,
                 Permissions.ApiKeysManageSelf, Permissions.AuditRead
             ],
