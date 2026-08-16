@@ -135,6 +135,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `file.Length` check ever ran. The pre-check now allows headroom for
   multipart framing overhead; the artifact limit is still enforced exactly
   against `file.Length`.
+- `EcdsaKeyPairs.TryValidatePair`, `TryValidatePublicKey`, and
+  `PublicKeysMatch` never checked that imported key material was actually on
+  the NIST P-256 curve. A self-consistent key pair generated on another curve
+  (e.g. P-384) passed `TryValidatePair` cleanly, while `LicenseEnvelope.Sign`
+  still hardcoded the envelope's `algorithm` field to `ECDSA-P256-SHA256`
+  regardless of the curve actually used, producing a mislabeled artifact. All
+  three methods now reject any key not on P-256; the two `Try*` methods
+  return `false` with an explanatory error, and `PublicKeysMatch` throws
+  `CryptographicException`, consistent with its existing exception-based
+  contract for malformed input. Purely additive: every key in `keys/` and
+  every key `LicenseGenerator keygen` produces is already P-256. (#32)
+- That same P-256 curve check compared only the named-curve OID, so a PEM
+  encoding genuinely P-256 domain parameters explicitly instead of by name
+  (e.g. `openssl ecparam -param_enc explicit`) was wrongly rejected as an
+  "unrecognized curve" — the opposite of the check's intent. Falls back to
+  comparing the field prime, curve coefficients, generator point, and order
+  against P-256's published domain parameters when the curve has no named
+  OID. Also catches `PlatformNotSupportedException` in the two `Try*`
+  methods: platforms whose ECDsa backend cannot import explicit-curve PEMs
+  at all (confirmed on macOS) now fail validation cleanly instead of
+  crashing with an unhandled exception.
+- `SigningKeyFiles.IsValidKeyId` anchored its pattern with `$`, which .NET
+  regex matches immediately before a trailing newline as well as at the true
+  end of the string. A key ID such as `"primary-2026\n"` passed validation,
+  which would have let `keygen --id` write a PEM filename containing a
+  newline. Anchored with `\z` instead, which admits no exception.
+- `POST /api/v1/admin/signing-keys/rescan` wrote a `Result = "success"` audit
+  record even when the underlying reload failed and silently kept the old
+  key-ring snapshot (`ReloadAsync` catches and logs reload failures rather
+  than throwing). `ReloadAsync` now reports whether it actually published a
+  new snapshot; a failed rescan throws instead of writing a misleading
+  success record, matching how every other signing-key mutation here already
+  fails before auditing.
 
 ## [0.1.0] - 2026-08-14
 
