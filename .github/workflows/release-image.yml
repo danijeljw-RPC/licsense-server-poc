@@ -80,6 +80,51 @@ jobs:
         id: owner
         run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve release version
+        id: version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: echo "number=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
+        with:
+          global-json-file: global.json
+
+      # Licensing.Core is what third-party products reference to verify licence files offline
+      # (see README "Calling validation directly from an application"). Released alongside the
+      # server image so a NuGet package and a plain DLL are both pullable straight from the
+      # GitHub release, without anyone needing to clone and build this repo themselves.
+      - name: Build and package Licensing.Core
+        env:
+          VERSION: ${{ steps.version.outputs.number }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/nuget artifacts/dll/"Licensing.Core-$VERSION"
+
+          dotnet pack src/Licensing.Core/Licensing.Core.csproj \
+            -c Release \
+            -p:Version="$VERSION" \
+            -o artifacts/nuget
+
+          dotnet build src/Licensing.Core/Licensing.Core.csproj \
+            -c Release \
+            -p:Version="$VERSION"
+
+          cp src/Licensing.Core/bin/Release/net10.0/Licensing.Core.dll \
+             artifacts/dll/"Licensing.Core-$VERSION"/
+
+          ( cd artifacts/dll && zip -r "Licensing.Core-$VERSION.zip" "Licensing.Core-$VERSION" )
+          ( cd artifacts/dll && tar -czf "Licensing.Core-$VERSION.tar.gz" "Licensing.Core-$VERSION" )
+          rm -rf artifacts/dll/"Licensing.Core-$VERSION"
+
+          mkdir -p release-assets
+          cp artifacts/nuget/*.nupkg release-assets/
+          cp artifacts/dll/*.zip artifacts/dll/*.tar.gz release-assets/
+
+          ( cd release-assets && sha256sum * > SHA256SUMS.txt )
+          ( cd release-assets && sha256sum -c SHA256SUMS.txt )
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -106,4 +151,5 @@ jobs:
         run: |
           gh release create "$TAG_NAME" \
             --title "$TAG_NAME" \
-            --notes-file release-notes.md
+            --notes-file release-notes.md \
+            release-assets/*

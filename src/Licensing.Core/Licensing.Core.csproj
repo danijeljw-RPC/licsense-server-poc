@@ -6,4 +6,20 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!-- Version is overridden by CI (-p:Version=X.Y.Z) at release build/pack time; this is only
+         the local/dev fallback so an unversioned build still produces something sane. -->
+    <Version>0.2.1</Version>
+    <PackageId>Licensing.Core</PackageId>
+    <Authors>Danijel-James Wynyard</Authors>
+    <Description>Offline licence file verification: parses and validates ECDSA-signed licence envelopes against embedded trusted public keys.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/danijeljw-RPC/licsense-server-poc</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
 </Project>

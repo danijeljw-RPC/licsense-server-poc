@@ -522,7 +522,7 @@
       "licenseserver": {
         "type": "Project",
         "dependencies": {
-          "Licensing.Core": "[1.0.0, )",
+          "Licensing.Core": "[0.2.1, )",
           "Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore": "[10.0.9, )",
           "Microsoft.AspNetCore.Identity.EntityFrameworkCore": "[10.0.9, )",
           "Microsoft.AspNetCore.OpenApi": "[10.0.9, )",
