@@ -552,6 +552,11 @@ internal sealed class LicenseStore(
             return StoreResult<bool>.Conflict("Terms cannot be amended after cancellation or revocation.");
         if (license.Entitlements.Count != 1)
             return StoreResult<bool>.Conflict("Administrative terms amendment requires exactly one entitlement.");
+        if (license.Provenance == LicenseProvenance.Imported)
+            return StoreResult<bool>.Conflict(
+                "Imported licenses cannot have their terms amended through this page: the signed artifact, " +
+                "not this relational index, remains the source of truth and would silently diverge from it. " +
+                "Use admin-side revoke to terminate it if needed.");
 
         var entitlement = license.Entitlements[0];
         var old = new
