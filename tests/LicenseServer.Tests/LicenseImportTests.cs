@@ -267,6 +267,35 @@ public sealed class LicenseImportTests(PostgresWebFixture fixture)
         Assert.Equal(LicenseProvenance.Imported, row.Provenance);
     }
 
+    [Fact]
+    public async Task ImportedSingleProductLicenseRejectsTermsAmendmentToPreventDriftFromTheSignedArtifact()
+    {
+        // A single-product import passes the "exactly one entitlement" check that otherwise gates
+        // term amendments, so without a provenance check this would silently mutate the relational
+        // index (ExpiresAt/Seats/Edition) while ImportedSignedEnvelope - the declared source of
+        // truth for an imported license - stays byte-for-byte unchanged.
+        var licenseId = UniqueLicenseId();
+        var contactEmail = $"amend-{Guid.NewGuid():N}@example.com";
+        var (bytes, _) = await SignAsync(BuildLicense(licenseId, "Amend Customer", contactEmail: contactEmail));
+        using var importer = fixture.CreateAuthenticatedClient(false, Permissions.LicensesImport);
+        using var importResponse = await PostImportAsync(importer, bytes, "amend.license", contactEmail);
+        Assert.Equal(HttpStatusCode.Created, importResponse.StatusCode);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var stored = await db.Licenses.AsNoTracking().SingleAsync(x => x.LicenseId == licenseId);
+        var originalSeats = (await db.Entitlements.AsNoTracking().SingleAsync(x => x.LicenseRecordId == stored.Id)).Seats;
+
+        using var updater = fixture.CreateAuthenticatedClient(false, Permissions.LicensesUpdate);
+        using var amendResponse = await RoadmapTestSupport.PostAdminAsync(updater,
+            $"/api/v1/admin/licenses/{licenseId}/terms",
+            new { seats = originalSeats + 1, reason = "Should be rejected for an imported license", version = stored.Version });
+        await RoadmapTestSupport.AssertProblemAsync(amendResponse, HttpStatusCode.Conflict);
+
+        var unchanged = await db.Entitlements.AsNoTracking().SingleAsync(x => x.LicenseRecordId == stored.Id);
+        Assert.Equal(originalSeats, unchanged.Seats);
+    }
+
     private static string UniqueLicenseId() => $"IMP-{Guid.NewGuid():N}"[..19];
 
     private static JsonObject BuildLicense(

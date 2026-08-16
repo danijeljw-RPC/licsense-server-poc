@@ -45,12 +45,13 @@ else
         </article>
     </div>
 
-    @if (!IsTerminal && license.Entitlements.Count != 1)
+    @if (!IsTerminal && !CanAmendTerms)
     {
-        <p class="notice">This license has more than one product entitlement (an imported license), so its terms
-            cannot be edited product-by-product through this page. Use admin-side revoke to terminate it if needed.</p>
+        <p class="notice">This license's terms cannot be edited product-by-product through this page: it
+            @(license.Entitlements.Count != 1 ? "has more than one product entitlement." : "was imported from a signed offline artifact, which remains the source of truth and would silently diverge from this relational index if amended here.")
+            Use admin-side revoke to terminate it if needed.</p>
     }
-    @if (!IsTerminal && license.Entitlements.Count == 1)
+    @if (!IsTerminal && CanAmendTerms)
     {
         <AuthorizeView Policy="@Permissions.LicensesUpdate">
             <Authorized>
@@ -136,6 +137,10 @@ else
     private readonly CredentialForm credentials = new();
     private string? message; private string messageClass = "success"; private string? download; private string downloadName = "license.license"; private string? signedKeyId;
     private bool IsTerminal => license?.CancelledAt is not null || license?.RevokedAt is not null;
+    // The signed artifact, not this relational index, is the source of truth for an imported
+    // license (see LicenseStore.AmendTermsAsync's matching server-side check) - amending terms
+    // here would silently diverge from it, even for the common single-product-import case.
+    private bool CanAmendTerms => license?.Entitlements.Count == 1 && license.Provenance != LicenseProvenance.Imported;
     private string? DisplayMessage => Error ?? Notice ?? message;
     private string DisplayMessageClass => Error is not null ? "error" : Notice is not null ? "success" : messageClass;
     protected override async Task OnParametersSetAsync() => license = await Data.GetLicenseAsync(LicenseId);
