@@ -311,7 +311,7 @@ docker compose down
 
 ### Security boundaries and production work
 
-The development private key is intentionally mounted as a file for this PoC. Production must replace `LicenseEnvelopeSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database, MailerSend, Stripe, webhook, and TLS secrets in a secret manager, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, add monitoring, and back up PostgreSQL, Data Protection keys, and signing-key metadata as one recovery set.
+The development private keys are intentionally mounted as files for this PoC. Production must replace the file-backed `SigningKeyRingService` behind `ILicenseSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database, MailerSend, Stripe, webhook, and TLS secrets in a secret manager, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, add monitoring, and back up PostgreSQL, Data Protection keys, and signing-key metadata as one recovery set.
 
 Signed license JSON provides authenticity, not confidentiality. Do not put secrets or unnecessary personal information in it. Device IDs remain spoofable software identifiers rather than hardware proof. Offline files cannot receive immediate revocation, and system-clock rollback remains a concern unless the client periodically obtains trusted server time. Passkey credentials in PostgreSQL are public keys and counters; private credentials remain in the user's authenticator.
 
@@ -638,7 +638,7 @@ The larger `Test-LicenseFlow.ps1` also proves that a private key/key ID mismatch
 - Exactly one key is the **default** signing key at a time (`SigningKeys.IsDefault`, enforced by a partial unique index). `Licensing:DefaultSigningKey` is only a bootstrap seed, applied once if the database has no default yet — rotate the live default through the admin UI's "Set as default" action, not by editing configuration, since Compose environment variables don't reload without a container restart.
 - Issuance forms (`/offline`, and `/licenses/{id}` activate/refresh) let an authorized operator override the signing key per request; anonymous device-facing endpoints (`/api/v1/licenses/{id}/activate`, `/api/v1/activations/{id}/refresh`) always sign with the default and accept no key parameter.
 
-This is a deliberately reduced slice of a fuller key-ring design — see [`docs/superpowers/specs/2026-08-14-key-ring-signing-design.md`](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md) for the complete design and the currently-deferred pieces (a `FileSystemWatcher` in addition to the periodic reload, the `LicenseGenerator`/`LicenseVerifier` shared-helper extraction, and the license-import feature).
+This is a deliberately reduced slice of a fuller key-ring design — see [`docs/superpowers/specs/2026-08-14-key-ring-signing-design.md`](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md) for the complete design and the currently-deferred piece (the license-import feature). Two earlier gaps are now closed: `LicenseGenerator` shares the server's signing implementation via `Licensing.Core.LicenseEnvelope`, and the periodic reload is a settled decision rather than a deferral — see [Explicitly rejected alternatives](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md#explicitly-rejected-alternatives) for why there is no `FileSystemWatcher`.
 
 ## Keys and trust
 
@@ -651,7 +651,18 @@ This is a deliberately reduced slice of a fuller key-ring design — see [`docs/
 
 Both complete public PEM values are already compiled into `TrustedPublicKeys.cs`. The PEM files in `keys/` are convenient development copies; validation uses the source-code values, not those files.
 
-Generate a pair with unused output paths:
+Generate a pair by key ID, which writes the exact filenames `LicenseServer`'s key directory scanner discovers:
+
+```powershell
+dotnet run `
+    --project src/LicenseGenerator `
+    -- `
+    keygen `
+    --id primary-2028 `
+    --output keys
+```
+
+That produces `keys/primary-2028.private.pem` and `keys/primary-2028.public.pem`. The explicit form is still available when you need paths that don't follow the convention:
 
 ```powershell
 dotnet run `
@@ -662,11 +673,13 @@ dotnet run `
     --public-key keys/primary-2028.public.pem
 ```
 
-Key generation refuses to overwrite existing files by default. `--force` exists for deliberate replacement of an unused development key, but replacing a key already used for issuance will invalidate its licences.
+Key generation refuses to overwrite existing files by default. `--force` exists for deliberate replacement of an unused development key, but replacing a key already used for issuance will invalidate its licences. On Linux and macOS the private key file is written mode `600`; Windows has no POSIX mode, so restrict it with NTFS ACLs yourself.
 
 Add only the public PEM to [`src/Licensing.Core/TrustedPublicKeys.cs`](src/Licensing.Core/TrustedPublicKeys.cs), mapped to its exact key ID. Release applications containing the new public key before issuing with it. Keep older public keys while their licences must validate. Never distribute private keys or accept a public key supplied beside the licence.
 
-The generator also uses this trust map to verify that the selected private key matches `--key-id`. This prevents an operator from issuing an unusable licence with the correct ID but the wrong private key.
+Before signing, the generator confirms that the selected private key really is the one `--key-id` names, by cryptographically pairing it against `<key-id>.public.pem` beside it (override with `--public-key`). This catches the common mistake of issuing a licence with the correct key ID but the wrong private key. It checks the PEM pair on disk rather than the compiled trust map above, so a key that exists only by having been dropped into the server's key directory can be signed with immediately, with no `TrustedPublicKeys.cs` edit or CLI rebuild.
+
+That is a deliberate trade: the check no longer proves the key ID is one shipped products trust. A locally regenerated pair that reuses an existing key ID — say `keygen --id primary-2026 --force` — is internally consistent and will sign without complaint, producing licences every released validator rejects. Passing `--public-key` pointed at the private key's own counterpart under a different `--key-id` defeats the check the same way. Validate a new key end-to-end with `LicenseValidator` before issuing with it, and never `--force` over a key ID that has already been used for issuance.
 
 Production private keys should be held in a managed KMS/HSM or isolated signing service. Replace the current signer so it asks that service to sign and never loads PEM private keys into a public web process.
 
@@ -684,6 +697,8 @@ dotnet run `
     --private-key keys/primary-2026.private.pem `
     --key-id primary-2026
 ```
+
+`--key-id` is optional when the private key follows the `<key-id>.private.pem` convention, as it does here — it is derived from the filename and remains overridable for keys stored under other names.
 
 The generator rejects incomplete or ambiguous data rather than signing it. Required strings cannot be blank; seats must be positive integers; products cannot be duplicated case-insensitively; instants require a timezone; update dates must be exact `yyyy-MM-dd` values; and custom fields must follow the metadata rules above.
 

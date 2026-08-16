@@ -8,50 +8,6 @@ using SoftwareLicensing;
 
 namespace LicenseServer;
 
-public enum SigningKeyStatus
-{
-    Active,
-    VerificationOnly,
-    Revoked,
-    Invalid
-}
-
-public sealed record SigningKeyInfo(
-    string KeyId,
-    string Algorithm,
-    bool HasPrivateKey,
-    bool HasPublicKey,
-    bool CanSign,
-    bool CanVerify,
-    SigningKeyStatus Status,
-    string? StatusDetail,
-    bool IsDefault,
-    DateTimeOffset DiscoveredAt,
-    DateTimeOffset LastSeenAt,
-    DateTimeOffset? RetiredAt,
-    DateTimeOffset? RevokedAt,
-    string? RevokedBy,
-    string? RevocationReason);
-
-public interface ILicenseKeyRing
-{
-    string? DefaultKeyId { get; }
-    IReadOnlyList<SigningKeyInfo> Keys { get; }
-    SigningKeyInfo? Find(string keyId);
-}
-
-public sealed record LicenseSigningResult(bool Success, JsonObject? Envelope, string? ErrorCode, string? ErrorMessage);
-
-public interface ILicenseSigner
-{
-    LicenseSigningResult Sign(JsonObject license, string? requestedKeyId);
-}
-
-public interface ILicenseVerifier
-{
-    VerifiedLicense Verify(string signedLicenseJson);
-}
-
 /// <summary>
 /// Filesystem/crypto-only key discovery: given a directory, finds "&lt;keyId&gt;.private.pem" /
 /// "&lt;keyId&gt;.public.pem" pairs. Never throws for a single bad file — records the problem
@@ -59,8 +15,6 @@ public interface ILicenseVerifier
 /// </summary>
 public static class KeyDirectoryScanner
 {
-    private static readonly Regex KeyIdPattern = new("^[a-z0-9]+(-[a-z0-9]+)*$", RegexOptions.Compiled);
-
     public sealed record ScannedKey(
         string KeyId, string? PrivatePem, string? PublicPem, bool Valid, string? Error);
 
@@ -78,21 +32,21 @@ public static class KeyDirectoryScanner
             string? keyId = null;
             var isPrivate = false;
 
-            if (name.EndsWith(".private.pem", StringComparison.Ordinal))
+            if (name.EndsWith(SigningKeyFiles.PrivateSuffix, StringComparison.Ordinal))
             {
-                keyId = name[..^".private.pem".Length];
+                keyId = name[..^SigningKeyFiles.PrivateSuffix.Length];
                 isPrivate = true;
             }
-            else if (name.EndsWith(".public.pem", StringComparison.Ordinal))
+            else if (name.EndsWith(SigningKeyFiles.PublicSuffix, StringComparison.Ordinal))
             {
-                keyId = name[..^".public.pem".Length];
+                keyId = name[..^SigningKeyFiles.PublicSuffix.Length];
             }
             else
             {
                 continue; // not a recognized key filename; ignore (README, checksums, etc.)
             }
 
-            if (keyId.Length is < 3 or > 64 || !KeyIdPattern.IsMatch(keyId))
+            if (!SigningKeyFiles.IsValidKeyId(keyId))
                 continue; // invalid keyId shape; ignore rather than fail the whole scan
 
             try
@@ -154,7 +108,10 @@ public static class KeyDirectoryScanner
 /// snapshot readers see atomically. Deliberately uses a periodic timer only, not a FileSystemWatcher -
 /// bind-mounted volumes don't reliably deliver watcher events in Docker anyway (the full design's own
 /// fallback timer would be needed regardless), and a bounded-delay poll is far simpler to reason about
-/// and test correctly than a debounced watcher for a POC-scale key ring.
+/// and test correctly than a debounced watcher for a POC-scale key ring. Settled decision, not a
+/// deferral: see "Explicitly rejected alternatives" in
+/// docs/superpowers/specs/2026-08-14-key-ring-signing-design.md. Operators who need a key picked up
+/// sooner than the interval use the admin rescan action, which is immediate and on demand.
 /// </summary>
 public sealed partial class SigningKeyRingService(
     IOptions<LicensingOptions> options,
@@ -327,25 +284,10 @@ public sealed partial class SigningKeyRingService(
         if (!current.Pem.TryGetValue(keyId, out var pemPair) || pemPair.PrivatePem is null)
             return new LicenseSigningResult(false, null, "cannot_sign", $"Private key material for '{keyId}' is unavailable.");
 
-        LicenseSchema.Parse(license);
-
-        var envelope = new JsonObject
-        {
-            ["format"] = LicenseConstants.Format,
-            ["algorithm"] = LicenseConstants.Algorithm,
-            ["keyId"] = keyId,
-            ["license"] = license.DeepClone()
-        };
-
         using var key = ECDsa.Create();
         key.ImportFromPem(pemPair.PrivatePem);
-        var signature = key.SignData(
-            CanonicalJson.Serialize(envelope),
-            HashAlgorithmName.SHA256,
-            DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-        envelope["signature"] = Convert.ToBase64String(signature);
 
-        return new LicenseSigningResult(true, envelope, null, null);
+        return new LicenseSigningResult(true, LicenseEnvelope.Sign(license, keyId, key), null, null);
     }
 
     public VerifiedLicense Verify(string signedLicenseJson)

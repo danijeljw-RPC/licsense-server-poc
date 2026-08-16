@@ -14,9 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It replaces the single configured signing key with hot-reloadable, directory-
   scanned keys, an authoritative Postgres-backed default, distinct
   rotate/retire/revoke operations, and a supported path for importing licenses
-  produced offline by `LicenseGenerator`. **Design only — no implementation
-  yet**; `LicenseValidator`'s embedded trust model is explicitly out of scope
-  and unchanged.
+  produced offline by `LicenseGenerator`. Implemented since as a reduced core
+  slice; the license-import feature remains design-only.
+  `LicenseValidator`'s embedded trust model is explicitly out of scope and
+  unchanged.
+- `Licensing.Core.LicenseEnvelope` — the single envelope-construction and
+  signing implementation, now called by both `LicenseServer`'s online signing
+  path and the offline `LicenseGenerator` CLI, so canonicalization and
+  signature rules cannot drift between them.
+- `Licensing.Core.SigningKeyFiles` — the `<keyId>.private.pem` /
+  `<keyId>.public.pem` naming convention and key-ID rules in one place, shared
+  by the server's key directory scanner and the CLI.
+- `LicenseGenerator keygen --id <keyId> --output <dir>`, writing exactly the
+  filenames the server's key directory scanner discovers. Generated private
+  keys are mode `600` on POSIX platforms, requested at file-creation time;
+  Windows has no POSIX mode and the command says so.
+- `LicenseGenerator sign --public-key <path>`, overriding the public key the
+  private-key/key-ID pair check runs against.
+- Recorded decisions for the four open license-import design questions —
+  catalog handling for unknown products, the email source for metadata-free
+  imports, activation credentials on pre-activated imports, and verbatim
+  artifact storage. Decisions only; the import endpoint is still unimplemented.
 - Bash equivalents of the PowerShell scripts in `scripts/`
   (`new-demo-licenses.sh`, `new-offline-activation-request.sh`,
   `test-database-and-auth.sh`, `test-activation-flow.sh`,
@@ -25,9 +43,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `LicenseGenerator sign` checks the selected private key against the
+  `<keyId>.public.pem` PEM pair on disk instead of the hardcoded
+  `TrustedPublicKeys` map. A signing key created the key-ring way — dropping
+  two PEM files into the key directory — can now be used by the offline
+  generator immediately, with no `TrustedPublicKeys.cs` edit or CLI rebuild.
+  The public half is located by key ID rather than by rewriting the private
+  key's filename, so the check still catches a private-key/key-ID mismatch.
+  Two consequences: signing a private key stored outside the
+  `<keyId>.private.pem` convention, with no public half beside it, now requires
+  the new `--public-key`; and the check no longer proves the key ID is one
+  shipped products trust, so a locally regenerated pair reusing an existing key
+  ID will sign without complaint. Validate a new key with `LicenseValidator`
+  before issuing with it.
+- `LicenseGenerator sign --key-id` is optional, derived from a
+  `<keyId>.private.pem` filename and still overridable.
+- The key-ring contracts (`ILicenseKeyRing`, `ILicenseSigner`,
+  `ILicenseVerifier`, `SigningKeyInfo`, `SigningKeyStatus`,
+  `LicenseSigningResult`) moved from `LicenseServer` into `Licensing.Core` as
+  pure contracts, making them reachable from `LicenseGenerator`.
+  `Licensing.Core` still has no ASP.NET Core or EF Core dependency.
+- The key-ring design spec now records the absence of a `FileSystemWatcher` as
+  a settled rejected alternative with its reasoning, rather than leaving the
+  shipped periodic-reload behavior contradicting the written design.
 - Repository-local `.claude/settings.json` now ships a minimal, schema-valid
   permission set (`dotnet build`/`test`/`restore`, read-only `git` commands)
   in place of an earlier overly broad, non-schema-valid draft.
+
+### Fixed
+
+- README's production-hardening guidance referenced `LicenseEnvelopeSigner`,
+  a class deleted when the signing key ring landed. It now names the current
+  signing component (`SigningKeyRingService` behind `ILicenseSigner`).
+- `SigningKeyFiles.IsValidKeyId` anchored its pattern with `$`, which .NET
+  regex matches immediately before a trailing newline as well as at the true
+  end of the string. A key ID such as `"primary-2026\n"` passed validation,
+  which would have let `keygen --id` write a PEM filename containing a
+  newline. Anchored with `\z` instead, which admits no exception.
 
 ## [0.1.0] - 2026-08-14
 

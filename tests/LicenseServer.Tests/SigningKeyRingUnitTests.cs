@@ -43,6 +43,92 @@ public sealed class EcdsaKeyPairsTests
     }
 }
 
+/// <summary>
+/// The filename convention is the contract between the server's key directory scanner and the
+/// offline CLI: the CLI's "keygen --id" must produce names the scanner discovers, and the CLI's
+/// "sign" derives a key ID back out of a private key filename. These tests pin both directions.
+/// </summary>
+public sealed class SigningKeyFilesTests
+{
+    [Theory]
+    [InlineData("primary-2026")]
+    [InlineData("abc")]
+    [InlineData("a1b2c3")]
+    [InlineData("one-two-three-2026")]
+    public void ConventionalKeyIdsAreAccepted(string keyId) =>
+        Assert.True(SigningKeyFiles.IsValidKeyId(keyId));
+
+    [Theory]
+    [InlineData(null)]          // absent
+    [InlineData("")]            // empty
+    [InlineData("ab")]          // shorter than 3
+    [InlineData("Primary-2026")] // uppercase collides on case-insensitive filesystems
+    [InlineData("bad_id")]      // underscore is not part of the convention
+    [InlineData("-leading")]
+    [InlineData("trailing-")]
+    [InlineData("double--hyphen")]
+    [InlineData("../escape")]   // path traversal
+    [InlineData("with/slash")]
+    [InlineData("with space")]
+    [InlineData("primary-2026\n")] // trailing newline: .NET's `$` matches before it, `\z` must not
+    [InlineData("primary-2026\r\n")]
+    public void NonConformingKeyIdsAreRejected(string? keyId) =>
+        Assert.False(SigningKeyFiles.IsValidKeyId(keyId));
+
+    [Fact]
+    public void KeyIdLongerThanSixtyFourCharactersIsRejected() =>
+        Assert.False(SigningKeyFiles.IsValidKeyId(new string('a', 65)));
+
+    [Fact]
+    public void KeyIdOfExactlySixtyFourCharactersIsAccepted() =>
+        Assert.True(SigningKeyFiles.IsValidKeyId(new string('a', 64)));
+
+    [Fact]
+    public void KeyIdIsDerivedFromAConventionalPrivateKeyPath()
+    {
+        Assert.True(SigningKeyFiles.TryGetKeyIdFromPrivateKeyPath(
+            Path.Combine("keys", "primary-2026.private.pem"), out var keyId));
+        Assert.Equal("primary-2026", keyId);
+    }
+
+    [Theory]
+    [InlineData("keys/primary-2026.public.pem")]   // public half, not private
+    [InlineData("keys/primary-2026.pem")]          // missing the .private segment
+    [InlineData("keys/Primary-2026.private.pem")]  // key ID fails the convention
+    [InlineData("keys/.private.pem")]              // empty key ID
+    [InlineData("")]
+    public void UnconventionalPrivateKeyPathsYieldNoKeyId(string path)
+    {
+        Assert.False(SigningKeyFiles.TryGetKeyIdFromPrivateKeyPath(path, out var keyId));
+        Assert.Null(keyId);
+    }
+
+    [Fact]
+    public void GeneratedPathsAreExactlyWhatTheScannerDiscovers()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"key-files-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            File.WriteAllText(
+                SigningKeyFiles.PrivateKeyPath(directory, "round-trip-key"), key.ExportPkcs8PrivateKeyPem());
+            File.WriteAllText(
+                SigningKeyFiles.PublicKeyPath(directory, "round-trip-key"), key.ExportSubjectPublicKeyInfoPem());
+
+            var found = Assert.Single(KeyDirectoryScanner.Scan(directory));
+            Assert.Equal("round-trip-key", found.KeyId);
+            Assert.True(found.Valid);
+            Assert.NotNull(found.PrivatePem);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+}
+
 public sealed class KeyDirectoryScannerTests : IDisposable
 {
     private readonly string directory =
