@@ -146,9 +146,12 @@ public sealed partial class SigningKeyRingService(
     /// <summary>
     /// Scans the key directory, reconciles the result against "SigningKeys", and atomically swaps in
     /// a new snapshot. Any failure leaves the previously published snapshot in place - a bad reload
-    /// never drops the server to an empty or crashed key ring.
+    /// never drops the server to an empty or crashed key ring. Returns whether this call actually
+    /// published a fresh snapshot, so a caller that needs to know - unlike the periodic timer, which
+    /// just wants the retry on the next tick - can tell a real reload from one that silently kept the
+    /// old state.
     /// </summary>
-    public async Task ReloadAsync(CancellationToken cancellationToken = default)
+    public async Task<bool> ReloadAsync(CancellationToken cancellationToken = default)
     {
         await reloadGate.WaitAsync(cancellationToken);
         try
@@ -244,10 +247,12 @@ public sealed partial class SigningKeyRingService(
             }
 
             Interlocked.Exchange(ref snapshot, new KeyRingSnapshot(infos, defaultKeyId, pem));
+            return true;
         }
         catch (Exception ex)
         {
             LogReloadFailed(logger, ex);
+            return false;
         }
         finally
         {
@@ -311,10 +316,14 @@ public sealed partial class SigningKeyRingService(
     /// without adding one solely for this. An audit trail of a privileged endpoint should answer
     /// "who invoked this and when," not "did this particular invocation happen to change
     /// anything" - the latter reads as under-reporting to anyone auditing rescan activity later.
+    /// A reload that fails (bad key directory, I/O error) leaves the previous snapshot in place and
+    /// is not audited as a successful rescan; it throws instead, matching every other mutation here
+    /// that fails before writing an audit record.
     /// </summary>
     public async Task RescanAsync(string actor, CancellationToken cancellationToken = default)
     {
-        await ReloadAsync(cancellationToken);
+        if (!await ReloadAsync(cancellationToken))
+            throw new InvalidOperationException("Key directory rescan failed; check server logs for details.");
 
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
