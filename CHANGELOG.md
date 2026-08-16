@@ -98,6 +98,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trait at all — silently never ran in CI. Switched to excluding
   `Suite=Phase0Roadmap` (the intentional-red executable specification)
   instead, so everything meant to pass runs: 106 of 152 tests, all green.
+- `EcdsaKeyPairs.TryValidatePair`, `TryValidatePublicKey`, and
+  `PublicKeysMatch` never checked that imported key material was actually on
+  the NIST P-256 curve. A self-consistent key pair generated on another curve
+  (e.g. P-384) passed `TryValidatePair` cleanly, while `LicenseEnvelope.Sign`
+  still hardcoded the envelope's `algorithm` field to `ECDSA-P256-SHA256`
+  regardless of the curve actually used, producing a mislabeled artifact. All
+  three methods now reject any key not on P-256; the two `Try*` methods
+  return `false` with an explanatory error, and `PublicKeysMatch` throws
+  `CryptographicException`, consistent with its existing exception-based
+  contract for malformed input. Purely additive: every key in `keys/` and
+  every key `LicenseGenerator keygen` produces is already P-256. (#32)
+- That same P-256 curve check compared only the named-curve OID, so a PEM
+  encoding genuinely P-256 domain parameters explicitly instead of by name
+  (e.g. `openssl ecparam -param_enc explicit`) was wrongly rejected as an
+  "unrecognized curve" — the opposite of the check's intent. Falls back to
+  comparing the field prime, curve coefficients, generator point, and order
+  against P-256's published domain parameters when the curve has no named
+  OID. Also catches `PlatformNotSupportedException` in the two `Try*`
+  methods: platforms whose ECDsa backend cannot import explicit-curve PEMs
+  at all (confirmed on macOS) now fail validation cleanly instead of
+  crashing with an unhandled exception.
 - `SigningKeyFiles.IsValidKeyId` anchored its pattern with `$`, which .NET
   regex matches immediately before a trailing newline as well as at the true
   end of the string. A key ID such as `"primary-2026\n"` passed validation,
