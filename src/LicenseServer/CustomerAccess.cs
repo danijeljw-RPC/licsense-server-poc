@@ -136,7 +136,13 @@ internal sealed class CustomerAccessService(
 
     private static CustomerLicenseView Project(LicenseRecord record)
     {
-        var entitlement = record.Entitlements.Single();
+        // record.Entitlements.Single() would throw for an imported multi-product license: an
+        // import can legitimately create more than one Entitlement per LicenseRecord (see
+        // "License import" in the key-ring design spec). The customer self-service portal has no
+        // multi-product view yet, so summarize by the alphabetically-first product rather than
+        // crash; the license's full entitlement set is still visible to an operator in the admin
+        // portal, and preserved byte-for-byte in the stored artifact either way.
+        var entitlement = record.Entitlements.OrderBy(x => x.Product, StringComparer.Ordinal).First();
         var activation = record.Activations.SingleOrDefault(item => item.DeactivatedAt is null);
         return new CustomerLicenseView(
             record.LicenseId,

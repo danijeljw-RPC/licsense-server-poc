@@ -7,20 +7,225 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-16
+
 ### Added
+
 - Design specification for a multi-key **key-ring signing and rotation**
   architecture (`docs/superpowers/specs/2026-08-14-key-ring-signing-design.md`).
   It replaces the single configured signing key with hot-reloadable, directory-
   scanned keys, an authoritative Postgres-backed default, distinct
   rotate/retire/revoke operations, and a supported path for importing licenses
-  produced offline by `LicenseGenerator`. **Design only — no implementation
-  yet**; `LicenseValidator`'s embedded trust model is explicitly out of scope
-  and unchanged.
+  produced offline by `LicenseGenerator`. Implemented since as a reduced core
+  slice; the license-import feature now has both a working API and an admin
+  UI page (see below).
+  `LicenseValidator`'s embedded trust model is explicitly out of scope and
+  unchanged.
+- `Licensing.Core.LicenseEnvelope` — the single envelope-construction and
+  signing implementation, now called by both `LicenseServer`'s online signing
+  path and the offline `LicenseGenerator` CLI, so canonicalization and
+  signature rules cannot drift between them.
+- `Licensing.Core.SigningKeyFiles` — the `<keyId>.private.pem` /
+  `<keyId>.public.pem` naming convention and key-ID rules in one place, shared
+  by the server's key directory scanner and the CLI.
+- `LicenseGenerator keygen --id <keyId> --output <dir>`, writing exactly the
+  filenames the server's key directory scanner discovers. Generated private
+  keys are mode `600` on POSIX platforms, requested at file-creation time;
+  Windows has no POSIX mode and the command says so.
+- `LicenseGenerator sign --public-key <path>`, overriding the public key the
+  private-key/key-ID pair check runs against.
+- `LicenseGenerator sign` now hard-fails before signing if the resolved key ID
+  is present in `TrustedPublicKeys.ByKeyId` and the on-disk public key doesn't
+  match the compiled entry. This restores the guarantee moving the pair check
+  off `TrustedPublicKeys` gave up: a locally regenerated pair reusing an
+  existing key ID (e.g. `keygen --id primary-2026 --force`) is rejected before
+  anything is signed, instead of quietly producing licences every released
+  validator rejects. A key ID absent from `TrustedPublicKeys` — the normal
+  key-ring case — still signs exactly as before, with no warning; the map is
+  consulted only as a negative check, never as an allowlist for which key IDs
+  may sign.
+- Recorded decisions for the four open license-import design questions —
+  catalog handling for unknown products, the email source for metadata-free
+  imports, activation credentials on pre-activated imports, and verbatim
+  artifact storage — and then implemented all four (see below).
+- `POST /api/v1/admin/licenses/import` (permission `licenses.import`,
+  multipart, 256 KB limit): verifies an offline `LicenseGenerator`-signed
+  artifact against the live signing-key ring, then stores it byte-for-byte in
+  new `bytea` columns (`LicenseRecord.ImportedSignedEnvelope` /
+  `ImportedSignedEnvelopeSha256`) alongside a relational `Entitlement` index
+  built from it — the stored bytes remain the source of truth, never
+  regenerated or resigned. `contactEmail` is a required form field and the
+  source of truth for the resolved customer, validated to match the
+  artifact's own `metadata.contactEmail` when present rather than silently
+  preferring either one. A product absent from the catalog is auto-created
+  with `IsActive = false`, so an import can never silently add a sellable
+  catalog entry. A pre-activated import gets an `Activation` row with a
+  random, discarded-preimage token, so device-facing refresh and
+  deactivation both fail closed by construction; admin-side license revoke
+  is the supported lifecycle action for it. Writes a `license.imported`
+  audit record, plus one `product.auto-created` record per auto-created
+  product. New migration `LicenseImport` also replaces
+  `Entitlement`'s one-per-license unique index with a composite
+  `(LicenseRecordId, Product)` index, since an imported multi-product
+  license legitimately has more than one `Entitlement` row per
+  `LicenseRecord`; the admin license-terms edit panels and the customer
+  portal's license view are guarded against that case rather than crashing
+  on the entitlement list's now-possible multiple rows. Term amendments are
+  also blocked for every imported license, including the common
+  single-product case that has exactly one entitlement: the signed
+  artifact, not this relational index, remains the source of truth, and
+  amending here would silently diverge from it.
+- Admin UI page for license import, `/licenses/import` (gated on
+  `Permissions.LicensesImport`, linked next to "Offline issuance" in the nav
+  and on the Licenses list): a Blazor `InputFile` form with a required
+  contact-email field, calling `LicenseImportService.ImportAsync` directly —
+  the same service the HTTP endpoint uses, so there is exactly one import
+  implementation. `IBrowserFile.OpenReadStream` is capped at the same
+  256 KB the backend already enforces; no Blazor Server SignalR limit change
+  was needed since `InputFile` streams file bytes in chunks that respect the
+  default limit regardless of the file's own size. Shows the resulting
+  license ID, its products, and any auto-created products still needing
+  catalog review (linked to the filtered product list), or the specific
+  validation error otherwise. `LicenseRecord.Provenance` is now also surfaced
+  in the admin license list (an "Imported" badge) and detail view (a
+  Provenance/Imported-at field), so operators can tell an imported license
+  apart from a server-issued one at a glance. (#35)
+- `POST /api/v1/admin/signing-keys/rescan` (and the Blazor "Rescan key
+  directory" button, which now goes through the same `RescanAsync` method)
+  write an `AuditRecord` (`signingKey.rescan`), matching `set-default` and
+  `revoke`. Written unconditionally, on every invocation, not only when the
+  rescan changes the published key-ring snapshot.
+- CI now runs on pull requests and pushes to `dev`, not only `main`.
+- A `test-bash-license-flow` CI job runs `scripts/test-license-flow.sh` on
+  `ubuntu-latest`, covering the bash port of the license-flow scripts that
+  CI previously never exercised.
+- Bash equivalents of the PowerShell scripts in `scripts/`
+  (`new-demo-licenses.sh`, `new-offline-activation-request.sh`,
+  `test-database-and-auth.sh`, `test-activation-flow.sh`,
+  `test-license-flow.sh`) for running the demo-licensing, offline-activation,
+  and integration-test flows from macOS/Linux shells.
 
 ### Changed
+
+- `LicenseGenerator sign` checks the selected private key against the
+  `<keyId>.public.pem` PEM pair on disk instead of the hardcoded
+  `TrustedPublicKeys` map. A signing key created the key-ring way — dropping
+  two PEM files into the key directory — can now be used by the offline
+  generator immediately, with no `TrustedPublicKeys.cs` edit or CLI rebuild.
+  The public half is located by key ID rather than by rewriting the private
+  key's filename, so the check still catches a private-key/key-ID mismatch.
+  One consequence: signing a private key stored outside the
+  `<keyId>.private.pem` convention, with no public half beside it, now requires
+  the new `--public-key`. A second consequence — the check no longer proving
+  the key ID is one shipped products trust — is addressed below.
+- `LicenseGenerator sign --key-id` is optional, derived from a
+  `<keyId>.private.pem` filename and still overridable.
+- The key-ring contracts (`ILicenseKeyRing`, `ILicenseSigner`,
+  `ILicenseVerifier`, `SigningKeyInfo`, `SigningKeyStatus`,
+  `LicenseSigningResult`) moved from `LicenseServer` into `Licensing.Core` as
+  pure contracts, making them reachable from `LicenseGenerator`.
+  `Licensing.Core` still has no ASP.NET Core or EF Core dependency.
+- The key-ring design spec now records the absence of a `FileSystemWatcher` as
+  a settled rejected alternative with its reasoning, rather than leaving the
+  shipped periodic-reload behavior contradicting the written design.
 - Repository-local `.claude/settings.json` now ships a minimal, schema-valid
   permission set (`dotnet build`/`test`/`restore`, read-only `git` commands)
   in place of an earlier overly broad, non-schema-valid draft.
+
+### Fixed
+
+- README's production-hardening guidance referenced `LicenseEnvelopeSigner`,
+  a class deleted when the signing key ring landed. It now names the current
+  signing component (`SigningKeyRingService` behind `ILicenseSigner`).
+- CI's "Database and authentication" test leg filtered on `Suite=Baseline`, an
+  allowlist matching only 4 of 152 tests. Every other suite — including the
+  entire signing-key-ring test suite and several test classes with no `Suite`
+  trait at all — silently never ran in CI. Switched to excluding
+  `Suite=Phase0Roadmap` (the intentional-red executable specification)
+  instead, so everything meant to pass runs: 106 of 152 tests, all green.
+- The `/licenses/import` page injected `LicenseImportService` (and its
+  `ApplicationDbContext`) directly, so using "Import another" repeatedly
+  reused the same circuit-scoped `DbContext` for as long as the tab stayed
+  open: every import's tracked entity graph accumulated, and a failed save
+  could leave stranded tracked entities colliding with later imports in the
+  same tab. Each submission now resolves `LicenseImportService` from a
+  fresh `IServiceScopeFactory` scope, disposed right after — the same
+  scope-per-operation pattern `SigningKeyRingService` already uses.
+- `POST /api/v1/admin/licenses/import`'s pre-parse size guard rejected some
+  legitimately-sized files: it bounded `request.ContentLength` (the whole
+  multipart body, including boundaries, per-part headers, and the
+  `contactEmail` field) against the 256 KB artifact limit itself, so a file
+  right at that limit could be rejected before the accurate post-parse
+  `file.Length` check ever ran. The pre-check now allows headroom for
+  multipart framing overhead; the artifact limit is still enforced exactly
+  against `file.Length`.
+- `EcdsaKeyPairs.TryValidatePair`, `TryValidatePublicKey`, and
+  `PublicKeysMatch` never checked that imported key material was actually on
+  the NIST P-256 curve. A self-consistent key pair generated on another curve
+  (e.g. P-384) passed `TryValidatePair` cleanly, while `LicenseEnvelope.Sign`
+  still hardcoded the envelope's `algorithm` field to `ECDSA-P256-SHA256`
+  regardless of the curve actually used, producing a mislabeled artifact. All
+  three methods now reject any key not on P-256; the two `Try*` methods
+  return `false` with an explanatory error, and `PublicKeysMatch` throws
+  `CryptographicException`, consistent with its existing exception-based
+  contract for malformed input. Purely additive: every key in `keys/` and
+  every key `LicenseGenerator keygen` produces is already P-256. (#32)
+- That same P-256 curve check compared only the named-curve OID, so a PEM
+  encoding genuinely P-256 domain parameters explicitly instead of by name
+  (e.g. `openssl ecparam -param_enc explicit`) was wrongly rejected as an
+  "unrecognized curve" — the opposite of the check's intent. Falls back to
+  comparing the field prime, curve coefficients, generator point, and order
+  against P-256's published domain parameters when the curve has no named
+  OID. Also catches `PlatformNotSupportedException` in the two `Try*`
+  methods: platforms whose ECDsa backend cannot import explicit-curve PEMs
+  at all (confirmed on macOS) now fail validation cleanly instead of
+  crashing with an unhandled exception.
+- `SigningKeyFiles.IsValidKeyId` anchored its pattern with `$`, which .NET
+  regex matches immediately before a trailing newline as well as at the true
+  end of the string. A key ID such as `"primary-2026\n"` passed validation,
+  which would have let `keygen --id` write a PEM filename containing a
+  newline. Anchored with `\z` instead, which admits no exception.
+- `POST /api/v1/admin/signing-keys/rescan` wrote a `Result = "success"` audit
+  record even when the underlying reload failed and silently kept the old
+  key-ring snapshot (`ReloadAsync` catches and logs reload failures rather
+  than throwing). `ReloadAsync` now reports whether it actually published a
+  new snapshot; a failed rescan throws instead of writing a misleading
+  success record, matching how every other signing-key mutation here already
+  fails before auditing.
+- Upgrading an existing database straight into the key-ring feature never
+  elected a default signing key. The pre-key-ring `DatabaseInitializer` had
+  already unconditionally seeded a `primary-2026` `SigningKeys` row on every
+  startup, so by the time `SigningKeyRingService.ReloadAsync`'s bootstrap-seed
+  check ran against an upgraded database, `SigningKeys` was no longer empty
+  and the check never fired — every activation/refresh signing request then
+  failed with `no_default_key` until an administrator picked a default by
+  hand. New migration `SeedDefaultSigningKeyForUpgrade` backfills
+  `IsDefault = true` onto that lone pre-existing row. A brand-new install has
+  zero `SigningKeys` rows at migration time and is unaffected, still relying
+  on the runtime bootstrap seed; a database with more than one pre-existing
+  row never went through the old single-key initializer, so it is left for an
+  administrator to pick a default explicitly rather than guessed at here.
+- `appsettings.Container.json` set `RequireMfaForHighRiskPermissions: false`,
+  and the published container image bakes in `ASPNETCORE_ENVIRONMENT=Container`
+  by default, so a production deployment run as shipped — with no explicit
+  override — silently disabled the MFA requirement for `users.manage`,
+  `apiKeys.manageAll`, `licenses.revoke`, and `signingKeys.manage`. Reverted to
+  `true`. The local-only reason it had been flipped (the seeded Compose admin
+  has no MFA enrolled, which hid the Users page's "Add identity" panel) is now
+  an explicit `Security__RequireMfaForHighRiskPermissions=false` override in
+  `compose.yaml` instead of the shared container default.
+- `/activate` and `/refresh` (and their Blazor admin equivalents on the
+  license-details and offline-issuance pages) committed the activation or
+  lease refresh before attempting to sign the returned license artifact. When
+  the key ring had no usable signing key at that moment — no default
+  configured, or the selected/default key had just been retired or revoked —
+  the caller received a failure with no artifact, and activation's own
+  request-ID idempotency check then reported the license as already active on
+  any retry with a fresh request ID, leaving it permanently stuck. `ILicenseSigner`
+  gained `CanSign(requestedKeyId)`, a cheap pre-flight version of `Sign`'s
+  key-resolution logic with no private-key import or signature; `LicenseStore
+  .ActivateAsync`/`RefreshAsync` now call it before mutating any state and
+  return `503` instead of committing when no key can currently sign.
 
 ## [0.1.0] - 2026-08-14
 
@@ -31,6 +236,7 @@ over the project's first development cycle.
 ### Added
 
 **Signing and validation toolchain**
+
 - `Licensing.Core`: shared license contract, canonical JSON, and schema
   validation used by every signer and verifier so their interpretation of a
   license cannot drift independently.
@@ -44,6 +250,7 @@ over the project's first development cycle.
   (`available → active → deactivated → active`, with `revoked` as terminal).
 
 **LicenseServer core lifecycle**
+
 - Server-generated, immutable `LIC-{yyyy}-{MMdd}{value:X6}` license IDs,
   allocated atomically through a PostgreSQL counter upsert with per-day
   rollover protection.
@@ -60,6 +267,7 @@ over the project's first development cycle.
   product entry, with archival that preserves historical references.
 
 **Administration, identity, and access**
+
 - Permission-based RBAC with seven built-in roles (System Administrator,
   License Manager, License Issuer, Support Agent, Product Administrator,
   Auditor, Billing Automation) enforced at the action level on both UI and API.
@@ -74,6 +282,7 @@ over the project's first development cycle.
   atomic rotation/revocation.
 
 **API surface**
+
 - Versioned `/api/v1/admin` REST API mirroring UI authorization policies, with
   bounded DTOs, ETag/`If-Match` concurrency on terms updates,
   `Idempotency-Key` support on issuance, `X-Correlation-ID` on every response,
@@ -81,6 +290,7 @@ over the project's first development cycle.
 - Public device APIs for activation, validation, refresh, and deactivation.
 
 **Notifications and customer access**
+
 - Durable transactional email outbox (MailerSend-backed) covering purchase,
   renewal, payment failure, invoice, operator invitation, Identity, and
   magic-link templates, with `FOR UPDATE SKIP LOCKED` batch claiming, bounded
@@ -90,6 +300,7 @@ over the project's first development cycle.
   redacted license/device projections.
 
 **Billing**
+
 - Verified, idempotent Stripe webhook ingestion (raw-body signature check
   before any parsing or side effects) with a `WebhookInbox` and
   `FOR UPDATE SKIP LOCKED` billing worker.
@@ -101,6 +312,7 @@ over the project's first development cycle.
   `/api/v1/admin/billing/events`.
 
 **Operations and delivery**
+
 - Append-only audit trail for every sensitive mutation, with actor, action,
   target, and correlation context.
 - Hardened Docker Compose deployment: non-root app user, read-only root
@@ -113,6 +325,7 @@ over the project's first development cycle.
   traceability matrix (`docs/roadmap-traceability.md`).
 
 ### Fixed
+
 - Gated Stripe purchase fulfillment on `payment_status` and handled the
   `async_payment_succeeded` follow-up event for delayed payment methods.
 - Ignored `invoice.payment_failed` once an invoice is already recorded paid,
@@ -134,6 +347,7 @@ over the project's first development cycle.
 - Aligned the container SDK image with the `global.json` pin.
 
 ### Security
+
 - Activation codes and bearer tokens are never stored in plaintext — only
   SHA-256 or versioned HMAC-SHA-256 digests.
 - Stripe and MailerSend webhooks are verified against the raw request body
@@ -142,5 +356,6 @@ over the project's first development cycle.
   public-key trust map.
 - Removed the legacy `local-poc-admin-key` header-based admin bypass.
 
-[Unreleased]: https://github.com/danijeljw-RPC/licsense-server-poc/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/danijeljw-RPC/licsense-server-poc/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/danijeljw-RPC/licsense-server-poc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/danijeljw-RPC/licsense-server-poc/releases/tag/v0.1.0

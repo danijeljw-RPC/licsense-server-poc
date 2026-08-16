@@ -19,7 +19,7 @@
                 <article class="card">
                     <h2>@license.LicenseId</h2>
                     <dl>
-                        <dt>Status</dt><dd>@license.Status</dd>
+                        <dt>Status</dt><dd><span class="status @license.Status">@license.Status</span></dd>
                         <dt>Product</dt><dd>@license.Product</dd>
                         <dt>Edition</dt><dd>@license.Edition</dd>
                         <dt>Seats</dt><dd>@license.Seats</dd>
@@ -33,7 +33,7 @@
     }
     <form method="post" action="/customer/logout">
         <AntiforgeryToken />
-        <button type="submit">Sign out</button>
+        <button class="button secondary" type="submit">Sign out</button>
     </form>
 </main>
 

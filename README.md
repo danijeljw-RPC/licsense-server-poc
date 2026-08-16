@@ -44,8 +44,8 @@ $env:DEFAULT_ADMIN_EMAIL = 'admin@localhost.com'
 $env:DEFAULT_ADMIN_PASSWORD = 'LocalAdmin!7Kp9-Vx3-Rm8-Qz2'
 $env:SEED_DEMO_LICENSE = 'true'
 $env:Licensing__IdTimeZone = 'Australia/Adelaide'
-$env:Licensing__PrivateKeyPath = (Resolve-Path './keys/license-primary-2026-private.pem')
-$env:Licensing__PublicKeyPath = (Resolve-Path './keys/license-primary-2026-public.pem')
+$env:Licensing__KeyDirectory = (Resolve-Path './keys')
+$env:Licensing__DefaultSigningKey = 'primary-2026'
 
 dotnet run --project src/LicenseServer/LicenseServer.csproj --urls http://localhost:5080
 ```
@@ -64,12 +64,13 @@ Seeding happens only when `SEED_DEFAULT_ADMIN=true` and no matching email exists
 
 ### Docker Compose
 
-The app image is multi-stage and runs as the .NET image's non-root user. PostgreSQL runs as `postgres`; its port is not published. The app root filesystem is read-only, capabilities are dropped, `no-new-privileges` is set, only port 8080 is published, and explicit volumes hold PostgreSQL and Data Protection keys. The development PEM signing key is mounted read-only and is excluded from image layers.
+The app image is multi-stage and runs as the .NET image's non-root user. PostgreSQL runs as `postgres`; its port is not published. The app root filesystem is read-only, capabilities are dropped, `no-new-privileges` is set, only port 8080 is published, and explicit volumes hold PostgreSQL and Data Protection keys. The signing key directory is mounted read-only and contains zero key material in the built image — see [Signing-key ring](#signing-key-ring) below.
 
 ```powershell
 Copy-Item .env.example .env
 # Edit .env: replace POSTGRES_PASSWORD and DEFAULT_ADMIN_PASSWORD.
-# LICENSE_SIGNING_KEY_PATH must resolve to the existing development private PEM.
+# LICENSE_SIGNING_KEY_DIR must resolve to a directory containing "<keyId>.private.pem" /
+# "<keyId>.public.pem" pairs (the repo's keys/ directory works for local development).
 
 docker compose config
 docker compose build
@@ -310,7 +311,7 @@ docker compose down
 
 ### Security boundaries and production work
 
-The development private key is intentionally mounted as a file for this PoC. Production must replace `LicenseEnvelopeSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database, MailerSend, Stripe, webhook, and TLS secrets in a secret manager, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, add monitoring, and back up PostgreSQL, Data Protection keys, and signing-key metadata as one recovery set.
+The development private keys are intentionally mounted as files for this PoC. Production must replace the file-backed `SigningKeyRingService` behind `ILicenseSigner` with a KMS/HSM or isolated signing service so the public web process never loads exportable private-key bytes. Store database, MailerSend, Stripe, webhook, and TLS secrets in a secret manager, terminate HTTPS at a hardened reverse proxy, restrict forwarded-header trust, enable secure cookies unconditionally, add monitoring, and back up PostgreSQL, Data Protection keys, and signing-key metadata as one recovery set.
 
 Signed license JSON provides authenticity, not confidentiality. Do not put secrets or unnecessary personal information in it. Device IDs remain spoofable software identifiers rather than hardware proof. Offline files cannot receive immediate revocation, and system-clock rollback remains a concern unless the client periodically obtains trusted server time. Passkey credentials in PostgreSQL are public keys and counters; private credentials remain in the user's authenticator.
 
@@ -396,6 +397,7 @@ The seeded PoC license receives a generated `LIC-YYYY-MMDDXXXXXX` ID; find it on
 | `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires `licenses.revoke`, MFA in production, and an antiforgery token for cookie requests. |
 | `GET /api/v1/admin/products` | Search the readable product catalog; requires `products.read`. |
 | `POST/PATCH /api/v1/admin/products` | Add, edit, activate, or archive products; requires `products.manage`. |
+| `POST /api/v1/admin/licenses/import` | Import an offline-signed `.license` artifact (multipart, 256 KB limit); requires `licenses.import`. See [License import](#license-import). |
 
 The service uses PostgreSQL transactions, database uniqueness constraints, ASP.NET Core Identity, and immutable audit records. The web process loads a mounted development PEM only for this PoC; move signing behind a KMS/HSM boundary before production.
 
@@ -414,6 +416,17 @@ POST /api/v1/licenses/<generated-demo-id>/activate
 ```
 
 The response contains `signedLicense` as a JSON string; save that string unchanged as a `.license` file and carry it back to the target. Keeping the signed document opaque avoids date/string normalization by intermediary JSON tooling. Signature, product, expiry, and device checks then work with no server connection. Keep the request credentials in OS-protected storage because they are needed to submit a future deactivation. In production, an offline deactivation command should disable local state and create a signed/request-authenticated receipt for the operator to import before transfer. It still cannot force deletion of copied offline files.
+
+### License import
+
+`POST /api/v1/admin/licenses/import` brings a `LicenseGenerator`-signed artifact — one built entirely outside the online issuance flow — into this server's admin tracking, for cases such as migrating a customer's pre-existing offline license into central visibility. It requires `licenses.import` and a `multipart/form-data` body:
+
+- `file` — the signed `.license` JSON, unmodified, up to 256 KB.
+- `contactEmail` — required. The operator-supplied source of truth for the resolved customer; if the artifact also carries `metadata.contactEmail`, it must normalize-equal this value or the import is rejected. See ["Resolved design questions"](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md#resolved-design-questions) for why the field isn't optional and doesn't silently prefer either source.
+
+The pipeline verifies the artifact against this server's own live key ring (the same verifier the online paths use), then stores it byte-for-byte in `bytea` columns (`ImportedSignedEnvelope`/`ImportedSignedEnvelopeSha256`) alongside a relational `LicenseRecord`/`Entitlement` index built from it — the stored bytes remain the source of truth, not the index. A product the catalog doesn't recognize is auto-created as `IsActive = false`, so an import can never silently add a sellable catalog entry. A pre-activated import (the artifact carries `deviceBinding`/`activation`) gets an `Activation` row with a random, discarded-preimage token, so device-facing refresh and deactivation both fail closed; admin-side license revoke is the supported lifecycle action for it. Every import writes a `license.imported` audit record, and every auto-created product writes its own `product.auto-created` record.
+
+There is currently no admin UI page for this endpoint — only the API. A UI page adjacent to the Offline issuance page above is tracked as a follow-up.
 
 ## Licence design
 
@@ -627,33 +640,58 @@ It performs the complete flow:
 
 The larger `Test-LicenseFlow.ps1` also proves that a private key/key ID mismatch is rejected, caller-supplied public keys are rejected, unknown key IDs fail, and tampered signed data fails.
 
+## Signing-key ring (LicenseServer)
+
+`LicenseServer` signs licences using a live key ring, not a single hardcoded key. `SigningKeyRingService` scans the directory named by `Licensing:KeyDirectory` (`Licensing__KeyDirectory` in Compose) for `<keyId>.private.pem` / `<keyId>.public.pem` pairs every `Licensing:KeyRingReloadIntervalSeconds` (default 30s), and also whenever an admin action requests an immediate rescan. The `SigningKeys` Postgres table is the durable record of every key the server has ever seen and the sole authority for revocation:
+
+- A complete, cryptographically valid pair (private + public) is **Active**: it can sign and verify.
+- A public-only file (its private key removed, or never present) is **VerificationOnly**: it can still verify historical licences but never signs new ones. This is how you **retire** a key — delete only `<keyId>.private.pem` from the mounted directory and rescan. The public key and its `SigningKeys` row are untouched, so already-issued licences keep validating.
+- **Revoking** a key (`/settings/signing-keys` in the admin UI, System Administrator only) is a separate, destructive, audited action: it fails verification for every licence that key ever signed, inside this server only — it has no effect on `LicenseValidator`/`TrustedPublicKeys.cs` embedded in already-shipped products (see below).
+- Exactly one key is the **default** signing key at a time (`SigningKeys.IsDefault`, enforced by a partial unique index). `Licensing:DefaultSigningKey` is only a bootstrap seed, applied once if the database has no default yet — rotate the live default through the admin UI's "Set as default" action, not by editing configuration, since Compose environment variables don't reload without a container restart.
+- Issuance forms (`/offline`, and `/licenses/{id}` activate/refresh) let an authorized operator override the signing key per request; anonymous device-facing endpoints (`/api/v1/licenses/{id}/activate`, `/api/v1/activations/{id}/refresh`) always sign with the default and accept no key parameter.
+
+This is a deliberately reduced slice of a fuller key-ring design — see [`docs/superpowers/specs/2026-08-14-key-ring-signing-design.md`](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md) for the complete design. Two earlier gaps are now closed: `LicenseGenerator` shares the server's signing implementation via `Licensing.Core.LicenseEnvelope`, and the periodic reload is a settled decision rather than a deferral — see [Explicitly rejected alternatives](docs/superpowers/specs/2026-08-14-key-ring-signing-design.md#explicitly-rejected-alternatives) for why there is no `FileSystemWatcher`. [License import](#license-import) now has a working API; only its admin UI page remains deferred.
+
 ## Keys and trust
 
-The validator initially trusts:
+`LicenseValidator` — the component embedded in shipped products, described in [How an application chooses the correct public key](#how-an-application-chooses-the-correct-public-key) above — is unrelated to `LicenseServer`'s live key ring and unaffected by it. It initially trusts:
 
 | Key ID | Intended use | Public-key file |
 | --- | --- | --- |
-| `primary-2026` | Normal production issuance | `keys/license-primary-2026-public.pem` |
-| `secondary-2026` | Backup/manual issuance | `keys/license-secondary-2026-public.pem` |
+| `primary-2026` | Normal production issuance | `keys/primary-2026.public.pem` |
+| `secondary-2026` | Backup/manual issuance | `keys/secondary-2026.public.pem` |
 
 Both complete public PEM values are already compiled into `TrustedPublicKeys.cs`. The PEM files in `keys/` are convenient development copies; validation uses the source-code values, not those files.
 
-Generate a pair with unused output paths:
+Generate a pair by key ID, which writes the exact filenames `LicenseServer`'s key directory scanner discovers:
 
 ```powershell
 dotnet run `
     --project src/LicenseGenerator `
     -- `
     keygen `
-    --private-key keys/license-primary-2028-private.pem `
-    --public-key keys/license-primary-2028-public.pem
+    --id primary-2028 `
+    --output keys
 ```
 
-Key generation refuses to overwrite existing files by default. `--force` exists for deliberate replacement of an unused development key, but replacing a key already used for issuance will invalidate its licences.
+That produces `keys/primary-2028.private.pem` and `keys/primary-2028.public.pem`. The explicit form is still available when you need paths that don't follow the convention:
+
+```powershell
+dotnet run `
+    --project src/LicenseGenerator `
+    -- `
+    keygen `
+    --private-key keys/primary-2028.private.pem `
+    --public-key keys/primary-2028.public.pem
+```
+
+Key generation refuses to overwrite existing files by default. `--force` exists for deliberate replacement of an unused development key, but replacing a key already used for issuance will invalidate its licences. On Linux and macOS the private key file is written mode `600`; Windows has no POSIX mode, so restrict it with NTFS ACLs yourself.
 
 Add only the public PEM to [`src/Licensing.Core/TrustedPublicKeys.cs`](src/Licensing.Core/TrustedPublicKeys.cs), mapped to its exact key ID. Release applications containing the new public key before issuing with it. Keep older public keys while their licences must validate. Never distribute private keys or accept a public key supplied beside the licence.
 
-The generator also uses this trust map to verify that the selected private key matches `--key-id`. This prevents an operator from issuing an unusable licence with the correct ID but the wrong private key.
+Before signing, the generator confirms that the selected private key really is the one `--key-id` names, by cryptographically pairing it against `<key-id>.public.pem` beside it (override with `--public-key`). This catches the common mistake of issuing a licence with the correct key ID but the wrong private key. It checks the PEM pair on disk rather than the compiled trust map above, so a key that exists only by having been dropped into the server's key directory can be signed with immediately, with no `TrustedPublicKeys.cs` edit or CLI rebuild.
+
+The generator also checks the resolved public key against `TrustedPublicKeys.ByKeyId`, but only as a negative check, never as an allowlist: a key ID absent from that map (the normal key-ring case) signs exactly as described above, with no warning. If the key ID *is* present there and the public key about to sign with doesn't match the compiled entry, signing fails before anything is written. That is what catches a locally regenerated pair reusing an existing key ID — `keygen --id primary-2026 --force` followed by signing with the new pair now fails loudly, instead of quietly producing licences every released validator rejects. The same check catches `--public-key` pointed at some other key's counterpart under a trusted `--key-id`, since it compares the resolved key's bytes, not the path used to find them. `--force` over a key ID already used for issuance still invalidates that key ID's licences going forward — this check only prevents *signing* with a mismatched pair, it doesn't undo a bad `--force`.
 
 Production private keys should be held in a managed KMS/HSM or isolated signing service. Replace the current signer so it asks that service to sign and never loads PEM private keys into a public web process.
 
@@ -668,9 +706,11 @@ dotnet run `
     sign `
     --input input/license-data.json `
     --output licenses/customer.license `
-    --private-key keys/license-primary-2026-private.pem `
+    --private-key keys/primary-2026.private.pem `
     --key-id primary-2026
 ```
+
+`--key-id` is optional when the private key follows the `<key-id>.private.pem` convention, as it does here — it is derived from the filename and remains overridable for keys stored under other names.
 
 The generator rejects incomplete or ambiguous data rather than signing it. Required strings cannot be blank; seats must be positive integers; products cannot be duplicated case-insensitively; instants require a timezone; update dates must be exact `yyyy-MM-dd` values; and custom fields must follow the metadata rules above.
 

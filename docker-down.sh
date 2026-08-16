@@ -29,8 +29,8 @@ fi
 if [ ! -f .env ]; then
     : "${POSTGRES_PASSWORD:=down-only-not-used}"
     : "${DEFAULT_ADMIN_PASSWORD:=DownOnly-Not-Used-9xQ}"
-    : "${LICENSE_SIGNING_KEY_PATH:=./keys/license-primary-2026-private.pem}"
-    export POSTGRES_PASSWORD DEFAULT_ADMIN_PASSWORD LICENSE_SIGNING_KEY_PATH
+    : "${LICENSE_SIGNING_KEY_DIR:=./keys}"
+    export POSTGRES_PASSWORD DEFAULT_ADMIN_PASSWORD LICENSE_SIGNING_KEY_DIR
 fi
 
 if [ "${REMOVE_VOLUMES:-false}" = true ]; then

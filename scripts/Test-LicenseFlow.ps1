@@ -7,8 +7,8 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $generatorProject = Join-Path $repositoryRoot 'src\LicenseGenerator\LicenseGenerator.csproj'
 $validatorProject = Join-Path $repositoryRoot 'src\LicenseValidator\LicenseValidator.csproj'
-$primaryPrivateKey = Join-Path $repositoryRoot 'keys\license-primary-2026-private.pem'
-$secondaryPrivateKey = Join-Path $repositoryRoot 'keys\license-secondary-2026-private.pem'
+$primaryPrivateKey = Join-Path $repositoryRoot 'keys\primary-2026.private.pem'
+$secondaryPrivateKey = Join-Path $repositoryRoot 'keys\secondary-2026.private.pem'
 $workDirectory = Join-Path ([IO.Path]::GetTempPath()) ("software-license-test-" + [Guid]::NewGuid())
 
 function Invoke-LicenseTool {
@@ -250,7 +250,98 @@ try {
         '--private-key', $secondaryPrivateKey,
         '--key-id', 'primary-2026'
     )
-    Assert-Contains 'signer rejects private key and key ID mismatch' $mismatchedKeyResult 'does not match trusted key ID'
+    Assert-Contains 'signer rejects private key and key ID mismatch' $mismatchedKeyResult 'does not match the public key for key ID'
+
+    # A locally regenerated key pair that reuses a key ID shipped products already trust
+    # (TrustedPublicKeys.ByKeyId) is internally self-consistent - the pair check above cannot see
+    # anything wrong with it - but every released validator embeds the *original* primary-2026
+    # public key and will reject licences signed with the new one. This is the guarantee #24 gave
+    # up by moving the pair check off TrustedPublicKeys; the asymmetric check restores it without
+    # reintroducing #24 (an unknown key ID like dropped-2027, below, still signs freely).
+    $regeneratedKeyDirectory = Join-Path $workDirectory 'regenerated-keys'
+    Invoke-LicenseTool -Project $generatorProject -ToolArguments @(
+        'keygen',
+        '--id', 'primary-2026',
+        '--output', $regeneratedKeyDirectory
+    ) | Out-Null
+    $regeneratedPrimaryResult = Invoke-LicenseTool -Project $generatorProject -ExpectedExitCode 1 -ToolArguments @(
+        'sign',
+        '--input', $inputPath,
+        '--output', (Join-Path $workDirectory 'regenerated-primary.license'),
+        '--private-key', (Join-Path $regeneratedKeyDirectory 'primary-2026.private.pem')
+    )
+    Assert-Contains 'a regenerated primary-2026 pair is rejected' $regeneratedPrimaryResult `
+        'already trusted by shipped products under a different public key'
+
+    # A key that exists only as a dropped-in PEM pair - never added to TrustedPublicKeys.cs - must be
+    # usable by the offline signer, since that is the whole point of the key-ring workflow.
+    $droppedKeyDirectory = Join-Path $workDirectory 'dropped-keys'
+    $keygenResult = Invoke-LicenseTool -Project $generatorProject -ToolArguments @(
+        'keygen',
+        '--id', 'dropped-2027',
+        '--output', $droppedKeyDirectory
+    )
+    Assert-Contains 'keygen --id reports the convention private key path' $keygenResult 'dropped-2027.private.pem'
+
+    $droppedPrivateKey = Join-Path $droppedKeyDirectory 'dropped-2027.private.pem'
+    $droppedPublicKey = Join-Path $droppedKeyDirectory 'dropped-2027.public.pem'
+    if (-not (Test-Path -LiteralPath $droppedPrivateKey)) { throw 'keygen --id did not create <keyId>.private.pem' }
+    if (-not (Test-Path -LiteralPath $droppedPublicKey)) { throw 'keygen --id did not create <keyId>.public.pem' }
+    Write-Host 'PASS  keygen --id writes both halves under the convention names'
+
+    if (-not $IsWindows) {
+        # GNU stat first, then BSD/macOS. Order matters: BSD 'stat -f' means --file-system on GNU and
+        # succeeds while printing something that is not a mode at all, so probing it first would
+        # silently skip the real check.
+        $droppedKeyMode = (& stat @('-c', '%a', $droppedPrivateKey) 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $droppedKeyMode) {
+            $droppedKeyMode = (& stat @('-f', '%OLp', $droppedPrivateKey) 2>$null | Out-String).Trim()
+        }
+        if ($droppedKeyMode -notmatch '^[0-7]+$') {
+            throw "Could not read the file mode of the generated private key (got '$droppedKeyMode')."
+        }
+        Assert-Equal 'keygen restricts the private key to mode 600' $droppedKeyMode '600'
+    }
+
+    $keygenOverwriteResult = Invoke-LicenseTool -Project $generatorProject -ExpectedExitCode 1 -ToolArguments @(
+        'keygen',
+        '--id', 'dropped-2027',
+        '--output', $droppedKeyDirectory
+    )
+    Assert-Contains 'keygen --id still refuses to overwrite' $keygenOverwriteResult 'already exists'
+
+    $keygenBadIdResult = Invoke-LicenseTool -Project $generatorProject -ExpectedExitCode 1 -ToolArguments @(
+        'keygen',
+        '--id', 'Bad_Id',
+        '--output', $droppedKeyDirectory
+    )
+    Assert-Contains 'keygen rejects key IDs the server could not discover' $keygenBadIdResult 'Invalid --id'
+
+    # No --key-id: it is derived from the '<keyId>.private.pem' filename.
+    $droppedLicensePath = Join-Path $workDirectory 'dropped.license'
+    Invoke-LicenseTool -Project $generatorProject -ToolArguments @(
+        'sign',
+        '--input', $inputPath,
+        '--output', $droppedLicensePath,
+        '--private-key', $droppedPrivateKey
+    ) | Out-Null
+    $droppedKeyId = (Get-Content -LiteralPath $droppedLicensePath -Raw | ConvertFrom-Json).keyId
+    Assert-Equal 'sign derives --key-id from the private key filename' $droppedKeyId 'dropped-2027'
+
+    # The signature is real: LicenseValidator rejects it only because the key is untrusted there,
+    # which is the expected embedded-trust behavior, not a signing failure.
+    $droppedValidationResult = Invoke-LicenseTool -Project $validatorProject -ExpectedExitCode 1 -ToolArguments @(
+        '--license', $droppedLicensePath
+    )
+    Assert-Contains 'a dropped-in key signs without TrustedPublicKeys edits' $droppedValidationResult 'Unknown signing key: dropped-2027'
+
+    $underivableKeyIdResult = Invoke-LicenseTool -Project $generatorProject -ExpectedExitCode 1 -ToolArguments @(
+        'sign',
+        '--input', $inputPath,
+        '--output', (Join-Path $workDirectory 'underivable.license'),
+        '--private-key', $inputPath
+    )
+    Assert-Contains 'sign explains an underivable key ID' $underivableKeyIdResult 'could not be derived'
 
     Invoke-LicenseTool -Project $generatorProject -ToolArguments @(
         'sign',
@@ -423,7 +514,7 @@ try {
 
     $publicKeyOptionResult = Invoke-LicenseTool -Project $validatorProject -ExpectedExitCode 2 -ToolArguments @(
         '--license', $primaryLicensePath,
-        '--public-key', (Join-Path $repositoryRoot 'keys\license-primary-2026-public.pem')
+        '--public-key', (Join-Path $repositoryRoot 'keys\primary-2026.public.pem')
     )
     Assert-Contains 'caller-supplied public keys are rejected' $publicKeyOptionResult '--public-key is no longer accepted'
 

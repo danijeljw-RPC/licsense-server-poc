@@ -2,9 +2,9 @@ name: .NET CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   merge_group:
   workflow_dispatch:
 
@@ -87,8 +87,12 @@ jobs:
             needs_secondary_key: true
           - name: Database and authentication
             script: Test-DatabaseAndAuth.ps1
-            # Phase0Roadmap is an intentional-red executable specification.
-            test_filter: Suite=Baseline
+            # Exclude, don't allowlist: Phase0Roadmap is an intentional-red executable
+            # specification, but every other suite (Baseline, SigningKeyRing, and any test
+            # with no Suite trait at all) is meant to pass and must run. An allowlist here
+            # previously matched only Suite=Baseline (4 of 152 tests) and silently skipped
+            # everything else, including the entire signing-key-ring suite.
+            test_filter: Suite!=Phase0Roadmap
             needs_secondary_key: false
           - name: Activation, transfer, and revocation
             script: Test-ActivationFlow.ps1
@@ -125,13 +129,13 @@ jobs:
           }
 
           Set-Content `
-            -LiteralPath keys/license-primary-2026-private.pem `
+            -LiteralPath keys/primary-2026.private.pem `
             -Value $env:PRIMARY_PRIVATE_KEY.Trim() `
             -Encoding utf8NoBOM
 
           if (-not [string]::IsNullOrWhiteSpace($env:SECONDARY_PRIVATE_KEY)) {
             Set-Content `
-              -LiteralPath keys/license-secondary-2026-private.pem `
+              -LiteralPath keys/secondary-2026.private.pem `
               -Value $env:SECONDARY_PRIVATE_KEY.Trim() `
               -Encoding utf8NoBOM
           }
@@ -157,14 +161,86 @@ jobs:
         if: always()
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue `
-            keys/license-primary-2026-private.pem, `
-            keys/license-secondary-2026-private.pem
+            keys/primary-2026.private.pem, `
+            keys/secondary-2026.private.pem
 
       - name: Upload test log
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-log-${{ matrix.script }}-${{ github.run_attempt }}
+          path: artifacts/ci-logs
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Only the PowerShell scripts above run in CI, but the bash ports under scripts/*.sh are
+  # what macOS/Linux contributors actually run, and a BSD/GNU 'stat' portability bug in
+  # test-license-flow.sh once reached a PR undetected because of that gap (see PR #29). This
+  # job is deliberately narrow: it covers only test-license-flow.sh, where that platform-
+  # specific assertion lives, rather than duplicating the full three-script matrix in bash.
+  test-bash-license-flow:
+    name: Test / Licence signing and validation (bash)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      - name: Restore locked dependencies
+        run: dotnet restore "$SOLUTION" --configfile NuGet.Config --locked-mode
+
+      - name: Materialize ephemeral test signing keys
+        env:
+          PRIMARY_PRIVATE_KEY: ${{ secrets.LICENSE_PRIMARY_2026_PRIVATE_PEM }}
+          SECONDARY_PRIVATE_KEY: ${{ secrets.LICENSE_SECONDARY_2026_PRIVATE_PEM }}
+        run: |
+          trim() {
+            local s="$1"
+            s="${s#"${s%%[![:space:]]*}"}"
+            s="${s%"${s##*[![:space:]]}"}"
+            printf '%s' "$s"
+          }
+
+          if [ -z "$(trim "$PRIMARY_PRIVATE_KEY")" ]; then
+            echo 'Repository secret LICENSE_PRIMARY_2026_PRIVATE_PEM is required.' >&2
+            exit 1
+          fi
+          if [ -z "$(trim "$SECONDARY_PRIVATE_KEY")" ]; then
+            echo 'Repository secret LICENSE_SECONDARY_2026_PRIVATE_PEM is required for the licence-flow test.' >&2
+            exit 1
+          fi
+
+          trim "$PRIMARY_PRIVATE_KEY" > keys/primary-2026.private.pem
+          trim "$SECONDARY_PRIVATE_KEY" > keys/secondary-2026.private.pem
+
+      - name: Run bash licence-flow test
+        run: |
+          mkdir -p artifacts/ci-logs
+          ./scripts/test-license-flow.sh 2>&1 | tee artifacts/ci-logs/test-license-flow.sh.log
+
+      - name: Remove ephemeral signing keys
+        if: always()
+        run: rm -f keys/primary-2026.private.pem keys/secondary-2026.private.pem
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-log-bash-license-flow-${{ github.run_attempt }}
           path: artifacts/ci-logs
           if-no-files-found: warn
           retention-days: 14

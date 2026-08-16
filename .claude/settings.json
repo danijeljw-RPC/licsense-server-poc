@@ -7,7 +7,12 @@
       "Bash(dotnet restore*)",
       "Bash(git status)",
       "Bash(git diff*)",
-      "Bash(git log*)"
+      "Bash(git log*)",
+      "WebFetch(domain:claude.ai)",
+      "Skill(code-review:code-review)",
+      "Skill(code-review:code-review:*)",
+      "Bash(gh run *)",
+      "Bash(gh issue *)"
     ]
   }
 }

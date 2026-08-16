@@ -9,7 +9,7 @@ RUN dotnet restore src/LicenseServer/LicenseServer.csproj --configfile NuGet.Con
 FROM restore AS build
 COPY src/Licensing.Core/ src/Licensing.Core/
 COPY src/LicenseServer/ src/LicenseServer/
-RUN dotnet publish src/LicenseServer/LicenseServer.csproj -c Release --no-restore -o /out /p:UseAppHost=false /p:AnalysisMode=Recommended
+RUN dotnet publish src/LicenseServer/LicenseServer.csproj -c Release -o /out /p:UseAppHost=false /p:AnalysisMode=Recommended
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 USER root
@@ -20,7 +20,6 @@ RUN apt-get update \
     && chown -R "$APP_UID:$APP_UID" /var/lib/licenseserver
 WORKDIR /app
 COPY --from=build --chown=$APP_UID:$APP_UID /out/ ./
-COPY --chown=$APP_UID:$APP_UID keys/license-primary-2026-public.pem /app/keys/license-primary-2026-public.pem
 USER $APP_UID
 ENV ASPNETCORE_HTTP_PORTS=8080 \
     ASPNETCORE_ENVIRONMENT=Container \

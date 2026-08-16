@@ -10,6 +10,21 @@ namespace LicenseServer;
 public sealed class LicensingOptions
 {
     public string IdTimeZone { get; set; } = "Australia/Adelaide";
+
+    /// <summary>
+    /// Directory scanned for signing key pairs, named "&lt;keyId&gt;.private.pem" / "&lt;keyId&gt;.public.pem".
+    /// </summary>
+    public string KeyDirectory { get; set; } = "";
+
+    /// <summary>
+    /// Bootstrap seed only: applied once, to pick the initial "IsDefault" SigningKeys row when the
+    /// database has none yet. Rotating the default afterward always goes through SigningKeyRingService's
+    /// set-default action, never this value, so it is safe to leave stale in configuration after the
+    /// first run.
+    /// </summary>
+    public string DefaultSigningKey { get; set; } = "";
+
+    public int KeyRingReloadIntervalSeconds { get; set; } = 30;
 }
 
 public interface ILicenseBusinessDateResolver

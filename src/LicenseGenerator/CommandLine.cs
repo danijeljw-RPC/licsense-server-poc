@@ -27,12 +27,18 @@ internal static class CommandLine
 
     public static string GetRequiredOption(string[] args, string name)
     {
+        return GetOptionalOption(args, name)
+            ?? throw new ArgumentException($"Required option missing: {name}");
+    }
+
+    public static string? GetOptionalOption(string[] args, string name)
+    {
         for (var i = 0; i < args.Length - 1; i++)
         {
             if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
                 return args[i + 1];
         }
 
-        throw new ArgumentException($"Required option missing: {name}");
+        return null;
     }
 }

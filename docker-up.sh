@@ -49,8 +49,8 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-if [ ! -f keys/license-primary-2026-private.pem ]; then
-    printf '%s\n' 'The development signing key keys/license-primary-2026-private.pem is missing.' >&2
+if [ ! -f keys/primary-2026.private.pem ]; then
+    printf '%s\n' 'The development signing key keys/primary-2026.private.pem is missing.' >&2
     exit 1
 fi
 

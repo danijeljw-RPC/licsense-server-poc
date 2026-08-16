@@ -11,12 +11,13 @@ Store values in the deployment platform's secret manager. Names only are documen
 - `MailerSend__WebhookSecret`
 - `Stripe__ApiKey`
 - `Stripe__WebhookSecret`
-- `Licensing__PrivateKeyPath` for the development PoC only
+- `Licensing__KeyDirectory` — a mounted, read-only directory of `<keyId>.private.pem` /
+  `<keyId>.public.pem` pairs, for the development PoC only
 
 Use independent peppers. Prefer a least-privilege Stripe restricted API key. Never put
 these values in source, committed `.env` files, logs, audit, exception pages, or
-analytics. Production signing must move from the mounted development PEM to a KMS/HSM
-or isolated signing service.
+analytics. Production signing must move from the mounted development PEM directory to
+a KMS/HSM or isolated signing service.
 
 ## MailerSend setup
 
@@ -117,9 +118,24 @@ volume.
 - Lost activation code: perform audited activation-code rotation; the original cannot
   be recovered.
 - Lost API key: rotate/revoke it; the original cannot be recovered.
-- Signing-key compromise: stop issuance, rotate in KMS/HSM, publish the new public key
-  in client releases before issuing with it, and retain old public keys only while
-  their licenses remain trusted.
+- Signing-key rotation (routine, not a compromise): drop the new `<keyId>.private.pem` /
+  `<keyId>.public.pem` pair into the mounted key directory, rescan (or wait for the next
+  periodic reload) so it appears in `/settings/signing-keys`, then use "Set as default"
+  there. No restart required. Retain the old key so historical licences keep verifying.
+- Signing-key retirement (stop signing, keep verifying): remove only the retired key's
+  `<keyId>.private.pem` file from the mounted directory and rescan. Its public key and
+  `SigningKeys` row are untouched, so licences it already signed keep validating.
+- Signing-key compromise (destructive): revoke it immediately from `/settings/signing-keys`
+  (System Administrator only; requires a reason and explicit confirmation) — this fails
+  verification for every licence that key ever signed, but **only inside this server's
+  own live verification**. It has no effect on `LicenseValidator`/`TrustedPublicKeys.cs`
+  already compiled into shipped products: a licence — or a forgery made with the
+  compromised private key — still validates successfully inside any already-shipped
+  product until that product is rebuilt with an updated `TrustedPublicKeys.cs` and
+  customers upgrade. Treat propagating the compromise to shipped products as a separate,
+  urgent release process, not something this endpoint does for you. If the exposed key
+  was the default, immediately set a replacement default — the server never
+  auto-substitutes one.
 
 ## Fundamental offline limits
 

@@ -49,8 +49,19 @@ public sealed class LicenseRecord
     public string? CancelledBy { get; set; }
     public string? CancellationReference { get; set; }
     public long Version { get; set; }
+    public string Provenance { get; set; } = LicenseProvenance.Issued;
+    public byte[]? ImportedSignedEnvelope { get; set; }
+    public byte[]? ImportedSignedEnvelopeSha256 { get; set; }
+    public DateTimeOffset? ImportedAt { get; set; }
+    public string? ImportedBy { get; set; }
     public List<Entitlement> Entitlements { get; set; } = [];
     public List<Activation> Activations { get; set; } = [];
+}
+
+public static class LicenseProvenance
+{
+    public const string Issued = "issued";
+    public const string Imported = "imported";
 }
 
 public sealed class IssuanceIdempotencyRecord
@@ -290,6 +301,12 @@ public sealed class SigningKeyRecord
     public required string Provider { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? RetiredAt { get; set; }
+    public bool IsDefault { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public string? RevokedBy { get; set; }
+    public string? RevocationReason { get; set; }
+    public DateTimeOffset DiscoveredAt { get; set; }
+    public DateTimeOffset LastSeenAt { get; set; }
 }
 
 public sealed class AuditRecord

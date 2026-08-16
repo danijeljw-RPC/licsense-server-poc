@@ -189,33 +189,8 @@ public sealed partial class DatabaseInitializer(
             });
         }
 
-        if (!await db.SigningKeys.AnyAsync(x => x.KeyId == "primary-2026", cancellationToken))
-        {
-            var publicKeyPath = ResolvePublicKeyPath();
-            db.SigningKeys.Add(new SigningKeyRecord
-            {
-                Id = Guid.NewGuid(),
-                KeyId = "primary-2026",
-                Algorithm = "ECDSA-P256-SHA256",
-                PublicKeyPem = await File.ReadAllTextAsync(publicKeyPath, cancellationToken),
-                Provider = "development-file (private key external to database)",
-                CreatedAt = DateTimeOffset.UtcNow
-            });
-        }
-
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-    }
-
-    private string ResolvePublicKeyPath()
-    {
-        var configured = configuration["Licensing:PublicKeyPath"];
-        var path = string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(environment.ContentRootPath, "..", "..", "keys", "license-primary-2026-public.pem")
-            : configured;
-        path = Path.GetFullPath(path);
-        if (!File.Exists(path)) throw new InvalidOperationException($"Public signing key metadata file was not found at '{path}'.");
-        return path;
     }
 
     private bool GetBoolean(string key, bool defaultValue) =>

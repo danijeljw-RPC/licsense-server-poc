@@ -1,3 +1,4 @@
+using SoftwareLicensing;
 using LicenseServer;
 using LicenseServer.Components;
 using LicenseServer.Components.Account;
@@ -276,12 +277,17 @@ builder.Services.AddScoped<LicenseIdAllocator>();
 builder.Services.AddScoped<LicenseStore>();
 builder.Services.AddScoped<AdminDataService>();
 builder.Services.AddScoped<ProductCatalogService>();
+builder.Services.AddScoped<LicenseImportService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<ApiCredentialService>();
 builder.Services.AddScoped<CustomerAccessService>();
 builder.Services.AddScoped<IOwnedCredentialRevoker>(services => services.GetRequiredService<ApiCredentialService>());
-builder.Services.AddSingleton<LicenseEnvelopeSigner>();
+builder.Services.AddSingleton<SigningKeyRingService>();
+builder.Services.AddSingleton<ILicenseKeyRing>(sp => sp.GetRequiredService<SigningKeyRingService>());
+builder.Services.AddSingleton<ILicenseSigner>(sp => sp.GetRequiredService<SigningKeyRingService>());
+builder.Services.AddSingleton<ILicenseVerifier>(sp => sp.GetRequiredService<SigningKeyRingService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SigningKeyRingService>());
 builder.Services.AddScoped<DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
 var adminPermitLimit = builder.Configuration.GetValue("RateLimits:AdminPermitLimit", 600);
@@ -497,12 +503,12 @@ app.MapPost("/customer/logout", async (HttpContext context) =>
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = "CustomerPortal" });
 
 app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
-    string licenseId, ActivateRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>
+    string licenseId, ActivateRequest request, LicenseStore store, ILicenseSigner signer, ILicenseVerifier verifier, CancellationToken cancellationToken) =>
 {
     var now = DateTimeOffset.UtcNow;
-    var result = await store.ActivateAsync(licenseId, request, now, cancellationToken);
+    var result = await store.ActivateAsync(licenseId, request, now, cancellationToken: cancellationToken);
     return result.Success
-        ? await SignedResponse(result.Value!, store, signer, now, cancellationToken)
+        ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
         : Problem(result);
 }).AllowAnonymous().RequireRateLimiting("device-api");
 
@@ -516,12 +522,12 @@ app.MapPost("/api/v1/activations/{activationId}/validate", async (
 }).AllowAnonymous().RequireRateLimiting("device-api");
 
 app.MapPost("/api/v1/activations/{activationId}/refresh", async (
-    string activationId, ActivationCredentialRequest request, LicenseStore store, LicenseEnvelopeSigner signer, CancellationToken cancellationToken) =>
+    string activationId, ActivationCredentialRequest request, LicenseStore store, ILicenseSigner signer, ILicenseVerifier verifier, CancellationToken cancellationToken) =>
 {
     var now = DateTimeOffset.UtcNow;
-    var result = await store.RefreshAsync(activationId, request, now, cancellationToken);
+    var result = await store.RefreshAsync(activationId, request, now, cancellationToken: cancellationToken);
     return result.Success
-        ? await SignedResponse(result.Value!, store, signer, now, cancellationToken)
+        ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
         : Problem(result);
 }).AllowAnonymous().RequireRateLimiting("device-api");
 
@@ -633,6 +639,39 @@ adminApi.MapPost("/api-keys/{id:guid}/revoke", async (
     try { await service.RevokeAsync(id, context.User.Identity?.Name ?? "unknown", ct); return Results.NoContent(); }
     catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["apiKey"] = [exception.Message] }); }
 }).RequireAuthorization(Permissions.ApiKeysManageSelf);
+adminApi.MapGet("/signing-keys", (ILicenseKeyRing ring) =>
+    Results.Ok(ring.Keys.OrderByDescending(k => k.IsDefault).ThenBy(k => k.KeyId, StringComparer.Ordinal)))
+    .RequireAuthorization(Permissions.LicensesRead)
+    .WithDescription("Read-only operational status of every key the server has ever seen; never returns key material.");
+adminApi.MapPost("/signing-keys/rescan", async (SigningKeyRingService keyRing, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { await keyRing.RescanAsync(context.User.Identity?.Name ?? "unknown", ct); return Results.NoContent(); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["signingKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.SigningKeysManage)
+  .WithDescription("Triggers an immediate re-scan of the key directory instead of waiting for the periodic reload.");
+adminApi.MapPost("/signing-keys/{keyId}/set-default", async (
+    string keyId, SigningKeyRingService keyRing, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { await keyRing.SetDefaultAsync(keyId, context.User.Identity?.Name ?? "unknown", ct); return Results.NoContent(); }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["signingKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.SigningKeysManage);
+adminApi.MapPost("/signing-keys/{keyId}/revoke", async (
+    string keyId, RevokeSigningKeyRequest request, SigningKeyRingService keyRing,
+    IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    if (!request.Confirmed)
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["confirmed"] = ["Revocation requires explicit confirmation."] });
+    try
+    {
+        await keyRing.RevokeAsync(keyId, request.Reason ?? "", context.User.Identity?.Name ?? "unknown", ct);
+        return Results.NoContent();
+    }
+    catch (InvalidOperationException exception) { return Results.ValidationProblem(new Dictionary<string, string[]> { ["signingKey"] = [exception.Message] }); }
+}).RequireAuthorization(Permissions.SigningKeysManage)
+  .WithDescription("Destructive: fails verification for every license this key ever signed, within this server's own key ring only.");
 adminApi.MapPost("/users", async (
     CreateUserRequest request, UserAdministrationService service, IAntiforgery antiforgery,
     HttpContext context, CancellationToken ct) =>
@@ -730,9 +769,50 @@ adminApi.MapPost("/licenses", async (
         ct);
     return result.Success
         ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
-        : IssueProblem(result);
+        : FieldProblem(result);
 }).RequireAuthorization(Permissions.LicensesIssue)
   .WithDescription("Issues one license transactionally. Online lifecycle changes are immediate; previously downloaded offline files cannot be recalled.");
+adminApi.MapPost("/licenses/import", async (
+    HttpRequest request, LicenseImportService importer, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    // Generous headroom over the artifact limit for multipart boundary/header/field overhead -
+    // see the ContentLength check below.
+    const int MaxImportRequestBytes = LicenseImportService.MaxUploadBytes + 16_384;
+    if (!request.HasFormContentType)
+        return Results.Problem(title: "Invalid request", detail: "multipart/form-data is required.", statusCode: 400);
+    // Mirrors the webhook payload-size check: reject before ever reading the body, rather than
+    // trusting a client-supplied header alone to bound how much we buffer. Deliberately ordered
+    // before ValidAntiforgeryAsync below - antiforgery validation with no header token present
+    // falls back to reading the request form itself looking for one, which would buffer the
+    // whole body before this check ever ran. Bounded against the whole multipart body, not the
+    // artifact limit itself - multipart framing (boundaries, per-part headers, the contactEmail
+    // field) adds overhead beyond the file, so a file right at MaxUploadBytes needs headroom here
+    // or it is rejected before the accurate file.Length check below ever runs. The file's own
+    // limit is still enforced precisely against file.Length once the form is parsed.
+    if (request.ContentLength is null or > MaxImportRequestBytes)
+        return Results.Problem(title: "License file is too large", statusCode: StatusCodes.Status413PayloadTooLarge);
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+
+    var form = await request.ReadFormAsync(ct);
+    var file = form.Files["file"];
+    if (file is null)
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["file"] = ["A license file is required."] });
+    if (file.Length > LicenseImportService.MaxUploadBytes)
+        return Results.Problem(title: "License file is too large", statusCode: StatusCodes.Status413PayloadTooLarge);
+
+    await using var stream = file.OpenReadStream();
+    using var buffer = new MemoryStream();
+    await stream.CopyToAsync(buffer, ct);
+
+    var result = await importer.ImportAsync(
+        buffer.ToArray(), file.FileName, form["contactEmail"].ToString(), context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success
+        ? Results.Created($"/api/v1/admin/licenses/{result.Value!.LicenseId}", result.Value)
+        : FieldProblem(result);
+}).RequireAuthorization(Permissions.LicensesImport)
+  .WithDescription("Imports an offline-signed license artifact: verifies it against the live key ring, then stores it " +
+      "verbatim alongside a relational search index. contactEmail is required and is the source of truth for the " +
+      "resolved customer.");
 adminApi.MapPost("/licenses/{licenseId}/revoke", async (
     string licenseId, RevokeRequest request, LicenseStore store, IAntiforgery antiforgery, HttpContext httpContext, CancellationToken ct) =>
 {
@@ -854,17 +934,30 @@ app.MapAdditionalIdentityEndpoints();
 await using (var scope = app.Services.CreateAsyncScope())
     await scope.ServiceProvider.GetRequiredService<DatabaseInitializer>().InitializeAsync();
 
+// Populate the signing key ring synchronously before accepting traffic: BackgroundService.StartAsync
+// does not await ExecuteAsync's completion, so without this the app could serve requests before the
+// first scan/reconcile pass has run.
+await app.Services.GetRequiredService<SigningKeyRingService>().ReloadAsync();
+
 await app.RunAsync();
 
 static async Task<IResult> SignedResponse(
     LicenseStore.ActiveActivation activation,
     LicenseStore store,
-    LicenseEnvelopeSigner signer,
+    ILicenseSigner signer,
+    ILicenseVerifier verifier,
     DateTimeOffset now,
     CancellationToken cancellationToken)
 {
-    var signed = signer.Sign(await store.CreateLicenseAsync(activation, now, cancellationToken));
-    var parsed = SoftwareLicensing.LicenseVerifier.Verify(signed.ToJsonString()).Data.Activation!;
+    // Anonymous device-facing endpoints never accept a caller-chosen key: always sign with the
+    // configured default, per the key-ring design's "no client influence over server signing
+    // material for unauthenticated callers" decision.
+    var result = signer.Sign(await store.CreateLicenseAsync(activation, now, cancellationToken), requestedKeyId: null);
+    if (!result.Success)
+        return Results.Problem(title: "Signing failed", detail: result.ErrorMessage, statusCode: StatusCodes.Status500InternalServerError);
+
+    var signed = result.Envelope!;
+    var parsed = verifier.Verify(signed.ToJsonString()).Data.Activation!;
     return Results.Ok(new ActivationResponse(
         activation.LicenseId,
         activation.ActivationId,
@@ -888,12 +981,13 @@ static IResult Problem<T>(StoreResult<T> result) => Results.Problem(
         403 => "Operation forbidden",
         404 => "Resource not found",
         409 => "License state conflict",
+        503 => "Signing key unavailable",
         _ => "Request failed"
     },
     detail: result.Error,
     statusCode: result.StatusCode);
 
-static IResult IssueProblem(StoreResult<LicenseStore.IssuedLicense> result) =>
+static IResult FieldProblem<T>(StoreResult<T> result) =>
     result.StatusCode == StatusCodes.Status400BadRequest && result.Field is not null
         ? Results.ValidationProblem(new Dictionary<string, string[]> { [result.Field] = [result.Error ?? "Invalid value."] })
         : Problem(result);

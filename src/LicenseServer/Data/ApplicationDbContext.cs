@@ -77,6 +77,25 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             "COALESCE(jsonb_typeof(\"MetadataJson\" -> 'contactEmail') = 'string' " +
             "AND (\"MetadataJson\" ->> 'contactEmail') = lower(btrim(\"MetadataJson\" ->> 'contactEmail')) " +
             "AND (\"MetadataJson\" ->> 'contactEmail') ~ '^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$', FALSE)"));
+        builder.Entity<LicenseRecord>().Property(x => x.Provenance).HasMaxLength(20).HasDefaultValue(LicenseProvenance.Issued);
+        builder.Entity<LicenseRecord>().Property(x => x.ImportedBy).HasMaxLength(256);
+        builder.Entity<LicenseRecord>().ToTable(table => table.HasCheckConstraint(
+            "CK_Licenses_Provenance", "\"Provenance\" IN ('issued', 'imported')"));
+        // Every Imported* column is populated together or not at all, and exactly tracks Provenance -
+        // an "imported" row with no stored artifact (or an "issued" row with one, even partially)
+        // would mean the provenance label and the data backing it have drifted apart. Written as
+        // two explicit branches rather than a single biconditional on the conjunction: the
+        // biconditional form only ties the *conjunction* to Provenance = 'imported', which would
+        // still accept an "issued" row with, say, three of the four Imported* columns set and one
+        // left null - each branch below independently requires all four or none.
+        builder.Entity<LicenseRecord>().ToTable(table => table.HasCheckConstraint(
+            "CK_Licenses_ImportProvenance",
+            "(\"Provenance\" = 'imported' " +
+            "AND \"ImportedSignedEnvelope\" IS NOT NULL AND \"ImportedSignedEnvelopeSha256\" IS NOT NULL " +
+            "AND \"ImportedAt\" IS NOT NULL AND \"ImportedBy\" IS NOT NULL) " +
+            "OR (\"Provenance\" != 'imported' " +
+            "AND \"ImportedSignedEnvelope\" IS NULL AND \"ImportedSignedEnvelopeSha256\" IS NULL " +
+            "AND \"ImportedAt\" IS NULL AND \"ImportedBy\" IS NULL)"));
         builder.Entity<LicenseRecord>().HasMany(x => x.Entitlements).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Cascade);
         builder.Entity<LicenseRecord>().HasMany(x => x.Activations).WithOne(x => x.License).HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<IssuanceIdempotencyRecord>().Property(x => x.PrincipalId).HasMaxLength(256);
@@ -183,7 +202,12 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             .HasForeignKey(item => item.LicenseOrderId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<StripeInvoiceMapping>().HasOne(item => item.BillingContract).WithMany()
             .HasForeignKey(item => item.BillingContractId).OnDelete(DeleteBehavior.Restrict);
-        builder.Entity<Entitlement>().HasIndex(x => x.LicenseRecordId).IsUnique();
+        // Not (LicenseRecordId) alone: a multi-product imported license legitimately has one
+        // Entitlement per product on the same LicenseRecord (see "License import" in
+        // docs/superpowers/specs/2026-08-14-key-ring-signing-design.md). The composite still
+        // blocks two entitlements for the same product on one license, matching the in-artifact
+        // duplicate-product check LicenseSchema.Parse already performs.
+        builder.Entity<Entitlement>().HasIndex(x => new { x.LicenseRecordId, x.Product }).IsUnique();
         builder.Entity<Entitlement>().HasOne(x => x.ProductDefinition).WithMany(x => x.Entitlements)
             .HasForeignKey(x => x.ProductDefinitionId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<Entitlement>().ToTable(table =>
@@ -197,6 +221,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.Entity<Activation>().HasIndex(x => x.LicenseRecordId).IsUnique().HasFilter("\"DeactivatedAt\" IS NULL");
         builder.Entity<Activation>().HasIndex(x => x.LeaseExpiresAt);
         builder.Entity<SigningKeyRecord>().HasIndex(x => x.KeyId).IsUnique();
+        builder.Entity<SigningKeyRecord>().HasIndex(x => x.IsDefault).IsUnique().HasFilter("\"IsDefault\"");
         builder.Entity<AuditRecord>().HasIndex(x => x.TimestampUtc);
         builder.Entity<AuditRecord>().Property(x => x.Actor).HasMaxLength(256);
         builder.Entity<AuditRecord>().Property(x => x.Action).HasMaxLength(100);

@@ -79,7 +79,8 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
                 x.CancelledAt != null ? "cancelled" : x.RevokedAt != null ? "revoked" : x.ExpiresAt != null && x.ExpiresAt <= now ? "expired" : x.Activations.Any(a => a.DeactivatedAt == null) ? "active" : "available",
                 x.IssuedAt,
                 x.ExpiresAt,
-                x.Activations.Where(a => a.DeactivatedAt == null).Select(a => a.DeviceIdSuffix).FirstOrDefault()))
+                x.Activations.Where(a => a.DeactivatedAt == null).Select(a => a.DeviceIdSuffix).FirstOrDefault(),
+                x.Provenance))
             .ToListAsync(cancellationToken);
         return new PagedLicenses(rows, page, pageSize, count);
     }
@@ -105,6 +106,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             x.ExpiresAt?.AddTicks(x.ExpirySubMicrosecondTicks),
             x.CancelledAt, x.CancellationReason, x.CancelledBy, x.RevokedAt, x.RevocationReason, x.Version,
             LicenseStore.GetLifecycleState(x, active is not null, DateTimeOffset.UtcNow),
+            x.Provenance, x.ImportedAt,
             x.Entitlements.OrderBy(e => e.Product).Select(e => new EntitlementView(e.Product, e.Edition, e.LicenseType, e.Seats, e.UpdatesUntil)).ToList(),
             active is null ? null : new ActivationView(active.ActivationId, active.Mode, active.DeviceIdSuffix, active.DeviceName, active.ActivatedAt, active.RefreshAfter, active.LeaseExpiresAt),
             x.Activations.OrderByDescending(a => a.ActivatedAt).Select(a => new ActivationHistoryView(a.ActivationId, a.Mode, a.DeviceIdSuffix, a.ActivatedAt, a.DeactivatedAt)).ToList(),
@@ -221,7 +223,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
 public sealed record DashboardView(int Total, int Available, int Active, int Expired, int Revoked, int Online, int Offline, int LeasesApproachingExpiry, IReadOnlyList<AuditView> RecentAudit);
 public sealed record AuditView(string Actor, string Action, string TargetType, string TargetId, string Result, DateTimeOffset TimestampUtc, string ContextJson);
 public sealed record CustomerView(Guid Id, string Name, string Email, string? ExternalId, DateTimeOffset CreatedAt, int LicenseCount);
-public sealed record LicenseListView(string LicenseId, string Customer, string Status, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt, string? DeviceSuffix);
+public sealed record LicenseListView(string LicenseId, string Customer, string Status, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt, string? DeviceSuffix, string Provenance);
 public sealed record PagedLicenses(IReadOnlyList<LicenseListView> Items, int Page, int PageSize, int Total) { public int TotalPages => Math.Max(1, (int)Math.Ceiling((double)Total / PageSize)); }
 public sealed record EntitlementView(string Product, string Edition, string LicenseType, int Seats, DateOnly? UpdatesUntil);
 public sealed record ActivationView(string ActivationId, string Mode, string DeviceSuffix, string? DeviceName, DateTimeOffset ActivatedAt, DateTimeOffset? RefreshAfter, DateTimeOffset? LeaseExpiresAt);
@@ -230,6 +232,7 @@ public sealed record LicenseDetailView(
     string LicenseId, string Customer, string CustomerEmail, string SignedContactEmail, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
     DateTimeOffset? CancelledAt, string? CancellationReason, string? CancelledBy,
     DateTimeOffset? RevokedAt, string? RevocationReason, long Version, string Status,
+    string Provenance, DateTimeOffset? ImportedAt,
     IReadOnlyList<EntitlementView> Entitlements, ActivationView? ActiveActivation,
     IReadOnlyList<ActivationHistoryView> IssuanceHistory, IReadOnlyList<AuditView> History);
 

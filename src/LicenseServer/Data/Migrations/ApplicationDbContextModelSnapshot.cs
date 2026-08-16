@@ -607,10 +607,10 @@ namespace LicenseServer.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("LicenseRecordId")
-                        .IsUnique();
-
                     b.HasIndex("ProductDefinitionId");
+
+                    b.HasIndex("LicenseRecordId", "Product")
+                        .IsUnique();
 
                     b.ToTable("Entitlements", t =>
                         {
@@ -767,6 +767,19 @@ namespace LicenseServer.Data.Migrations
                         .HasColumnType("integer")
                         .HasDefaultValue(0);
 
+                    b.Property<DateTimeOffset?>("ImportedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ImportedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<byte[]>("ImportedSignedEnvelope")
+                        .HasColumnType("bytea");
+
+                    b.Property<byte[]>("ImportedSignedEnvelopeSha256")
+                        .HasColumnType("bytea");
+
                     b.Property<DateTimeOffset>("IssuedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -778,6 +791,13 @@ namespace LicenseServer.Data.Migrations
                     b.Property<string>("MetadataJson")
                         .IsRequired()
                         .HasColumnType("jsonb");
+
+                    b.Property<string>("Provenance")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("issued");
 
                     b.Property<string>("RevocationReason")
                         .HasMaxLength(500)
@@ -812,6 +832,10 @@ namespace LicenseServer.Data.Migrations
                             t.HasCheckConstraint("CK_Licenses_ContactEmail", "COALESCE(jsonb_typeof(\"MetadataJson\" -> 'contactEmail') = 'string' AND (\"MetadataJson\" ->> 'contactEmail') = lower(btrim(\"MetadataJson\" ->> 'contactEmail')) AND (\"MetadataJson\" ->> 'contactEmail') ~ '^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]+$', FALSE)");
 
                             t.HasCheckConstraint("CK_Licenses_ExpiryPrecision", "\"ExpirySubMicrosecondTicks\" BETWEEN 0 AND 9");
+
+                            t.HasCheckConstraint("CK_Licenses_ImportProvenance", "(\"Provenance\" = 'imported' AND \"ImportedSignedEnvelope\" IS NOT NULL AND \"ImportedSignedEnvelopeSha256\" IS NOT NULL AND \"ImportedAt\" IS NOT NULL AND \"ImportedBy\" IS NOT NULL) OR (\"Provenance\" != 'imported' AND \"ImportedSignedEnvelope\" IS NULL AND \"ImportedSignedEnvelopeSha256\" IS NULL AND \"ImportedAt\" IS NULL AND \"ImportedBy\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_Licenses_Provenance", "\"Provenance\" IN ('issued', 'imported')");
 
                             t.HasCheckConstraint("CK_Licenses_TerminalState", "NOT (\"CancelledAt\" IS NOT NULL AND \"RevokedAt\" IS NOT NULL)");
                         });
@@ -870,9 +894,18 @@ namespace LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTimeOffset>("DiscoveredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("KeyId")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Provider")
                         .IsRequired()
@@ -885,7 +918,20 @@ namespace LicenseServer.Data.Migrations
                     b.Property<DateTimeOffset?>("RetiredAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("RevocationReason")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RevokedBy")
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("IsDefault")
+                        .IsUnique()
+                        .HasFilter("\"IsDefault\"");
 
                     b.HasIndex("KeyId")
                         .IsUnique();

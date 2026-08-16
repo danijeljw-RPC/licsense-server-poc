@@ -110,6 +110,7 @@ public sealed class AdminApiContractTests(PostgresWebFixture fixture)
         foreach (var path in new[]
         {
             "/api/v1/admin/licenses", "/api/v1/admin/licenses/{licenseId}",
+            "/api/v1/admin/licenses/import",
             "/api/v1/admin/licenses/{licenseId}/activation-code/rotate",
             "/api/v1/admin/products", "/api/v1/admin/customers",
             "/api/v1/admin/users", "/api/v1/admin/audit"

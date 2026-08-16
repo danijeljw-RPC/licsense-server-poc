@@ -3,7 +3,7 @@
 @inject AdminDataService Data
 
 <PageTitle>Licenses</PageTitle>
-<div class="page-heading"><div><p class="eyebrow">Inventory</p><h1>Licenses</h1><p>Search, filter, and inspect every issued license.</p></div><AuthorizeView Policy="@Permissions.LicensesIssue"><Authorized><a class="button" href="/licenses/create">Issue license</a></Authorized></AuthorizeView></div>
+<div class="page-heading"><div><p class="eyebrow">Inventory</p><h1>Licenses</h1><p>Search, filter, and inspect every issued license.</p></div><div class="heading-actions"><AuthorizeView Policy="@Permissions.LicensesIssue"><Authorized><a class="button" href="/licenses/create">Issue license</a></Authorized></AuthorizeView><AuthorizeView Policy="@Permissions.LicensesImport"><Authorized><a class="button secondary" href="/licenses/import">Import license</a></Authorized></AuthorizeView></div></div>
 <form method="get" class="filters">
     <label>Search<input name="search" value="@Search" placeholder="License ID, customer, or email" /></label>
     <label>Status<select name="status"><option value="">All statuses</option><option selected="@(Status == "available")">Available</option><option selected="@(Status == "active")">Active</option><option selected="@(Status == "expired")">Expired</option><option selected="@(Status == "revoked")">Revoked</option></select></label>
@@ -13,7 +13,7 @@
 @if (results is not null)
 {
     <div class="table-wrap"><table><thead><tr><th>License</th><th>Customer</th><th>Status</th><th>Device</th><th>Issued (UTC)</th><th></th></tr></thead><tbody>
-        @foreach (var row in results.Items) { <tr><td><strong>@row.LicenseId</strong></td><td>@row.Customer</td><td><span class="status @row.Status">@row.Status</span></td><td>@(row.DeviceSuffix is null ? "—" : $"…{row.DeviceSuffix}")</td><td>@row.IssuedAt.ToString("yyyy-MM-dd")</td><td><a href="/licenses/@row.LicenseId">Open →</a></td></tr> }
+        @foreach (var row in results.Items) { <tr><td><strong>@row.LicenseId</strong> @if (row.Provenance == "imported") { <span class="status imported">Imported</span> }</td><td>@row.Customer</td><td><span class="status @row.Status">@row.Status</span></td><td>@(row.DeviceSuffix is null ? "—" : $"…{row.DeviceSuffix}")</td><td>@row.IssuedAt.ToString("yyyy-MM-dd")</td><td><a href="/licenses/@row.LicenseId">Open →</a></td></tr> }
     </tbody></table></div>
     <div class="pager"><span>Page @results.Page of @results.TotalPages · @results.Total results</span><div>@if (results.Page > 1) { <a href="@PageUrl(results.Page - 1)">← Previous</a> } @if (results.Page < results.TotalPages) { <a href="@PageUrl(results.Page + 1)">Next →</a> }</div></div>
 }

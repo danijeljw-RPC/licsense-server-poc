@@ -365,6 +365,13 @@ parsing.
 
 ## Hot reload mechanism
 
+> **Superseded in implementation.** Trigger 1 below (the `FileSystemWatcher`)
+> was rejected on review and is not implemented — see
+> [Explicitly rejected alternatives](#explicitly-rejected-alternatives) for the
+> reasoning. What ships is trigger 2 (interval configurable via
+> `Licensing:KeyRingReloadIntervalSeconds`, default 30s), an admin-triggered
+> rescan endpoint, and a synchronous republish inside `set-default`/`revoke`.
+
 `SigningKeyRingService.ReloadAsync()` is the single entry point, invoked by:
 
 1. The debounced `FileSystemWatcher` handler (any create/change/delete/rename
@@ -373,6 +380,10 @@ parsing.
    reload, not several).
 2. An unconditional periodic timer every 60 seconds, as a fallback for missed
    or unreliable watcher events on bind-mounted volumes.
+3. Every admin mutation that changes key state (`set-default`, `revoke`) and
+   the explicit admin rescan action, each awaiting the reload before returning
+   so a successful admin response never reports state the ring has not yet
+   published.
 
 `ReloadAsync` is guarded so overlapping triggers coalesce into a single
 in-flight reload rather than running concurrently. It always: scans the
@@ -414,8 +425,10 @@ concept of revocation at all.
 ## License import
 
 `LicenseRecord` gains: `Provenance` (`"issued"` default, `"imported"`),
-`ImportedSignedEnvelopeJson` (nullable `jsonb`, the verbatim uploaded artifact),
-`ImportedAt`, `ImportedBy`.
+`ImportedSignedEnvelope` (nullable `bytea`, the verbatim uploaded bytes),
+`ImportedSignedEnvelopeSha256` (nullable `bytea`), `ImportedAt`, `ImportedBy`.
+See [Resolved design questions](#resolved-design-questions) below for why this
+is `bytea` and not the `jsonb` an earlier draft specified.
 
 Imported licences are stored as the exact signed bytes that were uploaded,
 rather than being regenerated on demand from relational state the way
@@ -460,13 +473,17 @@ Pipeline for `POST /api/v1/admin/licenses/import` (permission
 5. Run `LicenseSchema.Parse` on the licence payload (existing strict schema
    validation — rejects unknown fields, ambiguous casing, malformed
    dates/entitlements, exactly as it does for locally-generated licences).
-6. Resolve/create the `Customer` row by normalized email.
+6. Resolve/create the `Customer` row by normalized email — the operator-supplied
+   one, see [Resolved design questions](#resolved-design-questions).
 7. Create `LicenseRecord` (`Provenance = "imported"`) plus one `Entitlement`
    summary row per product in the licence (search/listing index only — not the
-   signing source of truth for this record).
+   signing source of truth for this record), auto-creating an inactive
+   `ProductDefinition` for any product the catalog does not have.
 8. If the licence already contains `deviceBinding` + `activation`, also create
    a matching `Activation` row so the license-detail page shows accurate status
-   and revoke/deactivate work normally. If `activation.mode == "online"`, the
+   and admin-side revoke works normally. (An earlier draft of this step claimed
+   deactivation also works normally; it does not — see
+   [Resolved design questions](#resolved-design-questions).) If `activation.mode == "online"`, the
    import still succeeds but logs/flags that server-side lease refresh will not
    function for that activation, since no server-issued activation-token hash
    exists to authorize it — this is a documented limitation, not a rejection,
@@ -480,6 +497,85 @@ Pipeline for `POST /api/v1/admin/licenses/import` (permission
 
 A new admin UI page (adjacent to the existing Offline issuance page) exposes
 this as a file upload form gated by `licenses.import`.
+
+### Resolved design questions
+
+Design review found four places where the import pipeline above could not be
+built as written against the current schema. Each is resolved below. **None of
+this is implemented** — `POST /api/v1/admin/licenses/import` does not exist in
+the codebase. These are the decisions the implementation must follow when it is
+built, recorded now so the implementation is not blocked on re-litigating them.
+
+**Products absent from the catalog → auto-create an inactive placeholder.**
+`Entitlement.ProductDefinitionId` is a required FK
+(`Data/Entities.cs`, `Data/ApplicationDbContext.cs`), but a signature-verified
+offline licence may legitimately name a product this server's catalog has never
+heard of, because `LicenseGenerator` accepts any product string with no catalog
+lookup. Rejecting such an import would contradict this design's own requirement
+to preserve every entitlement the artifact contains; making the FK nullable
+would fork every catalog join in the application for one feature's benefit.
+So the importer creates a `ProductDefinition` for each unknown product with
+`IsActive = false`, `DisplayName` set to the product code, and a description
+marking it as import-created and needing operator review. `IsActive = false` is
+the load-bearing part: `LicenseStore` will only issue against active products
+and the active-product listing excludes it, so an import can never quietly add
+a sellable catalog entry — an operator must deliberately name and activate it
+first. Each auto-creation is audited alongside `license.imported`.
+One hard limit applies: `CK_ProductDefinitions_Code` restricts catalog codes to
+`^[a-z0-9][a-z0-9-]{0,99}$`, while `LicenseSchema` accepts any non-blank
+product string. The importer must therefore validate every product code against
+that pattern in step 5 and reject the whole upload with a clear message when one
+cannot be a catalog code — never silently mangle a signed product name into a
+conforming one.
+
+**Email for a metadata-free licence → required operator-supplied field.**
+A generator-issued licence may omit `metadata` entirely, and its signed
+`customer` field is a display name, not an address — so the artifact alone
+cannot satisfy `CK_Licenses_ContactEmail` or the issuance-time invariant that
+`MetadataJson.contactEmail` equals the resolved customer's normalized email.
+The import form therefore carries a **required** `contactEmail` field, supplied
+by the authenticated operator, and that value is the single source of truth for
+resolving the `Customer` row. If the uploaded artifact also carries
+`metadata.contactEmail`, it must normalize-equal the operator's value or the
+import is rejected: silently preferring either one would mean the stored record
+disagrees with something a human or a signature asserted.
+This is only coherent because of the decision below it: for an imported record,
+`LicenseRecord.MetadataJson` is the server's *searchable index* of the licence,
+not a copy of the signed artifact. Writing the operator's email there does not
+alter, re-sign, or contradict the artifact, which is stored separately and
+byte-for-byte. The import UI must say so plainly, or the field looks like
+tampering with signed content.
+
+**Pre-activated imports → an unforgeable activation token, not a nullable one.**
+`Activation.TokenHash` is a required `byte[]` and an offline artifact carries no
+server-issued token to hash into it. Rather than making the column nullable or
+introducing a sentinel that every credential check must special-case — where a
+single missed check is an authentication bypass on a security-relevant path —
+the importer generates a cryptographically random 32-byte `TokenHash` for the
+imported `Activation` row and discards the preimage. Nothing is ever issued to
+any device.
+The row then exists, so the licence-detail page shows accurate activation state
+and admin-side licence revoke works normally, while device-facing refresh *and*
+deactivation both fail closed automatically, by construction rather than by a
+branch someone could forget: no caller can present a token matching a hash whose
+preimage was never generated. This supersedes step 8's claim that "deactivate
+work[s] normally" for imported activations, and extends the existing documented
+online-refresh limitation to deactivation as well. Admin-side licence
+revocation is the supported lifecycle action for an imported activation, and
+the UI must present it that way.
+
+**Verbatim artifact storage → `bytea`, not `jsonb`.**
+PostgreSQL `jsonb` parses and re-normalizes on write: it does not preserve
+whitespace, key order, or duplicate-key representation. A `jsonb` column
+therefore cannot deliver the byte-for-byte fidelity that is the entire
+justification for storing the uploaded artifact instead of regenerating it.
+`ImportedSignedEnvelope` is `bytea`, holding exactly the bytes received, with no
+decode/re-encode round trip on the way in (`text` would also lose the ability to
+hold a NUL byte, forcing a validation rule that `bytea` simply does not need).
+`ImportedSignedEnvelopeSha256` stores a digest of those bytes for integrity
+checking and duplicate detection. No parsed `jsonb` projection of the artifact
+is needed: the relational `LicenseRecord`/`Entitlement` rows the pipeline already
+builds are the search index, and re-verification reads the stored bytes directly.
 
 ## Container and configuration changes
 
@@ -638,3 +734,33 @@ mismatch.
   restart, contradicting the no-restart requirement. Moved to a DB-backed
   `IsDefault` flag reconciled by the same loop that already handles
   revocation, which works identically in both deployment shapes.
+- **A debounced `FileSystemWatcher` alongside the periodic reload** (specified
+  in "Hot reload mechanism" above) — rejected after implementation review; the
+  shipped key ring reloads on a periodic timer plus an admin-triggered rescan
+  only. The watcher was always specified as an optimization *on top of* an
+  unconditional timer that has to exist anyway, precisely because bind-mounted
+  volumes do not reliably deliver inotify events — which is exactly the
+  deployment shape this project ships (`docker-compose` mounts the key
+  directory read-only). So the watcher could never be the mechanism relied
+  upon; it could only shorten the happy path.
+  What it would shorten is at most one reload interval (default 30s,
+  configurable via `Licensing:KeyRingReloadIntervalSeconds`), on a rare,
+  deliberate, operator-driven action — and the operator performing that action
+  already has a strictly better tool: `POST /signing-keys/rescan` and the
+  "Rescan key directory" button, which pick the key up immediately and on
+  demand, rather than at some point after an event the operator cannot observe.
+  Rescan writes an `AuditRecord` (`signingKey.rescan`) unconditionally, the
+  same as `set-default` and `revoke`, so the operator's faster path is exactly
+  as traceable as the slower ones.
+  Against that, `FileSystemWatcher` carries real cost: silent event loss on
+  `InternalBufferOverflowException`, per-platform behavioral differences,
+  duplicate/partial events during multi-file key installs requiring the
+  debounce window to be tuned, and inotify handle limits. Testing it means
+  timing-dependent tests around filesystem events, which is a poor trade for
+  saving a bounded delay on an infrequent action.
+  Revisit if a deployment shape appears where keys land in a directory the
+  process watches natively, no operator is present to trigger a rescan, and
+  sub-30-second pickup is a stated requirement. Note that this affects only
+  *filesystem* pickup latency: admin mutations (`set-default`, `revoke`)
+  republish the ring snapshot synchronously before returning and never wait for
+  the timer at all.
