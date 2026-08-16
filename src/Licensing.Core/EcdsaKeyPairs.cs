@@ -38,7 +38,7 @@ public static class EcdsaKeyPairs
             error = null;
             return true;
         }
-        catch (Exception ex) when (ex is CryptographicException or FormatException or ArgumentException)
+        catch (Exception ex) when (ex is CryptographicException or FormatException or ArgumentException or PlatformNotSupportedException)
         {
             error = $"Key material could not be parsed: {ex.Message}";
             return false;
@@ -57,7 +57,7 @@ public static class EcdsaKeyPairs
             error = null;
             return true;
         }
-        catch (Exception ex) when (ex is CryptographicException or FormatException or ArgumentException)
+        catch (Exception ex) when (ex is CryptographicException or FormatException or ArgumentException or PlatformNotSupportedException)
         {
             error = $"Public key material could not be parsed: {ex.Message}";
             return false;
@@ -98,17 +98,62 @@ public static class EcdsaKeyPairs
     /// mislabeled artifact. Returns true (and sets <paramref name="error"/>) for any curve other
     /// than P-256, including ones with the same key size (e.g. brainpoolP256r1).
     /// </summary>
+    /// <remarks>
+    /// Checks the named-curve OID first, but a PEM encoded with explicit domain parameters
+    /// (e.g. <c>openssl ecparam -param_enc explicit</c>) imports with <see cref="ECCurve.Oid"/>
+    /// unset even when the parameters are genuinely P-256's - .NET does not recognize explicit
+    /// parameters as matching a named curve. Falls back to comparing the field prime, curve
+    /// coefficients, generator point, and order against P-256's published domain parameters
+    /// (FIPS 186-4 / SEC 2 prime256v1) so a genuinely-P-256 key is not rejected purely because of
+    /// how it happened to be encoded.
+    /// </remarks>
     private static bool TryDescribeNonP256Curve(ECDsa key, string label, out string? error)
     {
         var curve = key.ExportParameters(includePrivateParameters: false).Curve;
-        if (string.Equals(curve.Oid.Value, ECCurve.NamedCurves.nistP256.Oid.Value, StringComparison.Ordinal))
+
+        if (curve.Oid?.Value is { Length: > 0 } oidValue)
+        {
+            if (string.Equals(oidValue, ECCurve.NamedCurves.nistP256.Oid.Value, StringComparison.Ordinal))
+            {
+                error = null;
+                return false;
+            }
+        }
+        else if (IsExplicitNistP256(curve))
         {
             error = null;
             return false;
         }
 
-        var curveName = curve.Oid.FriendlyName ?? curve.Oid.Value ?? "unrecognized curve";
+        var curveName = curve.Oid?.FriendlyName ?? curve.Oid?.Value ?? "unrecognized curve";
         error = $"The {label} is on curve '{curveName}', not P-256. Only ECDSA P-256 keys are supported.";
         return true;
     }
+
+    // NIST P-256 / secp256r1 / prime256v1 domain parameters (FIPS 186-4, SEC 2), verified against
+    // `openssl ecparam -name prime256v1 -param_enc explicit -text -noout`. Field element and order
+    // byte arrays are fixed-width big-endian with no ASN.1 sign-padding byte, matching what
+    // ECCurve's fields hold for an explicitly-encoded curve.
+    private static readonly byte[] NistP256Prime =
+        Convert.FromHexString("FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF");
+    private static readonly byte[] NistP256A =
+        Convert.FromHexString("FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFC");
+    private static readonly byte[] NistP256B =
+        Convert.FromHexString("5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B");
+    private static readonly byte[] NistP256Gx =
+        Convert.FromHexString("6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296");
+    private static readonly byte[] NistP256Gy =
+        Convert.FromHexString("4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5");
+    private static readonly byte[] NistP256Order =
+        Convert.FromHexString("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551");
+
+    private static bool IsExplicitNistP256(ECCurve curve) =>
+        curve.Prime is not null && curve.A is not null && curve.B is not null && curve.Order is not null
+        && curve.G.X is not null && curve.G.Y is not null
+        && curve.Prime.AsSpan().SequenceEqual(NistP256Prime)
+        && curve.A.AsSpan().SequenceEqual(NistP256A)
+        && curve.B.AsSpan().SequenceEqual(NistP256B)
+        && curve.Order.AsSpan().SequenceEqual(NistP256Order)
+        && curve.G.X.AsSpan().SequenceEqual(NistP256Gx)
+        && curve.G.Y.AsSpan().SequenceEqual(NistP256Gy);
 }

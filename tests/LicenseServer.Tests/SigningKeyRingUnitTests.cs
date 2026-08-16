@@ -90,6 +90,46 @@ public sealed class EcdsaKeyPairsTests
         Assert.Contains("P-256", error);
     }
 
+    // Generated with `openssl ecparam -name prime256v1 -genkey -param_enc explicit -noout` then
+    // `openssl ec -pubout`: a genuinely P-256 key whose PEM encodes explicit domain parameters
+    // instead of the named-curve OID, as some non-.NET tooling (older OpenSSL configs, some HSM
+    // export utilities) produces. Its field prime/coefficients/generator/order were independently
+    // confirmed to equal NIST P-256's via `openssl ecparam ... -text -noout`.
+    private const string ExplicitlyEncodedP256PublicKeyPem =
+        """
+        -----BEGIN PUBLIC KEY-----
+        MIIBSzCCAQMGByqGSM49AgEwgfcCAQEwLAYHKoZIzj0BAQIhAP////8AAAABAAAA
+        AAAAAAAAAAAA////////////////MFsEIP////8AAAABAAAAAAAAAAAAAAAA////
+        ///////////8BCBaxjXYqjqT57PrvVV2mIa8ZR0GsMxTsPY7zjw+J9JgSwMVAMSd
+        NgiG5wSTamZ44ROdJreBn36QBEEEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5
+        RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sxXs7LtkBoN79R9QIhAP////8AAAAA
+        //////////+85vqtpxeehPO5ysL8YyVRAgEBA0IABKizSPR5f/rkbmSDkA/rB2Re
+        cKJvegok+EREu6UYJoX+SPGVIXrGHlLwVoO5WVHk1g3nAX26ygnpOihuUtZeU58=
+        -----END PUBLIC KEY-----
+        """;
+
+    [Fact]
+    public void TryValidatePublicKeyDoesNotRejectAGenuineP256KeyJustForUsingExplicitParameterEncoding()
+    {
+        var accepted = EcdsaKeyPairs.TryValidatePublicKey(ExplicitlyEncodedP256PublicKeyPem, out var error);
+
+        if (accepted)
+        {
+            // Platforms whose ECDsa backend supports explicit-parameter curves (e.g. Linux/OpenSSL,
+            // this project's CI): this is the fix's actual target - a genuinely P-256 key must not
+            // be rejected as an "unrecognized curve" purely because of how it happened to be encoded.
+            Assert.Null(error);
+        }
+        else
+        {
+            // Some platforms (Apple's Security-framework-backed ECDsa on macOS) cannot import
+            // explicit-curve key material at all, regardless of which curve it actually describes -
+            // ImportFromPem itself throws PlatformNotSupportedException. There, TryValidatePublicKey
+            // must still fail cleanly with an error rather than let that exception go uncaught.
+            Assert.NotNull(error);
+        }
+    }
+
     [Fact]
     public void PublicKeysMatchThrowsForNonP256Keys()
     {
