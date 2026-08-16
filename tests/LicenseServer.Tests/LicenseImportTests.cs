@@ -226,6 +226,22 @@ public sealed class LicenseImportTests(PostgresWebFixture fixture)
     }
 
     [Fact]
+    public async Task ImportDoesNotRejectAFileExactlyAtTheSizeLimitForMultipartFramingOverhead()
+    {
+        // The whole-request pre-check (Program.cs, before the form is even parsed) has to bound
+        // against request.ContentLength, which includes multipart boundaries, per-part headers,
+        // and the contactEmail field on top of the file itself - not just the artifact limit used
+        // by the precise post-parse file.Length check below it. A file sitting exactly at the
+        // documented limit must not be rejected purely because of that framing overhead.
+        using var client = fixture.CreateAuthenticatedClient(false, Permissions.LicensesImport);
+        var atLimit = new byte[LicenseImportService.MaxUploadBytes];
+        using var response = await PostImportAsync(client, atLimit, "at-limit.license", "at-limit@example.com");
+        // Not a valid signed envelope, so it still fails - just not on size.
+        Assert.NotEqual(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        await RoadmapTestSupport.AssertProblemAsync(response, HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
     public async Task ImportRequiresTheLicensesImportPermission()
     {
         var (bytes, _) = await SignAsync(BuildLicense(UniqueLicenseId(), "Forbidden Customer", contactEmail: "forbidden@example.com"));

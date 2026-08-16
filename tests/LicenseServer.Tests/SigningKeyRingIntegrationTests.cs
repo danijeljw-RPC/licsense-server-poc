@@ -301,14 +301,25 @@ public sealed class SigningKeyRingIntegrationTests(PostgresWebFixture fixture)
     [Fact]
     public async Task RescanEndpointWritesAnAuditRecord()
     {
+        // Counts before/after rather than asserting existence: this fixture's database is shared
+        // across tests in the collection, and AdminEndpointsEnforcePermissionsAndListsReflectTheRing
+        // above writes a "signingKey.rescan" record under this same "phase0-test-operator" actor. An
+        // existence check alone would stay green even if this endpoint stopped writing its own
+        // record, as long as that other test ran first.
+        await using var countScope = fixture.Factory.Services.CreateAsyncScope();
+        var countDb = countScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var before = await countDb.AuditRecords.CountAsync(item =>
+            item.Action == "signingKey.rescan" && item.Actor == "phase0-test-operator");
+
         var manager = fixture.CreateAuthenticatedClient(true, Permissions.SigningKeysManage, Permissions.LicensesRead);
         using var rescan = await RoadmapTestSupport.PostAdminAsync(manager, "/api/v1/admin/signing-keys/rescan", new { });
         Assert.Equal(HttpStatusCode.NoContent, rescan.StatusCode);
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        Assert.True(await db.AuditRecords.AnyAsync(item =>
-            item.Action == "signingKey.rescan" && item.Actor == "phase0-test-operator"));
+        var after = await db.AuditRecords.CountAsync(item =>
+            item.Action == "signingKey.rescan" && item.Actor == "phase0-test-operator");
+        Assert.Equal(before + 1, after);
     }
 
     private static JsonObject BuildLicense(string suffix) => new()

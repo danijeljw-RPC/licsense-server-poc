@@ -68,7 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   license legitimately has more than one `Entitlement` row per
   `LicenseRecord`; the admin license-terms edit panels and the customer
   portal's license view are guarded against that case rather than crashing
-  on the entitlement list's now-possible multiple rows.
+  on the entitlement list's now-possible multiple rows. Term amendments are
+  also blocked for every imported license, including the common
+  single-product case that has exactly one entitlement: the signed
+  artifact, not this relational index, remains the source of truth, and
+  amending here would silently diverge from it.
 - Admin UI page for license import, `/licenses/import` (gated on
   `Permissions.LicensesImport`, linked next to "Offline issuance" in the nav
   and on the Licenses list): a Blazor `InputFile` form with a required
@@ -145,6 +149,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same tab. Each submission now resolves `LicenseImportService` from a
   fresh `IServiceScopeFactory` scope, disposed right after — the same
   scope-per-operation pattern `SigningKeyRingService` already uses.
+- `POST /api/v1/admin/licenses/import`'s pre-parse size guard rejected some
+  legitimately-sized files: it bounded `request.ContentLength` (the whole
+  multipart body, including boundaries, per-part headers, and the
+  `contactEmail` field) against the 256 KB artifact limit itself, so a file
+  right at that limit could be rejected before the accurate post-parse
+  `file.Length` check ever ran. The pre-check now allows headroom for
+  multipart framing overhead; the artifact limit is still enforced exactly
+  against `file.Length`.
+- `EcdsaKeyPairs.TryValidatePair`, `TryValidatePublicKey`, and
+  `PublicKeysMatch` never checked that imported key material was actually on
+  the NIST P-256 curve. A self-consistent key pair generated on another curve
+  (e.g. P-384) passed `TryValidatePair` cleanly, while `LicenseEnvelope.Sign`
+  still hardcoded the envelope's `algorithm` field to `ECDSA-P256-SHA256`
+  regardless of the curve actually used, producing a mislabeled artifact. All
+  three methods now reject any key not on P-256; the two `Try*` methods
+  return `false` with an explanatory error, and `PublicKeysMatch` throws
+  `CryptographicException`, consistent with its existing exception-based
+  contract for malformed input. Purely additive: every key in `keys/` and
+  every key `LicenseGenerator keygen` produces is already P-256. (#32)
+- That same P-256 curve check compared only the named-curve OID, so a PEM
+  encoding genuinely P-256 domain parameters explicitly instead of by name
+  (e.g. `openssl ecparam -param_enc explicit`) was wrongly rejected as an
+  "unrecognized curve" — the opposite of the check's intent. Falls back to
+  comparing the field prime, curve coefficients, generator point, and order
+  against P-256's published domain parameters when the curve has no named
+  OID. Also catches `PlatformNotSupportedException` in the two `Try*`
+  methods: platforms whose ECDsa backend cannot import explicit-curve PEMs
+  at all (confirmed on macOS) now fail validation cleanly instead of
+  crashing with an unhandled exception.
+- `SigningKeyFiles.IsValidKeyId` anchored its pattern with `$`, which .NET
+  regex matches immediately before a trailing newline as well as at the true
+  end of the string. A key ID such as `"primary-2026\n"` passed validation,
+  which would have let `keygen --id` write a PEM filename containing a
+  newline. Anchored with `\z` instead, which admits no exception.
+- `POST /api/v1/admin/signing-keys/rescan` wrote a `Result = "success"` audit
+  record even when the underlying reload failed and silently kept the old
+  key-ring snapshot (`ReloadAsync` catches and logs reload failures rather
+  than throwing). `ReloadAsync` now reports whether it actually published a
+  new snapshot; a failed rescan throws instead of writing a misleading
+  success record, matching how every other signing-key mutation here already
+  fails before auditing.
 
 ## [0.1.0] - 2026-08-14
 
