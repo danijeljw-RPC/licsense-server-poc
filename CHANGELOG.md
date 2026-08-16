@@ -69,7 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   license legitimately has more than one `Entitlement` row per
   `LicenseRecord`; the admin license-terms edit panels and the customer
   portal's license view are guarded against that case rather than crashing
-  on the entitlement list's now-possible multiple rows.
+  on the entitlement list's now-possible multiple rows. Term amendments are
+  also blocked for every imported license, including the common
+  single-product case that has exactly one entitlement: the signed
+  artifact, not this relational index, remains the source of truth, and
+  amending here would silently diverge from it.
 - `POST /api/v1/admin/signing-keys/rescan` (and the Blazor "Rescan key
   directory" button, which now goes through the same `RescanAsync` method)
   write an `AuditRecord` (`signingKey.rescan`), matching `set-default` and
@@ -123,6 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trait at all — silently never ran in CI. Switched to excluding
   `Suite=Phase0Roadmap` (the intentional-red executable specification)
   instead, so everything meant to pass runs: 106 of 152 tests, all green.
+- `POST /api/v1/admin/licenses/import`'s pre-parse size guard rejected some
+  legitimately-sized files: it bounded `request.ContentLength` (the whole
+  multipart body, including boundaries, per-part headers, and the
+  `contactEmail` field) against the 256 KB artifact limit itself, so a file
+  right at that limit could be rejected before the accurate post-parse
+  `file.Length` check ever ran. The pre-check now allows headroom for
+  multipart framing overhead; the artifact limit is still enforced exactly
+  against `file.Length`.
 
 ## [0.1.0] - 2026-08-14
 
