@@ -251,6 +251,39 @@ public sealed class LicenseImportTests(PostgresWebFixture fixture)
     }
 
     [Fact]
+    public async Task ImportPageRequiresTheLicensesImportPermission()
+    {
+        using var permitted = fixture.CreateAuthenticatedClient(false, Permissions.LicensesImport);
+        Assert.Equal(HttpStatusCode.OK, (await permitted.GetAsync("/licenses/import")).StatusCode);
+
+        using var forbidden = fixture.CreateAuthenticatedClient(false, Permissions.LicensesRead);
+        Assert.Equal(HttpStatusCode.Forbidden, (await forbidden.GetAsync("/licenses/import")).StatusCode);
+    }
+
+    [Fact]
+    public async Task ImportedLicenseSurfacesProvenanceInAdminListAndDetailViews()
+    {
+        var licenseId = UniqueLicenseId();
+        var contactEmail = $"provenance-{Guid.NewGuid():N}@example.com";
+        var (bytes, _) = await SignAsync(BuildLicense(licenseId, "Provenance Customer", contactEmail: contactEmail));
+        using var client = fixture.CreateAuthenticatedClient(false, Permissions.LicensesImport);
+        using var response = await PostImportAsync(client, bytes, "provenance.license", contactEmail);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var data = scope.ServiceProvider.GetRequiredService<AdminDataService>();
+
+        var detail = await data.GetLicenseAsync(licenseId);
+        Assert.NotNull(detail);
+        Assert.Equal(LicenseProvenance.Imported, detail!.Provenance);
+        Assert.NotNull(detail.ImportedAt);
+
+        var results = await data.SearchLicensesAsync(licenseId, null, null, 1);
+        var row = Assert.Single(results.Items);
+        Assert.Equal(LicenseProvenance.Imported, row.Provenance);
+    }
+
+    [Fact]
     public async Task ImportedSingleProductLicenseRejectsTermsAmendmentToPreventDriftFromTheSignedArtifact()
     {
         // A single-product import passes the "exactly one entitlement" check that otherwise gates

@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scanned keys, an authoritative Postgres-backed default, distinct
   rotate/retire/revoke operations, and a supported path for importing licenses
   produced offline by `LicenseGenerator`. Implemented since as a reduced core
-  slice; the license-import feature now has a working API (see below) with its
-  admin UI page still to follow.
+  slice; the license-import feature now has both a working API and an admin
+  UI page (see below).
   `LicenseValidator`'s embedded trust model is explicitly out of scope and
   unchanged.
 - `Licensing.Core.LicenseEnvelope` — the single envelope-construction and
@@ -62,8 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deactivation both fail closed by construction; admin-side license revoke
   is the supported lifecycle action for it. Writes a `license.imported`
   audit record, plus one `product.auto-created` record per auto-created
-  product. No admin UI page yet — API only; see `README.md`'s "License
-  import" section. New migration `LicenseImport` also replaces
+  product. New migration `LicenseImport` also replaces
   `Entitlement`'s one-per-license unique index with a composite
   `(LicenseRecordId, Product)` index, since an imported multi-product
   license legitimately has more than one `Entitlement` row per
@@ -74,6 +73,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single-product case that has exactly one entitlement: the signed
   artifact, not this relational index, remains the source of truth, and
   amending here would silently diverge from it.
+- Admin UI page for license import, `/licenses/import` (gated on
+  `Permissions.LicensesImport`, linked next to "Offline issuance" in the nav
+  and on the Licenses list): a Blazor `InputFile` form with a required
+  contact-email field, calling `LicenseImportService.ImportAsync` directly —
+  the same service the HTTP endpoint uses, so there is exactly one import
+  implementation. `IBrowserFile.OpenReadStream` is capped at the same
+  256 KB the backend already enforces; no Blazor Server SignalR limit change
+  was needed since `InputFile` streams file bytes in chunks that respect the
+  default limit regardless of the file's own size. Shows the resulting
+  license ID, its products, and any auto-created products still needing
+  catalog review (linked to the filtered product list), or the specific
+  validation error otherwise. `LicenseRecord.Provenance` is now also surfaced
+  in the admin license list (an "Imported" badge) and detail view (a
+  Provenance/Imported-at field), so operators can tell an imported license
+  apart from a server-issued one at a glance.
 - `POST /api/v1/admin/signing-keys/rescan` (and the Blazor "Rescan key
   directory" button, which now goes through the same `RescanAsync` method)
   write an `AuditRecord` (`signingKey.rescan`), matching `set-default` and
@@ -127,6 +141,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trait at all — silently never ran in CI. Switched to excluding
   `Suite=Phase0Roadmap` (the intentional-red executable specification)
   instead, so everything meant to pass runs: 106 of 152 tests, all green.
+- The `/licenses/import` page injected `LicenseImportService` (and its
+  `ApplicationDbContext`) directly, so using "Import another" repeatedly
+  reused the same circuit-scoped `DbContext` for as long as the tab stayed
+  open: every import's tracked entity graph accumulated, and a failed save
+  could leave stranded tracked entities colliding with later imports in the
+  same tab. Each submission now resolves `LicenseImportService` from a
+  fresh `IServiceScopeFactory` scope, disposed right after — the same
+  scope-per-operation pattern `SigningKeyRingService` already uses.
 - `POST /api/v1/admin/licenses/import`'s pre-parse size guard rejected some
   legitimately-sized files: it bounded `request.ContentLength` (the whole
   multipart body, including boundaries, per-part headers, and the

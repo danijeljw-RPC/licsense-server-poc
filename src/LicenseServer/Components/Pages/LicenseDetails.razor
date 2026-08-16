@@ -40,7 +40,7 @@ else
         </article>
         <article class="panel">
             <h2>Lifecycle</h2>
-            <dl><dt>Issued</dt><dd>@license.IssuedAt.ToString("u") UTC</dd><dt>Expires</dt><dd>@FormatExpiry(license.ExpiresAt)</dd><dt>Version</dt><dd>@license.Version</dd><dt>Cancelled</dt><dd>@(license.CancelledAt?.ToString("u") ?? "No")</dd><dt>Revoked</dt><dd>@(license.RevokedAt?.ToString("u") ?? "No")</dd></dl>
+            <dl><dt>Issued</dt><dd>@license.IssuedAt.ToString("u") UTC</dd><dt>Expires</dt><dd>@FormatExpiry(license.ExpiresAt)</dd><dt>Version</dt><dd>@license.Version</dd><dt>Cancelled</dt><dd>@(license.CancelledAt?.ToString("u") ?? "No")</dd><dt>Revoked</dt><dd>@(license.RevokedAt?.ToString("u") ?? "No")</dd><dt>Provenance</dt><dd>@(license.Provenance == "imported" ? "Imported (offline artifact)" : "Issued") @if (license.Provenance == "imported") { <span class="status imported">Imported</span> }</dd>@if (license.ImportedAt is not null) { <dt>Imported</dt><dd>@license.ImportedAt?.ToString("u") UTC</dd> }</dl>
             <p class="notice">Online checks observe lifecycle changes immediately. Previously downloaded offline files cannot be recalled or changed.</p>
         </article>
     </div>

@@ -72,10 +72,14 @@ public sealed class RoadmapPersistenceContractTests(PostgresWebFixture fixture)
         Assert.NotNull(product.FindProperty("IsActive"));
         var entitlement = db.Model.FindEntityType(typeof(Entitlement))!;
         Assert.Contains(entitlement.GetForeignKeys(), key => key.PrincipalEntityType == product);
+        // A single-product-per-license unique index on LicenseRecordId alone predates license
+        // import: an imported multi-product license legitimately has more than one Entitlement
+        // row per LicenseRecord, so the constraint is composite - still one row per product.
         Assert.Contains(entitlement.GetIndexes(), index =>
             index.IsUnique
-            && index.Properties.Count == 1
-            && index.Properties[0].Name == nameof(Entitlement.LicenseRecordId));
+            && index.Properties.Count == 2
+            && index.Properties[0].Name == nameof(Entitlement.LicenseRecordId)
+            && index.Properties[1].Name == nameof(Entitlement.Product));
     }
 
     [Fact]
