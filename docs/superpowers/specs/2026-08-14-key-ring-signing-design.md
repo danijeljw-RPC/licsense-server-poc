@@ -749,9 +749,9 @@ mismatch.
   already has a strictly better tool: `POST /signing-keys/rescan` and the
   "Rescan key directory" button, which pick the key up immediately and on
   demand, rather than at some point after an event the operator cannot observe.
-  (Unlike `set-default` and `revoke`, rescan currently writes no `AuditRecord`;
-  it changes no key state of its own, but adding one would make the operator's
-  faster path as traceable as the slower ones.)
+  Rescan writes an `AuditRecord` (`signingKey.rescan`) unconditionally, the
+  same as `set-default` and `revoke`, so the operator's faster path is exactly
+  as traceable as the slower ones.
   Against that, `FileSystemWatcher` carries real cost: silent event loss on
   `InternalBufferOverflowException`, per-platform behavioral differences,
   duplicate/partial events during multi-file key installs requiring the

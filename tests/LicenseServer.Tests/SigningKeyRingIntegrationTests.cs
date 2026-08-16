@@ -278,6 +278,50 @@ public sealed class SigningKeyRingIntegrationTests(PostgresWebFixture fixture)
         Assert.Equal(HttpStatusCode.BadRequest, badSetDefault.StatusCode);
     }
 
+    [Fact]
+    public async Task RescanWritesAnAuditRecord()
+    {
+        // Direct call, exercising the same SigningKeyRingService.RescanAsync method the Blazor page's
+        // "Rescan key directory" button calls - see RescanEndpointWritesAnAuditRecord below for the
+        // /api/v1/admin/signing-keys/rescan HTTP path, which is a different caller of the same method.
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var keyRing = scope.ServiceProvider.GetRequiredService<SigningKeyRingService>();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        await keyRing.RescanAsync("rescan-audit-test-actor");
+
+        var record = Assert.Single(await db.AuditRecords
+            .Where(item => item.Actor == "rescan-audit-test-actor")
+            .ToListAsync());
+        Assert.Equal("signingKey.rescan", record.Action);
+        Assert.Equal("signingKey", record.TargetType);
+        Assert.Equal("success", record.Result);
+    }
+
+    [Fact]
+    public async Task RescanEndpointWritesAnAuditRecord()
+    {
+        // Counts before/after rather than asserting existence: this fixture's database is shared
+        // across tests in the collection, and AdminEndpointsEnforcePermissionsAndListsReflectTheRing
+        // above writes a "signingKey.rescan" record under this same "phase0-test-operator" actor. An
+        // existence check alone would stay green even if this endpoint stopped writing its own
+        // record, as long as that other test ran first.
+        await using var countScope = fixture.Factory.Services.CreateAsyncScope();
+        var countDb = countScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var before = await countDb.AuditRecords.CountAsync(item =>
+            item.Action == "signingKey.rescan" && item.Actor == "phase0-test-operator");
+
+        var manager = fixture.CreateAuthenticatedClient(true, Permissions.SigningKeysManage, Permissions.LicensesRead);
+        using var rescan = await RoadmapTestSupport.PostAdminAsync(manager, "/api/v1/admin/signing-keys/rescan", new { });
+        Assert.Equal(HttpStatusCode.NoContent, rescan.StatusCode);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var after = await db.AuditRecords.CountAsync(item =>
+            item.Action == "signingKey.rescan" && item.Actor == "phase0-test-operator");
+        Assert.Equal(before + 1, after);
+    }
+
     private static JsonObject BuildLicense(string suffix) => new()
     {
         ["licenseId"] = $"LIC-TEST-{suffix}",

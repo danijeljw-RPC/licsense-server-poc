@@ -53,4 +53,21 @@ public static class EcdsaKeyPairs
             return false;
         }
     }
+
+    /// <summary>
+    /// Compares two public keys by decoded SubjectPublicKeyInfo bytes, not PEM text - see the
+    /// remarks on <see cref="TryValidatePair"/> for why byte comparison is required. Both
+    /// inputs are expected to already be known-valid PEM (e.g. a compiled trusted key, or a
+    /// key already checked with <see cref="TryValidatePublicKey"/>), so this throws rather
+    /// than returning a Try-pattern result.
+    /// </summary>
+    public static bool PublicKeysMatch(string publicKeyPemA, string publicKeyPemB)
+    {
+        using var keyA = ECDsa.Create();
+        keyA.ImportFromPem(publicKeyPemA);
+        using var keyB = ECDsa.Create();
+        keyB.ImportFromPem(publicKeyPemB);
+
+        return keyA.ExportSubjectPublicKeyInfo().AsSpan().SequenceEqual(keyB.ExportSubjectPublicKeyInfo());
+    }
 }

@@ -31,10 +31,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows has no POSIX mode and the command says so.
 - `LicenseGenerator sign --public-key <path>`, overriding the public key the
   private-key/key-ID pair check runs against.
+- `LicenseGenerator sign` now hard-fails before signing if the resolved key ID
+  is present in `TrustedPublicKeys.ByKeyId` and the on-disk public key doesn't
+  match the compiled entry. This restores the guarantee moving the pair check
+  off `TrustedPublicKeys` gave up: a locally regenerated pair reusing an
+  existing key ID (e.g. `keygen --id primary-2026 --force`) is rejected before
+  anything is signed, instead of quietly producing licences every released
+  validator rejects. A key ID absent from `TrustedPublicKeys` — the normal
+  key-ring case — still signs exactly as before, with no warning; the map is
+  consulted only as a negative check, never as an allowlist for which key IDs
+  may sign.
 - Recorded decisions for the four open license-import design questions —
   catalog handling for unknown products, the email source for metadata-free
   imports, activation credentials on pre-activated imports, and verbatim
   artifact storage. Decisions only; the import endpoint is still unimplemented.
+- `POST /api/v1/admin/signing-keys/rescan` (and the Blazor "Rescan key
+  directory" button, which now goes through the same `RescanAsync` method)
+  write an `AuditRecord` (`signingKey.rescan`), matching `set-default` and
+  `revoke`. Written unconditionally, on every invocation, not only when the
+  rescan changes the published key-ring snapshot.
+- CI now runs on pull requests and pushes to `dev`, not only `main`.
+- A `test-bash-license-flow` CI job runs `scripts/test-license-flow.sh` on
+  `ubuntu-latest`, covering the bash port of the license-flow scripts that
+  CI previously never exercised.
 - Bash equivalents of the PowerShell scripts in `scripts/`
   (`new-demo-licenses.sh`, `new-offline-activation-request.sh`,
   `test-database-and-auth.sh`, `test-activation-flow.sh`,
@@ -50,12 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generator immediately, with no `TrustedPublicKeys.cs` edit or CLI rebuild.
   The public half is located by key ID rather than by rewriting the private
   key's filename, so the check still catches a private-key/key-ID mismatch.
-  Two consequences: signing a private key stored outside the
+  One consequence: signing a private key stored outside the
   `<keyId>.private.pem` convention, with no public half beside it, now requires
-  the new `--public-key`; and the check no longer proves the key ID is one
-  shipped products trust, so a locally regenerated pair reusing an existing key
-  ID will sign without complaint. Validate a new key with `LicenseValidator`
-  before issuing with it.
+  the new `--public-key`. A second consequence — the check no longer proving
+  the key ID is one shipped products trust — is addressed below.
 - `LicenseGenerator sign --key-id` is optional, derived from a
   `<keyId>.private.pem` filename and still overridable.
 - The key-ring contracts (`ILicenseKeyRing`, `ILicenseSigner`,
@@ -75,11 +92,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README's production-hardening guidance referenced `LicenseEnvelopeSigner`,
   a class deleted when the signing key ring landed. It now names the current
   signing component (`SigningKeyRingService` behind `ILicenseSigner`).
+- CI's "Database and authentication" test leg filtered on `Suite=Baseline`, an
+  allowlist matching only 4 of 152 tests. Every other suite — including the
+  entire signing-key-ring test suite and several test classes with no `Suite`
+  trait at all — silently never ran in CI. Switched to excluding
+  `Suite=Phase0Roadmap` (the intentional-red executable specification)
+  instead, so everything meant to pass runs: 106 of 152 tests, all green.
 - `SigningKeyFiles.IsValidKeyId` anchored its pattern with `$`, which .NET
   regex matches immediately before a trailing newline as well as at the true
   end of the string. A key ID such as `"primary-2026\n"` passed validation,
   which would have let `keygen --id` write a PEM filename containing a
   newline. Anchored with `\z` instead, which admits no exception.
+- `POST /api/v1/admin/signing-keys/rescan` wrote a `Result = "success"` audit
+  record even when the underlying reload failed and silently kept the old
+  key-ring snapshot (`ReloadAsync` catches and logs reload failures rather
+  than throwing). `ReloadAsync` now reports whether it actually published a
+  new snapshot; a failed rescan throws instead of writing a misleading
+  success record, matching how every other signing-key mutation here already
+  fails before auditing.
 
 ## [0.1.0] - 2026-08-14
 
