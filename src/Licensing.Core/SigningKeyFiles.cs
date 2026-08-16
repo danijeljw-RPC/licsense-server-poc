@@ -47,6 +47,6 @@ public static partial class SigningKeyFiles
     public static string PublicKeyPath(string directory, string keyId) =>
         Path.Combine(directory, keyId + PublicSuffix);
 
-    [GeneratedRegex("^[a-z0-9]+(-[a-z0-9]+)*$")]
+    [GeneratedRegex(@"^[a-z0-9]+(-[a-z0-9]+)*\z")]
     private static partial Regex KeyIdPattern();
 }

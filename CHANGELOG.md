@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README's production-hardening guidance referenced `LicenseEnvelopeSigner`,
   a class deleted when the signing key ring landed. It now names the current
   signing component (`SigningKeyRingService` behind `ILicenseSigner`).
+- `SigningKeyFiles.IsValidKeyId` anchored its pattern with `$`, which .NET
+  regex matches immediately before a trailing newline as well as at the true
+  end of the string. A key ID such as `"primary-2026\n"` passed validation,
+  which would have let `keygen --id` write a PEM filename containing a
+  newline. Anchored with `\z` instead, which admits no exception.
 
 ## [0.1.0] - 2026-08-14
 

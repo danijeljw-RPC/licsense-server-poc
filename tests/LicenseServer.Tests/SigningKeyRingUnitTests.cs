@@ -70,6 +70,8 @@ public sealed class SigningKeyFilesTests
     [InlineData("../escape")]   // path traversal
     [InlineData("with/slash")]
     [InlineData("with space")]
+    [InlineData("primary-2026\n")] // trailing newline: .NET's `$` matches before it, `\z` must not
+    [InlineData("primary-2026\r\n")]
     public void NonConformingKeyIdsAreRejected(string? keyId) =>
         Assert.False(SigningKeyFiles.IsValidKeyId(keyId));
 
