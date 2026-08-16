@@ -103,6 +103,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end of the string. A key ID such as `"primary-2026\n"` passed validation,
   which would have let `keygen --id` write a PEM filename containing a
   newline. Anchored with `\z` instead, which admits no exception.
+- `POST /api/v1/admin/signing-keys/rescan` wrote a `Result = "success"` audit
+  record even when the underlying reload failed and silently kept the old
+  key-ring snapshot (`ReloadAsync` catches and logs reload failures rather
+  than throwing). `ReloadAsync` now reports whether it actually published a
+  new snapshot; a failed rescan throws instead of writing a misleading
+  success record, matching how every other signing-key mutation here already
+  fails before auditing.
 
 ## [0.1.0] - 2026-08-14
 
