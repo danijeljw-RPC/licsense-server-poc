@@ -137,6 +137,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trait at all — silently never ran in CI. Switched to excluding
   `Suite=Phase0Roadmap` (the intentional-red executable specification)
   instead, so everything meant to pass runs: 106 of 152 tests, all green.
+- The `/licenses/import` page injected `LicenseImportService` (and its
+  `ApplicationDbContext`) directly, so using "Import another" repeatedly
+  reused the same circuit-scoped `DbContext` for as long as the tab stayed
+  open: every import's tracked entity graph accumulated, and a failed save
+  could leave stranded tracked entities colliding with later imports in the
+  same tab. Each submission now resolves `LicenseImportService` from a
+  fresh `IServiceScopeFactory` scope, disposed right after — the same
+  scope-per-operation pattern `SigningKeyRingService` already uses.
 
 ## [0.1.0] - 2026-08-14
 

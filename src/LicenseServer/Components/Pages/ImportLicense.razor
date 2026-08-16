@@ -2,7 +2,8 @@
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = Permissions.LicensesImport)]
 @implements IAsyncDisposable
-@inject LicenseImportService Importer
+@using Microsoft.Extensions.DependencyInjection
+@inject IServiceScopeFactory ScopeFactory
 @inject AuthenticationStateProvider AuthenticationState
 
 <PageTitle>Import license</PageTitle>
@@ -85,7 +86,16 @@ else
             }
 
             var actor = (await AuthenticationState.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
-            var outcome = await Importer.ImportAsync(bytes, selectedFile.Name, form.ContactEmail, actor, cts.Token);
+            // A fresh DI scope per submission, not the circuit-scoped LicenseImportService/
+            // ApplicationDbContext directly: "Import another" lets an operator submit repeatedly
+            // without navigating away, and a component-injected DbContext lives for the whole
+            // circuit, so every import's tracked entity graph (including the uploaded bytes)
+            // would otherwise accumulate for as long as the tab stays open - and if a save ever
+            // failed, the stranded tracked entities would keep colliding with later imports.
+            // Same scope-per-operation pattern SigningKeyRingService already uses internally.
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var importer = scope.ServiceProvider.GetRequiredService<LicenseImportService>();
+            var outcome = await importer.ImportAsync(bytes, selectedFile.Name, form.ContactEmail, actor, cts.Token);
             if (!outcome.Success)
             {
                 error = outcome.Error;
