@@ -98,6 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trait at all — silently never ran in CI. Switched to excluding
   `Suite=Phase0Roadmap` (the intentional-red executable specification)
   instead, so everything meant to pass runs: 106 of 152 tests, all green.
+- `SigningKeyFiles.IsValidKeyId` anchored its pattern with `$`, which .NET
+  regex matches immediately before a trailing newline as well as at the true
+  end of the string. A key ID such as `"primary-2026\n"` passed validation,
+  which would have let `keygen --id` write a PEM filename containing a
+  newline. Anchored with `\z` instead, which admits no exception.
 
 ## [0.1.0] - 2026-08-14
 
