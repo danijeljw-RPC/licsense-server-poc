@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-16
+
+### Changed
+
+- Rotated the `primary-2026` and `secondary-2026` signing keys. The prior
+  key pairs' private keys were lost, so all licences previously signed with
+  them (test licences only) can no longer be verified. New key pairs were
+  generated with `LicenseGenerator keygen` and `Licensing.Core.TrustedPublicKeys`
+  now embeds the new public keys under the same key IDs. Any product built
+  against a `Licensing.Core` older than this version will not trust licences
+  signed after this rotation and must be rebuilt against the updated package.
+
 ## [0.2.0] - 2026-08-16
 
 ### Added

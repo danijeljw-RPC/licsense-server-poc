@@ -1,6 +1,6 @@
 # Software licensing POC
 
-Current version: **v0.2.0** — see [CHANGELOG.md](CHANGELOG.md) for release notes.
+Current version: **v0.2.1** — see [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 This repository is a proof-of-concept foundation for issuing one signed licence that can cover multiple commercial products. It has four projects:
 
