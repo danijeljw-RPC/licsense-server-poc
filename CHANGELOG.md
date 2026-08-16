@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-16
+
 ### Added
 
 - Design specification for a multi-key **key-ring signing and rotation**
@@ -87,7 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation error otherwise. `LicenseRecord.Provenance` is now also surfaced
   in the admin license list (an "Imported" badge) and detail view (a
   Provenance/Imported-at field), so operators can tell an imported license
-  apart from a server-issued one at a glance.
+  apart from a server-issued one at a glance. (#35)
 - `POST /api/v1/admin/signing-keys/rescan` (and the Blazor "Rescan key
   directory" button, which now goes through the same `RescanAsync` method)
   write an `AuditRecord` (`signingKey.rescan`), matching `set-default` and
@@ -320,5 +322,6 @@ over the project's first development cycle.
   public-key trust map.
 - Removed the legacy `local-poc-admin-key` header-based admin bypass.
 
-[Unreleased]: https://github.com/danijeljw-RPC/licsense-server-poc/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/danijeljw-RPC/licsense-server-poc/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/danijeljw-RPC/licsense-server-poc/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/danijeljw-RPC/licsense-server-poc/releases/tag/v0.1.0
