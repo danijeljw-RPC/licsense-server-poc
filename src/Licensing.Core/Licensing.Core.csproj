@@ -9,7 +9,7 @@
   <PropertyGroup>
     <!-- Version is overridden by CI (-p:Version=X.Y.Z) at release build/pack time; this is only
          the local/dev fallback so an unversioned build still produces something sane. -->
-    <Version>0.0.0-dev</Version>
+    <Version>0.2.1</Version>
     <PackageId>Licensing.Core</PackageId>
     <Authors>Danijel-James Wynyard</Authors>
     <Description>Offline licence file verification: parses and validates ECDSA-signed licence envelopes against embedded trusted public keys.</Description>
