@@ -92,8 +92,11 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             .Include(x => x.Customer).Include(x => x.Entitlements).Include(x => x.Activations)
             .SingleOrDefaultAsync(x => x.LicenseId == licenseId, cancellationToken);
         if (x is null) return null;
-        var active = x.Activations.SingleOrDefault(a => a.DeactivatedAt == null);
+        var active = x.Activations.Where(a => a.DeactivatedAt == null)
+            .OrderByDescending(a => a.ActivatedAt)
+            .ToList();
         var activationIds = x.Activations.Select(y => y.ActivationId).ToArray();
+        var seatLimit = x.Entitlements.Count == 0 ? 0 : x.Entitlements.Min(item => item.Seats);
         var history = await db.AuditRecords.AsNoTracking()
             .Where(a => a.TargetId == licenseId || (a.TargetType == "activation" && activationIds.Contains(a.TargetId)))
             .OrderByDescending(a => a.TimestampUtc)
@@ -105,10 +108,12 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             x.IssuedAt,
             x.ExpiresAt?.AddTicks(x.ExpirySubMicrosecondTicks),
             x.CancelledAt, x.CancellationReason, x.CancelledBy, x.RevokedAt, x.RevocationReason, x.Version,
-            LicenseStore.GetLifecycleState(x, active is not null, DateTimeOffset.UtcNow),
+            LicenseStore.GetLifecycleState(x, active.Count > 0, DateTimeOffset.UtcNow),
             x.Provenance, x.ImportedAt,
             x.Entitlements.OrderBy(e => e.Product).Select(e => new EntitlementView(e.Product, e.Edition, e.LicenseType, e.Seats, e.UpdatesUntil)).ToList(),
-            active is null ? null : new ActivationView(active.ActivationId, active.Mode, active.DeviceIdSuffix, active.DeviceName, active.ActivatedAt, active.RefreshAfter, active.LeaseExpiresAt),
+            active.Count,
+            seatLimit,
+            active.Select(item => new ActivationView(item.ActivationId, item.Mode, item.DeviceIdSuffix, item.DeviceName, item.ActivatedAt, item.RefreshAfter, item.LeaseExpiresAt)).ToList(),
             x.Activations.OrderByDescending(a => a.ActivatedAt).Select(a => new ActivationHistoryView(a.ActivationId, a.Mode, a.DeviceIdSuffix, a.ActivatedAt, a.DeactivatedAt)).ToList(),
             history);
     }
@@ -233,7 +238,7 @@ public sealed record LicenseDetailView(
     DateTimeOffset? CancelledAt, string? CancellationReason, string? CancelledBy,
     DateTimeOffset? RevokedAt, string? RevocationReason, long Version, string Status,
     string Provenance, DateTimeOffset? ImportedAt,
-    IReadOnlyList<EntitlementView> Entitlements, ActivationView? ActiveActivation,
+    IReadOnlyList<EntitlementView> Entitlements, int ActiveSeatCount, int SeatLimit, IReadOnlyList<ActivationView> ActiveActivations,
     IReadOnlyList<ActivationHistoryView> IssuanceHistory, IReadOnlyList<AuditView> History);
 
 public sealed class CreateLicenseInput

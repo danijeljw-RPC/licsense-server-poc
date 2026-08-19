@@ -290,7 +290,6 @@ builder.Services.AddSingleton<ILicenseVerifier>(sp => sp.GetRequiredService<Sign
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SigningKeyRingService>());
 builder.Services.AddScoped<DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
-var adminPermitLimit = builder.Configuration.GetValue("RateLimits:AdminPermitLimit", 600);
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -300,7 +299,7 @@ builder.Services.AddRateLimiter(options =>
                 $"{context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous"}:{context.Connection.RemoteIpAddress}",
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = adminPermitLimit,
+                    PermitLimit = builder.Configuration.GetValue("RateLimits:AdminPermitLimit", 600),
                     Window = TimeSpan.FromMinutes(1),
                     QueueLimit = 0,
                     AutoReplenishment = true
@@ -310,7 +309,7 @@ builder.Services.AddRateLimiter(options =>
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions
         {
-            PermitLimit = 60,
+            PermitLimit = builder.Configuration.GetValue("RateLimits:DevicePermitLimit", 60),
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0,
             AutoReplenishment = true
@@ -510,7 +509,8 @@ app.MapPost("/api/v1/licenses/{licenseId}/activate", async (
     return result.Success
         ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
         : Problem(result);
-}).AllowAnonymous().RequireRateLimiting("device-api");
+}).AllowAnonymous().RequireRateLimiting("device-api")
+  .WithDescription("Creates or recovers one machine activation for this license. A license may have up to its entitlement seat count in concurrent active machine activations, and each machine may hold at most one active activation for that license.");
 
 app.MapPost("/api/v1/activations/{activationId}/validate", async (
     string activationId, ActivationCredentialRequest request, LicenseStore store, CancellationToken cancellationToken) =>
@@ -538,7 +538,8 @@ app.MapPost("/api/v1/activations/{activationId}/deactivate", async (
     return result.Success
         ? Results.Ok(new DeactivationResponse(result.Value!.LicenseId, activationId, "deactivated", DateTimeOffset.UtcNow))
         : Problem(result);
-}).AllowAnonymous().RequireRateLimiting("device-api");
+}).AllowAnonymous().RequireRateLimiting("device-api")
+  .WithDescription("Authenticates deactivation for one activation and releases that machine's consumed seat immediately after commit.");
 
 var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization().RequireRateLimiting("admin-api").DisableAntiforgery();
 adminApi.MapGet("/authorization/{permission}", async (
@@ -924,7 +925,7 @@ app.MapPost("/licenses/{licenseId}/activations/{activationId}/deactivate", async
     if (!long.TryParse(form["Version"], out var version)) return LifecycleRedirect(licenseId, "error", "The page version is invalid. Reload and retry.");
     var result = await store.AdminDeactivateAsync(activationId, form["Reason"], version,
         context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow, context.TraceIdentifier, ct);
-    return result.Success ? LifecycleRedirect(licenseId, "notice", "Activation deactivated. The license is available for transfer.") : LifecycleRedirect(licenseId, "error", result.Error);
+    return result.Success ? LifecycleRedirect(licenseId, "notice", "Activation deactivated. Seat capacity was released.") : LifecycleRedirect(licenseId, "error", result.Error);
 }).RequireAuthorization(Permissions.ActivationsManage).WithMetadata(new RequireAntiforgeryTokenAttribute(true));
 
 app.MapStaticAssets();

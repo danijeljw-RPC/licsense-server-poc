@@ -23,7 +23,7 @@ Activation and deactivation use serializable database transactions. Issuance use
 
 Generated IDs have the exact form `LIC-{yyyy}-{MMdd}{value:X6}`. The first daily value is `000001`, the last is `FFFFFF`, and a further issuance receives a clear conflict rather than wrapping or falling back to random data. PostgreSQL and the EF change tracker both reject changes to a persisted ID.
 
-PostgreSQL also enforces one live activation per license with a partial unique index over `LicenseRecordId WHERE DeactivatedAt IS NULL`; `(LicenseRecordId, RequestId)` is unique for retry idempotency. Activation codes and bearer tokens are SHA-256 hashes at rest. Only an eight-character device-ID suffix is rendered in the UI. Every timestamp is stored in UTC.
+PostgreSQL enforces activation integrity with a partial unique index over `(LicenseRecordId, DeviceIdHash) WHERE DeactivatedAt IS NULL`, so one machine cannot hold multiple live activations for the same license, while `(LicenseRecordId, RequestId)` remains unique for retry idempotency. A license may have up to its entitlement seat count in concurrent active machine activations. Activation codes and bearer tokens are SHA-256 hashes at rest. Only an eight-character device-ID suffix is rendered in the UI. Every timestamp is stored in UTC.
 
 ### Local development without Docker
 
@@ -276,7 +276,7 @@ Use the left navigation after replacing the seed password:
 2. **Issue license** selects one active product UUID from the catalog and creates a customer, one entitlement, an authoritative signed `metadata.contactEmail` snapshot, and a hashed activation credential. The normalized email is plaintext to anyone holding the signed file. Deliver the original activation code through a separate secure channel because it cannot be recovered.
 3. A license detail page accepts a client-generated 32-byte Base64 activation token and the device's 64-character SHA-256 ID. It issues a downloadable signed response without rendering either secret back to the page.
 4. For an online activation, enter its token and full device ID to refresh the lease and download the refreshed signed file.
-5. To transfer, use **Deactivate / transfer** first. A second device receives HTTP 409 until authenticated deactivation succeeds; the page makes this ordering explicit.
+5. A license detail page shows active seat usage and each current machine activation. Up to the entitlement seat count may be active concurrently; once all seats are occupied, another device receives HTTP 409 until one activation is deactivated.
 6. **Revoke license** requires a reason and confirmation. Revocation prevents online validation and lease refresh. It cannot recall an offline file already in the field.
 7. **Offline issuance** imports JSON created by `scripts/New-OfflineActivationRequest.ps1`, validates it, and downloads the signed `.license` response. The imported token and full device ID are cleared and never displayed.
 8. **Products** supports search, add, display-name/description edit, activation, and archival while retaining stable immutable codes and historical reference counts.
@@ -325,7 +325,7 @@ Use these layers instead:
 
 1. Give each installation a stable, privacy-preserving device ID. This PoC hashes an OS installation ID with a product namespace in [`DeviceIdentity.cs`](src/Licensing.Core/DeviceIdentity.cs). On Windows it hashes `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`; on Linux it hashes `/etc/machine-id`. Only the hash is sent to the server or placed in the signed licence.
 2. Put that device ID in the signed `deviceBinding` object. A copied licence then fails validation on another installation.
-3. Make the service authoritative for activation state. It permits one active device, rejects a second device, and releases the licence only after authenticated deactivation.
+3. Make the service authoritative for activation state. It permits up to the entitlement seat count in concurrent active device activations, enforces at most one active activation per device, and releases a consumed seat only after authenticated deactivation.
 4. For a production Windows product, replace the PoC identifier with a per-device non-exportable key held by the TPM and make online validation a challenge/response proof of key possession. The [.NET CNG provider API](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.cngprovider?view=net-10.0) exposes the Microsoft Platform Crypto Provider, and Microsoft documents that provider as TPM-backed in [CNG Key Storage Providers](https://learn.microsoft.com/en-us/windows/win32/seccertenroll/cng-key-storage-providers). Another Windows option is publisher-scoped [`SystemIdentification.GetSystemIdForPublisher`](https://learn.microsoft.com/en-us/uwp/api/windows.system.profile.systemidentification.getsystemidforpublisher), which prefers TPM, then UEFI, then a registry fallback and reports which source it used.
 
 Windows also defines SMBIOS-based Computer Hardware IDs, but Microsoft describes them as hashes of combinations of SMBIOS fields and notes that a value exists only when all fields in that combination are populated. They are useful signals, not a secret or proof of possession. See [Computer Hardware IDs](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/computer-hardware-ids).
@@ -368,8 +368,8 @@ available -> active on device A -> deactivated -> active on device B
 ```
 
 - Activation requires the customer activation code plus a random client-generated activation token. The service stores SHA-256 hashes of both, not their plaintext values.
-- A retry with the same request ID, device, and token is idempotent. A different activation receives HTTP `409 Conflict` while a device is active.
-- Deactivation requires the activation ID, device ID, and activation token. After it succeeds, another machine may activate.
+- A retry with the same request ID, device, and token is idempotent. A licence may have up to its entitlement seat count in concurrent active machine activations, and each device may hold at most one active activation for that licence.
+- Deactivation requires the activation ID, device ID, and activation token. After it succeeds, that activation stops consuming a seat immediately.
 - Revocation is server state. Online validation and refresh reject a revoked licence immediately.
 - Online clients receive a seven-day signed lease and should refresh after one day. If they stay disconnected, the local lease eventually expires, bounding how long a revocation can be ignored.
 - A perpetual offline file cannot learn that it was revoked. The service can refuse a transfer until an offline deactivation receipt is imported, but it cannot prove that a customer deleted every copy. Strong enforcement requires periodic connectivity, a short lease, or external hardware such as a dongle. This is a fundamental boundary, not a C# implementation detail.
@@ -393,7 +393,7 @@ The seeded PoC license receives a generated `LIC-YYYY-MMDDXXXXXX` ID; find it on
 | `POST /api/v1/licenses/{licenseId}/activate` | Online activation or operator-mediated offline issuance. |
 | `POST /api/v1/activations/{activationId}/validate` | Check current server state. |
 | `POST /api/v1/activations/{activationId}/refresh` | Issue a fresh signed online lease. |
-| `POST /api/v1/activations/{activationId}/deactivate` | Authenticate deactivation and make the licence transferable. |
+| `POST /api/v1/activations/{activationId}/deactivate` | Authenticate deactivation and release that activation's consumed seat. |
 | `GET /api/v1/admin/licenses/{licenseId}` | Inspect state; requires `licenses.read`. |
 | `POST /api/v1/admin/licenses` | Issue one catalog product by UUID; requires `licenses.issue`. |
 | `POST /api/v1/admin/licenses/{licenseId}/revoke` | Permanently revoke; requires `licenses.revoke`, MFA in production, and an antiforgery token for cookie requests. |

@@ -8,6 +8,7 @@ using LicenseServer.Data;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using SoftwareLicensing;
 using LicenseServer.Authorization;
 
@@ -296,6 +297,7 @@ internal sealed class LicenseStore(
         {
             var license = await db.Licenses
                 .FromSqlInterpolated($"SELECT * FROM \"Licenses\" WHERE \"LicenseId\" = {licenseId} FOR UPDATE")
+                .Include(x => x.Entitlements)
                 .SingleOrDefaultAsync(cancellationToken);
 
             if (license is null)
@@ -308,29 +310,43 @@ internal sealed class LicenseStore(
             if (LifecycleBlock(license, now) is { } blocked)
                 return StoreResult<ActiveActivation>.Forbidden(blocked);
 
+            var normalizedDeviceId = request.Device!.DeviceId!.ToUpperInvariant();
+
             var priorRequest = await db.Activations
                 .SingleOrDefaultAsync(x => x.LicenseRecordId == license.Id && x.RequestId == requestId, cancellationToken);
             if (priorRequest is not null)
             {
                 var idempotent = priorRequest.DeactivatedAt is null
-                    && string.Equals(priorRequest.DeviceIdHash, request.Device!.DeviceId, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(priorRequest.DeviceIdHash, normalizedDeviceId, StringComparison.OrdinalIgnoreCase)
                     && CryptographicOperations.FixedTimeEquals(priorRequest.TokenHash, tokenHash);
                 return idempotent
                     ? StoreResult<ActiveActivation>.Ok(ToActive(priorRequest, license.LicenseId))
                     : StoreResult<ActiveActivation>.Conflict("The activation request ID has already been used.");
             }
 
-            var active = await db.Activations.SingleOrDefaultAsync(
-                x => x.LicenseRecordId == license.Id && x.DeactivatedAt == null,
+            var activeForDevice = await db.Activations.SingleOrDefaultAsync(
+                x => x.LicenseRecordId == license.Id
+                    && x.DeactivatedAt == null
+                    && x.DeviceIdHash == normalizedDeviceId,
                 cancellationToken);
-            if (active is not null)
+            if (activeForDevice is not null)
             {
-                return StoreResult<ActiveActivation>.Conflict(
-                    $"License is already active on device ...{active.DeviceIdSuffix}. Deactivate that activation before transferring it.");
+                return CryptographicOperations.FixedTimeEquals(activeForDevice.TokenHash, tokenHash)
+                    ? StoreResult<ActiveActivation>.Ok(ToActive(activeForDevice, license.LicenseId))
+                    : StoreResult<ActiveActivation>.Conflict(
+                        $"License is already active on device ...{activeForDevice.DeviceIdSuffix}. Reuse the original activation credentials or deactivate that activation first.");
             }
 
-            var isTransfer = await db.Activations.AnyAsync(
-                x => x.LicenseRecordId == license.Id,
+            var activeCount = await db.Activations.CountAsync(
+                x => x.LicenseRecordId == license.Id && x.DeactivatedAt == null,
+                cancellationToken);
+            var seatLimit = GetSeatLimit(license);
+            if (activeCount >= seatLimit)
+                return StoreResult<ActiveActivation>.Conflict(
+                    $"Activation limit reached. {activeCount} of {seatLimit} seats are currently active.");
+
+            var isTransfer = activeCount == 0 && await db.Activations.AnyAsync(
+                x => x.LicenseRecordId == license.Id && x.DeviceIdHash != normalizedDeviceId,
                 cancellationToken);
 
             var entity = new Activation
@@ -340,7 +356,7 @@ internal sealed class LicenseStore(
                 LicenseRecordId = license.Id,
                 License = license,
                 RequestId = requestId,
-                DeviceIdHash = request.Device!.DeviceId!.ToUpperInvariant(),
+                DeviceIdHash = normalizedDeviceId,
                 DeviceIdSuffix = request.Device.DeviceId[^8..].ToUpperInvariant(),
                 DeviceName = CleanDeviceName(request.Device.DeviceName),
                 Mode = request.Mode!,
@@ -369,11 +385,28 @@ internal sealed class LicenseStore(
             await transaction.CommitAsync(cancellationToken);
             return StoreResult<ActiveActivation>.Ok(ToActive(entity, license.LicenseId));
         }
-        catch (DbUpdateException)
+        catch (Exception exception) when (exception is DbUpdateException || IsSerializationFailure(exception))
         {
+            // Under Serializable isolation a losing concurrent activation surfaces as a Postgres
+            // 40001 serialization failure. EF's default (non-retrying) execution strategy detects
+            // that this is transient and rewraps it in an InvalidOperationException suggesting
+            // EnableRetryOnFailure, rather than surfacing the DbUpdateException/PostgresException
+            // directly - so the chain has to be searched instead of caught by type.
             await transaction.RollbackAsync(cancellationToken);
             return StoreResult<ActiveActivation>.Conflict("The license was activated concurrently. Retry to see the active device.");
         }
+    }
+
+    private static bool IsSerializationFailure(Exception? exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is PostgresException postgres
+                && (postgres.SqlState == PostgresErrorCodes.SerializationFailure
+                    || postgres.SqlState == PostgresErrorCodes.DeadlockDetected))
+                return true;
+        }
+        return false;
     }
 
     public async Task<StoreResult<ActiveActivation>> AuthorizeAsync(
@@ -723,6 +756,14 @@ internal sealed class LicenseStore(
             ["activation"] = activationJson,
             ["entitlements"] = entitlements
         };
+    }
+
+    private static int GetSeatLimit(LicenseRecord license)
+    {
+        if (license.Entitlements.Count == 0)
+            throw new InvalidOperationException("A license must have at least one entitlement.");
+
+        return license.Entitlements.Min(item => item.Seats);
     }
 
     private void AddAudit(string actor, string action, string targetType, string targetId, string result, object context, DateTimeOffset now) =>
