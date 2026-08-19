@@ -8,6 +8,7 @@ using LicenseServer.Data;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using SoftwareLicensing;
 using LicenseServer.Authorization;
 
@@ -384,11 +385,28 @@ internal sealed class LicenseStore(
             await transaction.CommitAsync(cancellationToken);
             return StoreResult<ActiveActivation>.Ok(ToActive(entity, license.LicenseId));
         }
-        catch (DbUpdateException)
+        catch (Exception exception) when (exception is DbUpdateException || IsSerializationFailure(exception))
         {
+            // Under Serializable isolation a losing concurrent activation surfaces as a Postgres
+            // 40001 serialization failure. EF's default (non-retrying) execution strategy detects
+            // that this is transient and rewraps it in an InvalidOperationException suggesting
+            // EnableRetryOnFailure, rather than surfacing the DbUpdateException/PostgresException
+            // directly - so the chain has to be searched instead of caught by type.
             await transaction.RollbackAsync(cancellationToken);
             return StoreResult<ActiveActivation>.Conflict("The license was activated concurrently. Retry to see the active device.");
         }
+    }
+
+    private static bool IsSerializationFailure(Exception? exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is PostgresException postgres
+                && (postgres.SqlState == PostgresErrorCodes.SerializationFailure
+                    || postgres.SqlState == PostgresErrorCodes.DeadlockDetected))
+                return true;
+        }
+        return false;
     }
 
     public async Task<StoreResult<ActiveActivation>> AuthorizeAsync(
