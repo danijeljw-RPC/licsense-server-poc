@@ -38,7 +38,8 @@ internal static class RoadmapTestSupport
         PostgresWebFixture fixture,
         string suffix,
         DateTimeOffset? expiresAt = null,
-        bool withActivationHistory = false)
+        bool withActivationHistory = false,
+        int seats = 1)
     {
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -68,7 +69,7 @@ internal static class RoadmapTestSupport
                 {
                     Id = Guid.NewGuid(), ProductDefinitionId = KnownProductId,
                     ProductDefinition = null!, Product = "gcexp", Edition = "business",
-                    LicenseType = "subscription", Seats = 1, License = null!
+                    LicenseType = "subscription", Seats = seats, License = null!
                 }
             ]
         };

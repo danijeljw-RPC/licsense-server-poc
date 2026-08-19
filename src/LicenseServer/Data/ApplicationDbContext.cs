@@ -218,7 +218,9 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         });
         builder.Entity<Activation>().HasIndex(x => x.ActivationId).IsUnique();
         builder.Entity<Activation>().HasIndex(x => new { x.LicenseRecordId, x.RequestId }).IsUnique();
-        builder.Entity<Activation>().HasIndex(x => x.LicenseRecordId).IsUnique().HasFilter("\"DeactivatedAt\" IS NULL");
+        builder.Entity<Activation>().HasIndex(x => new { x.LicenseRecordId, x.DeviceIdHash }).IsUnique()
+            .HasFilter("\"DeactivatedAt\" IS NULL");
+        builder.Entity<Activation>().HasIndex(x => new { x.LicenseRecordId, x.DeactivatedAt });
         builder.Entity<Activation>().HasIndex(x => x.LeaseExpiresAt);
         builder.Entity<SigningKeyRecord>().HasIndex(x => x.KeyId).IsUnique();
         builder.Entity<SigningKeyRecord>().HasIndex(x => x.IsDefault).IsUnique().HasFilter("\"IsDefault\"");

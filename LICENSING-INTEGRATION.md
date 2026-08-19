@@ -114,10 +114,11 @@ whatever signed file lands on disk.)*
   action needed, but the *activation lease* (online mode) still needs its own
   periodic refresh call, independent of billing.
 - **Deactivating** (e.g. before uninstalling, or moving to a new machine) calls
-  `POST /api/v1/activations/{activationId}/deactivate`. A license only allows
-  one active activation at a time; activating on a new device while one is
-  already active is rejected until the old one is deactivated (transfer flow,
-  `LicenseStore.cs:326-334`).
+  `POST /api/v1/activations/{activationId}/deactivate`. A license may have up to
+  its entitlement seat count in concurrent active machine activations, but each
+  machine may hold at most one active activation. Once all seats are occupied,
+  activating on a new device is rejected until another activation is
+  deactivated.
 
 ---
 
