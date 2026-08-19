@@ -4,6 +4,7 @@ using System.Text.Json;
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using SoftwareLicensing;
 
 namespace LicenseServer.Tests;
 
@@ -109,6 +110,13 @@ internal static class RoadmapTestSupport
         Assert.Equal(status, response.StatusCode);
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
         _ = await response.Content.ReadFromJsonAsync<JsonElement>();
+    }
+
+    public static async Task<VerifiedLicense> VerifySignedLicenseAsync(PostgresWebFixture fixture, string signedLicense)
+    {
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var verifier = scope.ServiceProvider.GetRequiredService<ILicenseVerifier>();
+        return verifier.Verify(signedLicense);
     }
 }
 

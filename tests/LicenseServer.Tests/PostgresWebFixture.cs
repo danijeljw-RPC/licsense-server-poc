@@ -148,7 +148,8 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["Billing:WorkerEnabled"] = "false",
                 ["Security:UseHttpsRedirection"] = "false",
                 ["Security:RequireMfaForHighRiskPermissions"] = "true",
-                ["RateLimits:AdminPermitLimit"] = "5000"
+                ["RateLimits:AdminPermitLimit"] = "5000",
+                ["RateLimits:DevicePermitLimit"] = "5000"
             }));
         }
     }

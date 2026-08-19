@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Globalization;
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,7 +25,7 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
             $"Activation returned {(int)activated.StatusCode}: {await activated.Content.ReadAsStringAsync()}");
         var response = await activated.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
         Assert.Equal(demoLicenseId, response.LicenseId);
-        Assert.NotNull(LicenseVerifier.Verify(response.SignedLicense));
+        Assert.NotNull(await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, response.SignedLicense));
 
         using var second = await client.PostAsJsonAsync($"/api/v1/licenses/{demoLicenseId}/activate", Request(new string('B', 64), "online"));
         Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
@@ -35,7 +36,7 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
         refresh.EnsureSuccessStatusCode();
         var refreshed = await refresh.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
         Assert.Equal(demoLicenseId, refreshed.LicenseId);
-        Assert.NotNull(LicenseVerifier.Verify(refreshed.SignedLicense));
+        Assert.NotNull(await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, refreshed.SignedLicense));
 
         using var deactivated = await client.PostAsJsonAsync($"/api/v1/activations/{response.ActivationId}/deactivate", credentials);
         deactivated.EnsureSuccessStatusCode();
@@ -46,7 +47,7 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
         offline.EnsureSuccessStatusCode();
         var offlineResponse = await offline.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
         Assert.Null(offlineResponse.LeaseExpiresAt);
-        Assert.NotNull(LicenseVerifier.Verify(offlineResponse.SignedLicense));
+        Assert.NotNull(await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, offlineResponse.SignedLicense));
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var store = scope.ServiceProvider.GetRequiredService<LicenseStore>();
@@ -55,7 +56,7 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
             $"/api/v1/activations/{offlineResponse.ActivationId}/validate",
             new ActivationCredentialRequest(offlineRequest.ActivationToken, offlineRequest.Device!.DeviceId));
         Assert.Equal(HttpStatusCode.Forbidden, rejected.StatusCode);
-        Assert.NotNull(LicenseVerifier.Verify(offlineResponse.SignedLicense));
+        Assert.NotNull(await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, offlineResponse.SignedLicense));
     }
 
     [Fact]
@@ -69,7 +70,7 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
         {
             var request = Request(DeviceId(i), "offline", ActivationCodeFor(suffix));
             var response = await ActivateAsync(client, license.LicenseId, request);
-            Assert.NotNull(LicenseVerifier.Verify(response.SignedLicense));
+            Assert.NotNull(await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, response.SignedLicense));
         }
 
         using var rejected = await client.PostAsJsonAsync(
@@ -106,7 +107,7 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
             client,
             license.LicenseId,
             Request(DeviceId(99), "offline", ActivationCodeFor(suffix)));
-        Assert.NotNull(LicenseVerifier.Verify(replacement.SignedLicense));
+        Assert.NotNull(await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, replacement.SignedLicense));
         await AssertActiveActivationCountAsync(license.Id, 40);
     }
 
@@ -200,7 +201,7 @@ public sealed class LicensingFlowTests(PostgresWebFixture fixture)
 
     private static string ActivationCodeFor(string suffix) => $"PHASE0-{suffix}-ACTIVATION-CODE";
 
-    private static string DeviceId(int index) => index.ToString("X").PadLeft(64, '0');
+    private static string DeviceId(int index) => index.ToString("X", CultureInfo.InvariantCulture).PadLeft(64, '0');
 
     private static ActivateRequest Request(
         string device,

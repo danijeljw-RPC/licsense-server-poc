@@ -290,7 +290,6 @@ builder.Services.AddSingleton<ILicenseVerifier>(sp => sp.GetRequiredService<Sign
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SigningKeyRingService>());
 builder.Services.AddScoped<DatabaseInitializer>();
 builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
-var adminPermitLimit = builder.Configuration.GetValue("RateLimits:AdminPermitLimit", 600);
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -300,7 +299,7 @@ builder.Services.AddRateLimiter(options =>
                 $"{context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous"}:{context.Connection.RemoteIpAddress}",
                 _ => new FixedWindowRateLimiterOptions
                 {
-                    PermitLimit = adminPermitLimit,
+                    PermitLimit = builder.Configuration.GetValue("RateLimits:AdminPermitLimit", 600),
                     Window = TimeSpan.FromMinutes(1),
                     QueueLimit = 0,
                     AutoReplenishment = true
@@ -310,7 +309,7 @@ builder.Services.AddRateLimiter(options =>
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions
         {
-            PermitLimit = 60,
+            PermitLimit = builder.Configuration.GetValue("RateLimits:DevicePermitLimit", 60),
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0,
             AutoReplenishment = true

@@ -295,8 +295,8 @@ internal sealed class LicenseStore(
         try
         {
             var license = await db.Licenses
-                .Include(x => x.Entitlements)
                 .FromSqlInterpolated($"SELECT * FROM \"Licenses\" WHERE \"LicenseId\" = {licenseId} FOR UPDATE")
+                .Include(x => x.Entitlements)
                 .SingleOrDefaultAsync(cancellationToken);
 
             if (license is null)
