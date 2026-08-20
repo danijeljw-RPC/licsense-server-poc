@@ -6,6 +6,7 @@ using System.Text.Json;
 using LicenseServer.Authorization;
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace LicenseServer.Tests;
