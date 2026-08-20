@@ -89,7 +89,8 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
     {
         await permissions.RequireAsync(Permissions.LicensesRead);
         var x = await db.Licenses.AsNoTracking()
-            .Include(x => x.Customer).Include(x => x.Entitlements).Include(x => x.Activations)
+            .Include(x => x.Customer).Include(x => x.Entitlements)
+            .Include(x => x.Activations).ThenInclude(a => a.DeploymentKey)
             .SingleOrDefaultAsync(x => x.LicenseId == licenseId, cancellationToken);
         if (x is null) return null;
         var active = x.Activations.Where(a => a.DeactivatedAt == null)
@@ -97,6 +98,12 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             .ToList();
         var activationIds = x.Activations.Select(y => y.ActivationId).ToArray();
         var seatLimit = x.Entitlements.Count == 0 ? 0 : x.Entitlements.Min(item => item.Seats);
+        var historicalActivationCount = x.Activations.Count(a => a.DeactivatedAt != null);
+        var bySource = active
+            .GroupBy(a => a.DeploymentKey?.Name ?? "Manual activation")
+            .OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => new SeatUsageBySource(g.Key, g.Count()))
+            .ToList();
         var history = await db.AuditRecords.AsNoTracking()
             .Where(a => a.TargetId == licenseId || (a.TargetType == "activation" && activationIds.Contains(a.TargetId)))
             .OrderByDescending(a => a.TimestampUtc)
@@ -113,6 +120,9 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             x.Entitlements.OrderBy(e => e.Product).Select(e => new EntitlementView(e.Product, e.Edition, e.LicenseType, e.Seats, e.UpdatesUntil)).ToList(),
             active.Count,
             seatLimit,
+            seatLimit - active.Count,
+            historicalActivationCount,
+            bySource,
             active.Select(item => new ActivationView(item.ActivationId, item.Mode, item.DeviceIdSuffix, item.DeviceName, item.ActivatedAt, item.RefreshAfter, item.LeaseExpiresAt)).ToList(),
             x.Activations.OrderByDescending(a => a.ActivatedAt).Select(a => new ActivationHistoryView(a.ActivationId, a.Mode, a.DeviceIdSuffix, a.ActivatedAt, a.DeactivatedAt)).ToList(),
             history);
@@ -238,8 +248,10 @@ public sealed record LicenseDetailView(
     DateTimeOffset? CancelledAt, string? CancellationReason, string? CancelledBy,
     DateTimeOffset? RevokedAt, string? RevocationReason, long Version, string Status,
     string Provenance, DateTimeOffset? ImportedAt,
-    IReadOnlyList<EntitlementView> Entitlements, int ActiveSeatCount, int SeatLimit, IReadOnlyList<ActivationView> ActiveActivations,
+    IReadOnlyList<EntitlementView> Entitlements, int ActiveSeatCount, int SeatLimit, int AvailableSeats, int HistoricalActivationCount,
+    IReadOnlyList<SeatUsageBySource> ActiveSeatsBySource, IReadOnlyList<ActivationView> ActiveActivations,
     IReadOnlyList<ActivationHistoryView> IssuanceHistory, IReadOnlyList<AuditView> History);
+public sealed record SeatUsageBySource(string Source, int ActiveCount);
 
 public sealed class CreateLicenseInput
 {

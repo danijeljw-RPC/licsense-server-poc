@@ -143,13 +143,15 @@ internal sealed class CustomerAccessService(
         // crash; the license's full entitlement set is still visible to an operator in the admin
         // portal, and preserved byte-for-byte in the stored artifact either way.
         var entitlement = record.Entitlements.OrderBy(x => x.Product, StringComparer.Ordinal).First();
-        var activation = record.Activations.SingleOrDefault(item => item.DeactivatedAt is null);
+        var activeActivations = record.Activations.Where(item => item.DeactivatedAt is null).ToList();
+        var activation = activeActivations.FirstOrDefault();
         return new CustomerLicenseView(
             record.LicenseId,
             LicenseStore.GetLifecycleState(record, activation is not null, DateTimeOffset.UtcNow),
             entitlement.Product,
             entitlement.Edition,
             entitlement.Seats,
+            activeActivations.Count,
             string.Equals(entitlement.LicenseType, "perpetual", StringComparison.Ordinal)
                 ? null
                 : record.ExpiresAt?.AddTicks(record.ExpirySubMicrosecondTicks),
@@ -168,6 +170,6 @@ internal sealed class CustomerAccessService(
 
 internal sealed record CustomerAccessRequestResult(string Message, string? DevelopmentToken);
 internal sealed record CustomerLicenseView(
-    string LicenseId, string Status, string Product, string Edition, int Seats,
+    string LicenseId, string Status, string Product, string Edition, int Seats, int ActiveSeatCount,
     DateTimeOffset? ExpiresAt, string ActivationStatus, string? DeviceSuffix,
     string? InvoiceUrl, string? RenewalUrl);

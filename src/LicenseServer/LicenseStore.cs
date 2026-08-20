@@ -623,47 +623,71 @@ internal sealed class LicenseStore(
             return StoreResult<bool>.BadRequest("Seats must be greater than zero.");
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-        var license = await db.Licenses
-            .FromSqlInterpolated($"SELECT * FROM \"Licenses\" WHERE \"LicenseId\" = {licenseId} FOR UPDATE")
-            .Include(x => x.Entitlements)
-            .SingleOrDefaultAsync(cancellationToken);
-        if (license is null) return StoreResult<bool>.NotFound("License was not found.");
-        if (license.Version != request.Version)
-            return StoreResult<bool>.Conflict("The license was changed by another operation. Reload and retry.");
-        if (license.CancelledAt is not null || license.RevokedAt is not null)
-            return StoreResult<bool>.Conflict("Terms cannot be amended after cancellation or revocation.");
-        if (license.Entitlements.Count != 1)
-            return StoreResult<bool>.Conflict("Administrative terms amendment requires exactly one entitlement.");
-        if (license.Provenance == LicenseProvenance.Imported)
-            return StoreResult<bool>.Conflict(
-                "Imported licenses cannot have their terms amended through this page: the signed artifact, " +
-                "not this relational index, remains the source of truth and would silently diverge from it. " +
-                "Use admin-side revoke to terminate it if needed.");
+        try
+        {
+            var license = await db.Licenses
+                .FromSqlInterpolated($"SELECT * FROM \"Licenses\" WHERE \"LicenseId\" = {licenseId} FOR UPDATE")
+                .Include(x => x.Entitlements)
+                .SingleOrDefaultAsync(cancellationToken);
+            if (license is null) return StoreResult<bool>.NotFound("License was not found.");
+            if (license.Version != request.Version)
+                return StoreResult<bool>.Conflict("The license was changed by another operation. Reload and retry.");
+            if (license.CancelledAt is not null || license.RevokedAt is not null)
+                return StoreResult<bool>.Conflict("Terms cannot be amended after cancellation or revocation.");
+            if (license.Entitlements.Count != 1)
+                return StoreResult<bool>.Conflict("Administrative terms amendment requires exactly one entitlement.");
+            if (license.Provenance == LicenseProvenance.Imported)
+                return StoreResult<bool>.Conflict(
+                    "Imported licenses cannot have their terms amended through this page: the signed artifact, " +
+                    "not this relational index, remains the source of truth and would silently diverge from it. " +
+                    "Use admin-side revoke to terminate it if needed.");
+            if (request.Seats is not null)
+            {
+                // Counted inside this method's own FOR UPDATE lock on the license row, which
+                // ActivateWithinLockAsync also takes before reading/writing the active count - so a
+                // concurrent activation and a concurrent seat amendment always serialize against each
+                // other (via the catch below) instead of racing to an Active > Seats state.
+                var activeCount = await db.Activations.CountAsync(
+                    x => x.LicenseRecordId == license.Id && x.DeactivatedAt == null, cancellationToken);
+                if (request.Seats.Value < activeCount)
+                    return StoreResult<bool>.Conflict(
+                        $"Seats cannot be reduced to {request.Seats.Value}: {activeCount} activation(s) are currently active. " +
+                        "Deactivate machines first, or use a separate remediation workflow for forced over-allocation.");
+            }
 
-        var entitlement = license.Entitlements[0];
-        var old = new
+            var entitlement = license.Entitlements[0];
+            var old = new
+            {
+                expiresAt = license.ExpiresAt?.AddTicks(license.ExpirySubMicrosecondTicks),
+                entitlement.Seats,
+                entitlement.UpdatesUntil,
+                entitlement.Edition
+            };
+            if (request.ExpiresAt is not null) license.ExpiresAt = request.ExpiresAt.Value.ToUniversalTime();
+            if (request.Seats is not null) entitlement.Seats = request.Seats.Value;
+            if (request.UpdatesUntil is not null) entitlement.UpdatesUntil = request.UpdatesUntil;
+            if (edition is not null) entitlement.Edition = edition;
+            db.Entry(license).Property(x => x.Version).IsModified = true;
+            AddAudit(actor, "license.terms-amended", "license", licenseId, "success", new
+            {
+                old,
+                @new = new { expiresAt = license.ExpiresAt, entitlement.Seats, entitlement.UpdatesUntil, entitlement.Edition },
+                reason = request.Reason.Trim(),
+                version = license.Version + 1,
+                correlationId
+            }, now);
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return StoreResult<bool>.Ok(true);
+        }
+        catch (Exception exception) when (exception is DbUpdateException || IsSerializationFailure(exception))
         {
-            expiresAt = license.ExpiresAt?.AddTicks(license.ExpirySubMicrosecondTicks),
-            entitlement.Seats,
-            entitlement.UpdatesUntil,
-            entitlement.Edition
-        };
-        if (request.ExpiresAt is not null) license.ExpiresAt = request.ExpiresAt.Value.ToUniversalTime();
-        if (request.Seats is not null) entitlement.Seats = request.Seats.Value;
-        if (request.UpdatesUntil is not null) entitlement.UpdatesUntil = request.UpdatesUntil;
-        if (edition is not null) entitlement.Edition = edition;
-        db.Entry(license).Property(x => x.Version).IsModified = true;
-        AddAudit(actor, "license.terms-amended", "license", licenseId, "success", new
-        {
-            old,
-            @new = new { expiresAt = license.ExpiresAt, entitlement.Seats, entitlement.UpdatesUntil, entitlement.Edition },
-            reason = request.Reason.Trim(),
-            version = license.Version + 1,
-            correlationId
-        }, now);
-        await db.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-        return StoreResult<bool>.Ok(true);
+            // See ActivateAsync's identical catch: under Serializable isolation, a losing side of
+            // a genuine read/write conflict (e.g. this amendment's active-count read racing a
+            // concurrent activation insert) surfaces as a Postgres 40001, not a lock wait.
+            await transaction.RollbackAsync(cancellationToken);
+            return StoreResult<bool>.Conflict("The license was changed by another operation. Reload and retry.");
+        }
     }
 
     public async Task<StoreResult<RotatedActivationCode>> RotateActivationCodeAsync(
