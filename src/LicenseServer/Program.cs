@@ -328,6 +328,19 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
             AutoReplenishment = true
         }));
+    options.AddPolicy("deployment-key-enroll", context =>
+    {
+        var partitionKey = context.Items.TryGetValue("deployment-key-partition", out var value) && value is string key
+            ? key
+            : context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = builder.Configuration.GetValue("RateLimits:DeploymentKeyEnrollPermitLimit", 20),
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        });
+    });
 });
 
 var dataProtection = builder.Services.AddDataProtection().SetApplicationName("LicenseServer");
@@ -388,6 +401,38 @@ app.Use(async (context, next) =>
 });
 
 app.UseAuthentication();
+app.UseWhen(
+    context => HttpMethods.IsPost(context.Request.Method)
+        && context.Request.Path.Equals("/api/v1/deployment-keys/enroll", StringComparison.OrdinalIgnoreCase),
+    branch => branch.Use(async (context, next) =>
+    {
+        // Rate limiting middleware resolves its partition key synchronously from HttpContext
+        // before minimal-API model binding reads the body, so a distinct public-id partition (in
+        // addition to the IP-based device-api partition every other anonymous endpoint uses) has
+        // to be extracted here and stashed in HttpContext.Items ahead of app.UseRateLimiter().
+        // Peeking only the safe, non-secret "deploymentKey" public-id prefix - never comparing or
+        // logging the secret half - keeps this consistent with the "never log the full secret" rule.
+        context.Request.EnableBuffering();
+        using var reader = new StreamReader(context.Request.Body, System.Text.Encoding.UTF8, leaveOpen: true);
+        var body = await reader.ReadToEndAsync();
+        context.Request.Body.Position = 0;
+        string partitionKey;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(body);
+            partitionKey = document.RootElement.TryGetProperty("deploymentKey", out var value)
+                && value.ValueKind == System.Text.Json.JsonValueKind.String
+                && DeploymentKeyFormat.TryParse(value.GetString(), out var publicId, out _)
+                ? $"dpk:{publicId}"
+                : context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            partitionKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        }
+        context.Items["deployment-key-partition"] = partitionKey;
+        await next();
+    }));
 app.UseRateLimiter();
 app.UseAuthorization();
 app.UseAntiforgery();
@@ -554,6 +599,18 @@ app.MapPost("/api/v1/activations/{activationId}/deactivate", async (
         : Problem(result);
 }).AllowAnonymous().RequireRateLimiting("device-api")
   .WithDescription("Authenticates deactivation for one activation and releases that machine's consumed seat immediately after commit.");
+
+app.MapPost("/api/v1/deployment-keys/enroll", async (
+    EnrollDeploymentKeyRequest request, DeploymentKeyService service, LicenseStore store,
+    ILicenseSigner signer, ILicenseVerifier verifier, CancellationToken cancellationToken) =>
+{
+    var now = DateTimeOffset.UtcNow;
+    var result = await service.EnrollAsync(request, now, cancellationToken: cancellationToken);
+    return result.Success
+        ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
+        : Problem(result);
+}).AllowAnonymous().RequireRateLimiting("deployment-key-enroll")
+  .WithDescription("Enrolls one machine under the deployment key's parent license, sharing that license's existing seat pool and activation records with the manual activation-code flow. The deployment key grants only machine enrollment - no admin, customer, billing, or activation-listing access.");
 
 var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization().RequireRateLimiting("admin-api").DisableAntiforgery();
 adminApi.MapGet("/authorization/{permission}", async (
