@@ -379,6 +379,10 @@ In `src/LicenseServer/LicenseStore.cs`, replace the body of `ActivateAsync` (cur
         if (validation is not null)
             return StoreResult<ActiveActivation>.BadRequest(validation);
 
+        // Checked before any state is mutated: signing happens after this method commits (the
+        // caller needs the committed activation's ID/timestamps to build the license artifact), so
+        // a signing failure discovered only after commit would leave the activation - and the
+        // request ID that made it idempotent - unusably stuck with no artifact ever issued.
         if (!signer.CanSign(requestedSigningKeyId))
             return StoreResult<ActiveActivation>.ServiceUnavailable(
                 "No signing key is currently able to sign. Try again once an administrator restores a default or active signing key.");
@@ -407,7 +411,15 @@ In `src/LicenseServer/LicenseStore.cs`, replace the body of `ActivateAsync` (cur
                 license, requestId, normalizedDeviceId, request.Device.DeviceId[^8..].ToUpperInvariant(),
                 CleanDeviceName(request.Device.DeviceName), request.Mode!, tokenHash, now,
                 deploymentKeyId: null, auditActor: "license-client", cancellationToken);
-            if (result.Success)
+            // Only the "created a new activation" success path leaves anything for
+            // ActivateWithinLockAsync to persist - the idempotent-replay and already-active-
+            // for-device success paths return early without adding any entity, and must not
+            // reach a real COMMIT: under Serializable isolation, committing a transaction that
+            // only read (via the FOR UPDATE lock) can itself surface a spurious 40001
+            // serialization failure, which would regress those two paths from an unconditional
+            // 200 OK to a possible concurrent-retry 409 - a behavior change ActivateAsync must
+            // not introduce relative to its pre-extraction form.
+            if (result.Success && db.ChangeTracker.HasChanges())
             {
                 await db.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
@@ -1071,7 +1083,7 @@ builder.Services.AddScoped<DeploymentKeyService>();
 Add a `DeploymentKeys:Pepper` entry to the test fixture so `DeploymentKeyServiceTests` can run: in `tests/LicenseServer.Tests/PostgresWebFixture.cs`, add after line 144 (`["ApiCredentials:Pepper"] = "HyQjIiEgHx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwY=",`):
 
 ```csharp
-                ["DeploymentKeys:Pepper"] = "MjAyNjA4MjBEZXBsb3ltZW50S2V5UGVwcGVyVGVzdA==",
+                ["DeploymentKeys:Pepper"] = "9vWKjZpH04swggPztM7cfUpwLXtasA7YaCyYWZPylAI=",
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
@@ -1219,7 +1231,12 @@ app.UseWhen(
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(body);
-            partitionKey = document.RootElement.TryGetProperty("deploymentKey", out var value)
+            // TryGetProperty throws InvalidOperationException (not JsonException) when the root
+            // isn't a JSON object - a body like `null`, `[]`, or a bare string/number/bool is
+            // syntactically valid JSON, so Parse succeeds and the catch below never fires; the
+            // ValueKind guard here avoids the call entirely instead of relying on a broader catch.
+            partitionKey = document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && document.RootElement.TryGetProperty("deploymentKey", out var value)
                 && value.ValueKind == System.Text.Json.JsonValueKind.String
                 && DeploymentKeyFormat.TryParse(value.GetString(), out var publicId, out _)
                 ? $"dpk:{publicId}"
