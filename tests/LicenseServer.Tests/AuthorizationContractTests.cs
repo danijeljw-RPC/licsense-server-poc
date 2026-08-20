@@ -16,7 +16,7 @@ public sealed class AuthorizationContractTests(PostgresWebFixture fixture)
         "licenses.read", "licenses.issue", "licenses.update", "licenses.cancel", "licenses.revoke", "licenses.import",
         "activations.manage", "customers.read", "customers.manage", "products.read", "products.manage",
         "users.read", "users.manage", "apiKeys.manageSelf", "apiKeys.manageAll", "audit.read", "billing.manage",
-        "signingKeys.manage"
+        "signingKeys.manage", "deploymentKeys.read", "deploymentKeys.manage"
     ];
     private static readonly string[] ExpectedRoles =
     [

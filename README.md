@@ -173,7 +173,8 @@ antiforgery; cookie-authenticated mutations still require a valid antiforgery to
 Bearer admin traffic is rate-limited by owner and IP, while anonymous device routes use
 a stricter IP partition. Configure `ApiCredentials__Pepper` outside source control with
 an independent Base64 value containing at least 32 random bytes. Development can use an
-ephemeral pepper, but its keys intentionally stop working after restart.
+ephemeral pepper, but its keys intentionally stop working after restart. Deployment Keys
+follow the identical pattern with their own independent `DeploymentKeys__Pepper`.
 
 ### Versioned administration API
 

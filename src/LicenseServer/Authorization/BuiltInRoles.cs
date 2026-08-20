@@ -27,7 +27,8 @@ internal static class BuiltInRoles
                 Permissions.LicensesCancel, Permissions.LicensesRevoke, Permissions.LicensesImport,
                 Permissions.ActivationsManage,
                 Permissions.CustomersRead, Permissions.CustomersManage, Permissions.ProductsRead,
-                Permissions.ApiKeysManageSelf, Permissions.AuditRead
+                Permissions.ApiKeysManageSelf, Permissions.AuditRead,
+                Permissions.DeploymentKeysRead, Permissions.DeploymentKeysManage
             ],
             [LicenseIssuer] =
             [
@@ -37,14 +38,15 @@ internal static class BuiltInRoles
             [SupportAgent] =
             [
                 Permissions.LicensesRead, Permissions.ActivationsManage, Permissions.CustomersRead,
-                Permissions.ProductsRead, Permissions.ApiKeysManageSelf
+                Permissions.ProductsRead, Permissions.ApiKeysManageSelf, Permissions.DeploymentKeysRead
             ],
             [ProductAdministrator] =
             [Permissions.ProductsRead, Permissions.ProductsManage, Permissions.ApiKeysManageSelf],
             [Auditor] =
             [
                 Permissions.LicensesRead, Permissions.CustomersRead, Permissions.ProductsRead,
-                Permissions.UsersRead, Permissions.ApiKeysManageSelf, Permissions.AuditRead
+                Permissions.UsersRead, Permissions.ApiKeysManageSelf, Permissions.AuditRead,
+                Permissions.DeploymentKeysRead
             ],
             [BillingAutomation] =
             [

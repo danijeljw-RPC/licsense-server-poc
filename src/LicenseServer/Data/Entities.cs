@@ -94,6 +94,26 @@ public sealed class ApiCredential
     public Guid? ReplacedByCredentialId { get; set; }
 }
 
+public sealed class DeploymentKey
+{
+    public Guid Id { get; set; }
+    public Guid LicenseRecordId { get; set; }
+    public required LicenseRecord License { get; set; }
+    public required string Name { get; set; }
+    public required string PublicId { get; set; }
+    public required byte[] SecretHash { get; set; }
+    public required string SecretHashVersion { get; set; }
+    public required string LastFour { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public required string CreatedBy { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public string? RevokedBy { get; set; }
+    public string? RevocationReason { get; set; }
+    public DateTimeOffset? LastUsedAt { get; set; }
+    public Guid? ReplacedByDeploymentKeyId { get; set; }
+}
+
 public sealed class EmailOutboxMessage
 {
     public Guid Id { get; set; }
@@ -290,6 +310,8 @@ public sealed class Activation
     public DateTimeOffset? LeaseExpiresAt { get; set; }
     public DateTimeOffset? LastRefreshedAt { get; set; }
     public DateTimeOffset? DeactivatedAt { get; set; }
+    public Guid? DeploymentKeyId { get; set; }
+    public DeploymentKey? DeploymentKey { get; set; }
 }
 
 public sealed class SigningKeyRecord

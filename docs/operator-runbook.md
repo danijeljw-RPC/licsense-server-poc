@@ -7,6 +7,7 @@ Store values in the deployment platform's secret manager. Names only are documen
 - `ConnectionStrings__DefaultConnection`
 - `ActivationCodes__Pepper`
 - `ApiCredentials__Pepper`
+- `DeploymentKeys__Pepper`
 - `MailerSend__ApiToken`
 - `MailerSend__WebhookSecret`
 - `Stripe__ApiKey`

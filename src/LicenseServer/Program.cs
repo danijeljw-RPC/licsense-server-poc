@@ -271,6 +271,19 @@ else
     if (apiCredentialPepper.Length < 32) throw new InvalidOperationException("ApiCredentials:Pepper must decode to at least 32 bytes.");
 }
 builder.Services.AddSingleton(new ApiCredentialHasher(apiCredentialPepper));
+var configuredDeploymentKeyPepper = builder.Configuration["DeploymentKeys:Pepper"];
+byte[] deploymentKeyPepper;
+if (string.IsNullOrWhiteSpace(configuredDeploymentKeyPepper) && builder.Environment.IsDevelopment())
+    deploymentKeyPepper = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+else if (string.IsNullOrWhiteSpace(configuredDeploymentKeyPepper))
+    throw new InvalidOperationException("DeploymentKeys:Pepper is required outside Development and must be at least 32 random bytes encoded as Base64.");
+else
+{
+    try { deploymentKeyPepper = Convert.FromBase64String(configuredDeploymentKeyPepper); }
+    catch (FormatException exception) { throw new InvalidOperationException("DeploymentKeys:Pepper must be valid Base64.", exception); }
+    if (deploymentKeyPepper.Length < 32) throw new InvalidOperationException("DeploymentKeys:Pepper must decode to at least 32 bytes.");
+}
+builder.Services.AddSingleton(new DeploymentKeyHasher(deploymentKeyPepper));
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<ILicenseBusinessDateResolver, ConfiguredLicenseBusinessDateResolver>();
 builder.Services.AddScoped<LicenseIdAllocator>();
@@ -281,6 +294,7 @@ builder.Services.AddScoped<LicenseImportService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<ApiCredentialService>();
+builder.Services.AddScoped<DeploymentKeyService>();
 builder.Services.AddScoped<CustomerAccessService>();
 builder.Services.AddScoped<IOwnedCredentialRevoker>(services => services.GetRequiredService<ApiCredentialService>());
 builder.Services.AddSingleton<SigningKeyRingService>();
@@ -293,6 +307,16 @@ builder.Services.AddHealthChecks().AddCheck<DatabaseHealthCheck>("postgresql");
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (ctx, token) =>
+    {
+        await ctx.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            type = "https://tools.ietf.org/html/rfc9110#section-15.5.20",
+            title = "Too Many Requests",
+            status = StatusCodes.Status429TooManyRequests,
+            detail = "Rate limit exceeded. Try again later."
+        }, options: null, contentType: "application/problem+json", cancellationToken: token);
+    };
     options.AddPolicy("admin-api", context =>
         context.User.HasClaim("amr", "api_key")
             ? RateLimitPartition.GetFixedWindowLimiter(
@@ -314,6 +338,19 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
             AutoReplenishment = true
         }));
+    options.AddPolicy("deployment-key-enroll", context =>
+    {
+        var partitionKey = context.Items.TryGetValue("deployment-key-partition", out var value) && value is string key
+            ? key
+            : context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = builder.Configuration.GetValue("RateLimits:DeploymentKeyEnrollPermitLimit", 20),
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        });
+    });
 });
 
 var dataProtection = builder.Services.AddDataProtection().SetApplicationName("LicenseServer");
@@ -374,6 +411,43 @@ app.Use(async (context, next) =>
 });
 
 app.UseAuthentication();
+app.UseWhen(
+    context => HttpMethods.IsPost(context.Request.Method)
+        && context.Request.Path.Equals("/api/v1/deployment-keys/enroll", StringComparison.OrdinalIgnoreCase),
+    branch => branch.Use(async (context, next) =>
+    {
+        // Rate limiting middleware resolves its partition key synchronously from HttpContext
+        // before minimal-API model binding reads the body, so a distinct public-id partition (in
+        // addition to the IP-based device-api partition every other anonymous endpoint uses) has
+        // to be extracted here and stashed in HttpContext.Items ahead of app.UseRateLimiter().
+        // Peeking only the safe, non-secret "deploymentKey" public-id prefix - never comparing or
+        // logging the secret half - keeps this consistent with the "never log the full secret" rule.
+        context.Request.EnableBuffering();
+        using var reader = new StreamReader(context.Request.Body, System.Text.Encoding.UTF8, leaveOpen: true);
+        var body = await reader.ReadToEndAsync();
+        context.Request.Body.Position = 0;
+        string partitionKey;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(body);
+            // TryGetProperty throws InvalidOperationException (not JsonException) when the root isn't
+            // a JSON object - a body like `null`, `[]`, or a bare string/number/bool is syntactically
+            // valid JSON, so Parse succeeds and the catch below never fires; this ValueKind guard avoids
+            // the call entirely instead of relying on a broader catch.
+            partitionKey = document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && document.RootElement.TryGetProperty("deploymentKey", out var value)
+                && value.ValueKind == System.Text.Json.JsonValueKind.String
+                && DeploymentKeyFormat.TryParse(value.GetString(), out var publicId, out _)
+                ? $"dpk:{publicId}"
+                : context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            partitionKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        }
+        context.Items["deployment-key-partition"] = partitionKey;
+        await next();
+    }));
 app.UseRateLimiter();
 app.UseAuthorization();
 app.UseAntiforgery();
@@ -540,6 +614,18 @@ app.MapPost("/api/v1/activations/{activationId}/deactivate", async (
         : Problem(result);
 }).AllowAnonymous().RequireRateLimiting("device-api")
   .WithDescription("Authenticates deactivation for one activation and releases that machine's consumed seat immediately after commit.");
+
+app.MapPost("/api/v1/deployment-keys/enroll", async (
+    EnrollDeploymentKeyRequest request, DeploymentKeyService service, LicenseStore store,
+    ILicenseSigner signer, ILicenseVerifier verifier, CancellationToken cancellationToken) =>
+{
+    var now = DateTimeOffset.UtcNow;
+    var result = await service.EnrollAsync(request, now, cancellationToken: cancellationToken);
+    return result.Success
+        ? await SignedResponse(result.Value!, store, signer, verifier, now, cancellationToken)
+        : Problem(result);
+}).AllowAnonymous().RequireRateLimiting("deployment-key-enroll")
+  .WithDescription("Enrolls one machine under the deployment key's parent license, sharing that license's existing seat pool and activation records with the manual activation-code flow. The deployment key grants only machine enrollment - no admin, customer, billing, or activation-listing access.");
 
 var adminApi = app.MapGroup("/api/v1/admin").RequireAuthorization().RequireRateLimiting("admin-api").DisableAntiforgery();
 adminApi.MapGet("/authorization/{permission}", async (
@@ -882,6 +968,54 @@ adminApi.MapPost("/activations/{activationId}/deactivate", async (
         context.User.Identity?.Name ?? "unknown", DateTimeOffset.UtcNow, context.TraceIdentifier, ct);
     return result.Success ? Results.Ok(new { activationId, status = "deactivated" }) : Problem(result);
 }).RequireAuthorization(Permissions.ActivationsManage);
+
+adminApi.MapPost("/licenses/{licenseId}/deployment-keys", async (
+    string licenseId, CreateDeploymentKeyRequest request, DeploymentKeyService service,
+    IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await service.CreateAsync(licenseId, request, context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success
+        ? Results.Created($"/api/v1/admin/licenses/{licenseId}/deployment-keys", result.Value)
+        : FieldProblem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysManage)
+  .WithDescription("Creates one deployment key for this license and returns its full secret exactly once.");
+
+adminApi.MapGet("/licenses/{licenseId}/deployment-keys", async (
+    string licenseId, DeploymentKeyService service, CancellationToken ct) =>
+{
+    var result = await service.ListAsync(licenseId, ct);
+    return result.Success ? Results.Ok(result.Value) : Problem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysRead)
+  .WithDescription("Lists redacted deployment keys for this license. Secrets are never returned.");
+
+adminApi.MapPatch("/deployment-keys/{id:guid}", async (
+    Guid id, RenameDeploymentKeyRequest request, DeploymentKeyService service,
+    IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await service.RenameAsync(id, request.Name, context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success ? Results.Ok(result.Value) : FieldProblem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysManage);
+
+adminApi.MapPost("/deployment-keys/{id:guid}/rotate", async (
+    Guid id, DeploymentKeyService service, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await service.RotateAsync(id, context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success ? Results.Ok(result.Value) : Problem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysManage)
+  .WithDescription("Issues a new secret and immediately invalidates the previous one. Returns the new secret exactly once.");
+
+adminApi.MapPost("/deployment-keys/{id:guid}/revoke", async (
+    Guid id, RevokeDeploymentKeyRequest request, DeploymentKeyService service,
+    IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await service.RevokeAsync(id, request.Reason, context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success ? Results.NoContent() : Problem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysManage)
+  .WithDescription("Blocks new enrollment through this key. Machines already enrolled through it remain active.");
 
 app.MapPost("/licenses/{licenseId}/cancel", async (string licenseId, HttpRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
