@@ -281,6 +281,10 @@ internal sealed class LicenseStore(
         if (validation is not null)
             return StoreResult<ActiveActivation>.BadRequest(validation);
 
+        // Checked before any state is mutated: signing happens after this method commits (the
+        // caller needs the committed activation's ID/timestamps to build the license artifact), so
+        // a signing failure discovered only after commit would leave the activation - and the
+        // request ID that made it idempotent - unusably stuck with no artifact ever issued.
         if (!signer.CanSign(requestedSigningKeyId))
             return StoreResult<ActiveActivation>.ServiceUnavailable(
                 "No signing key is currently able to sign. Try again once an administrator restores a default or active signing key.");
@@ -309,7 +313,7 @@ internal sealed class LicenseStore(
                 license, requestId, normalizedDeviceId, request.Device.DeviceId[^8..].ToUpperInvariant(),
                 CleanDeviceName(request.Device.DeviceName), request.Mode!, tokenHash, now,
                 deploymentKeyId: null, auditActor: "license-client", cancellationToken);
-            if (result.Success)
+            if (result.Success && db.ChangeTracker.HasChanges())
             {
                 await db.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
