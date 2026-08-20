@@ -113,6 +113,11 @@ public sealed class DeploymentKeyEnrollmentTests(PostgresWebFixture fixture)
     [Trait("ExpectedGreenStage", "11")]
     public async Task EnrollmentRateLimitRejectsBurstsFromTheSamePublicId()
     {
+        // Every request here shares one credential (and, incidentally, one IP, since it's all one
+        // isolated host/client). The fixture sets the credential permit limit (10) strictly below
+        // the IP permit limit (20), so the 429 this test asserts on can only be explained by the
+        // credential-dimension limiter tripping first - the IP-dimension limiter alone could not
+        // yet account for it at that point in the burst.
         var (licenseId, _) = await IssueLicenseAsync(seats: 50);
         var (secret, client) = await CreateDeploymentKeyAsync(licenseId, "RateLimited");
 
@@ -120,6 +125,36 @@ public sealed class DeploymentKeyEnrollmentTests(PostgresWebFixture fixture)
         for (var i = 0; i < 25; i++)
         {
             var response = await client.PostAsJsonAsync("/api/v1/deployment-keys/enroll", EnrollBody(secret, $"{i:D4}"));
+            statuses.Add(response.StatusCode);
+        }
+
+        Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+        Assert.True(statuses.Take(10).All(s => s != HttpStatusCode.TooManyRequests),
+            "The credential permit limit is 10, so the first 429 must not appear before the 11th request.");
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "11")]
+    public async Task EnrollmentRateLimitAppliesPerIpEvenWhenThePresentedPublicIdVariesPerRequest()
+    {
+        // A caller who varies the well-formed-but-fake public ID on every request gets a brand-new
+        // credential-partition window each time, so the credential-only limiter alone would never
+        // trip. The IP-dimension limiter enforced independently in the enrollment middleware must
+        // still bound this caller - this is the regression test for that requirement.
+        //
+        // Runs against an isolated host (matching the isolation CreateAuthenticatedClient already
+        // uses for the same reason) rather than fixture.Factory directly: this test deliberately
+        // exhausts a whole rate-limit window, and fixture.Factory is shared by every other test in
+        // this run - burning its IP-dimension window here would spuriously 429 unrelated tests that
+        // also hit this endpoint afterward within the same one-minute fixed window.
+        await using var factory = fixture.Factory.WithWebHostBuilder(_ => { });
+        using var client = factory.CreateClient();
+
+        var statuses = new List<HttpStatusCode>();
+        for (var i = 0; i < 25; i++)
+        {
+            var fakeKey = $"dpk_live_{i:X16}_{new string('A', 43)}";
+            var response = await client.PostAsJsonAsync("/api/v1/deployment-keys/enroll", EnrollBody(fakeKey, $"{i:D4}"));
             statuses.Add(response.StatusCode);
         }
 
