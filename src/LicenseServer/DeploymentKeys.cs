@@ -1,6 +1,12 @@
+using System.Data;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using LicenseServer.Authorization;
+using LicenseServer.Data;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
+using SoftwareLicensing;
 
 namespace LicenseServer;
 
@@ -39,4 +45,285 @@ internal static class DeploymentKeyFormat
         secret = value[(separator + 1)..];
         return publicId.Length == 16 && secret.Length == 43;
     }
+}
+
+internal sealed class DeploymentKeyService(
+    ApplicationDbContext db,
+    LicenseStore licenseStore,
+    DeploymentKeyHasher hasher,
+    PermissionGuard permissions,
+    ILicenseSigner signer,
+    TimeProvider clock)
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async Task<StoreResult<CreatedDeploymentKey>> CreateAsync(
+        string licenseId, CreateDeploymentKeyRequest request, string actor, CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.DeploymentKeysManage);
+        var name = request.Name?.Trim();
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 200)
+            return StoreResult<CreatedDeploymentKey>.BadRequest(
+                "Deployment key name is required and cannot exceed 200 characters.", "name");
+        var now = clock.GetUtcNow();
+        if (request.ExpiresAt is not null && request.ExpiresAt <= now)
+            return StoreResult<CreatedDeploymentKey>.BadRequest("Expiry must be in the future.", "expiresAt");
+
+        var license = await db.Licenses.SingleOrDefaultAsync(x => x.LicenseId == licenseId, cancellationToken);
+        if (license is null) return StoreResult<CreatedDeploymentKey>.NotFound("License was not found.");
+        if (license.CancelledAt is not null || license.RevokedAt is not null)
+            return StoreResult<CreatedDeploymentKey>.Conflict(
+                "A cancelled or revoked license cannot receive new deployment keys.");
+
+        var (publicId, secret, fullValue) = DeploymentKeyFormat.Generate();
+        var record = new DeploymentKey
+        {
+            Id = Guid.NewGuid(),
+            LicenseRecordId = license.Id,
+            License = license,
+            Name = name,
+            PublicId = publicId,
+            SecretHash = hasher.Hash(publicId, secret),
+            SecretHashVersion = DeploymentKeyHasher.CurrentVersion,
+            LastFour = secret[^4..],
+            CreatedAt = now,
+            CreatedBy = actor,
+            ExpiresAt = request.ExpiresAt?.ToUniversalTime()
+        };
+        db.DeploymentKeys.Add(record);
+        AddAudit(actor, "deployment-key.created", record, new { record.Name, licenseId, record.ExpiresAt });
+        await db.SaveChangesAsync(cancellationToken);
+        return StoreResult<CreatedDeploymentKey>.Ok(new CreatedDeploymentKey(ToView(record), fullValue));
+    }
+
+    public async Task<StoreResult<IReadOnlyList<DeploymentKeyView>>> ListAsync(
+        string licenseId, CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.DeploymentKeysRead);
+        var license = await db.Licenses.AsNoTracking().SingleOrDefaultAsync(x => x.LicenseId == licenseId, cancellationToken);
+        if (license is null) return StoreResult<IReadOnlyList<DeploymentKeyView>>.NotFound("License was not found.");
+        var rows = await db.DeploymentKeys.AsNoTracking()
+            .Where(x => x.LicenseRecordId == license.Id)
+            .OrderByDescending(x => x.CreatedAt)
+            .ToListAsync(cancellationToken);
+        return StoreResult<IReadOnlyList<DeploymentKeyView>>.Ok(rows.Select(ToView).ToArray());
+    }
+
+    public async Task<StoreResult<DeploymentKeyView>> RenameAsync(
+        Guid id, string? name, string actor, CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.DeploymentKeysManage);
+        var trimmed = name?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed) || trimmed.Length > 200)
+            return StoreResult<DeploymentKeyView>.BadRequest(
+                "Deployment key name is required and cannot exceed 200 characters.", "name");
+        var key = await db.DeploymentKeys.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+        if (key is null) return StoreResult<DeploymentKeyView>.NotFound("Deployment key was not found.");
+        var old = key.Name;
+        key.Name = trimmed;
+        AddAudit(actor, "deployment-key.renamed", key, new { old, @new = trimmed });
+        await db.SaveChangesAsync(cancellationToken);
+        return StoreResult<DeploymentKeyView>.Ok(ToView(key));
+    }
+
+    public async Task<StoreResult<CreatedDeploymentKey>> RotateAsync(
+        Guid id, string actor, CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.DeploymentKeysManage);
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        var current = await db.DeploymentKeys.Include(x => x.License).SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+        if (current is null) return StoreResult<CreatedDeploymentKey>.NotFound("Deployment key was not found.");
+        if (current.RevokedAt is not null)
+            return StoreResult<CreatedDeploymentKey>.Conflict("A revoked deployment key cannot be rotated.");
+
+        var now = clock.GetUtcNow();
+        var (publicId, secret, fullValue) = DeploymentKeyFormat.Generate();
+        var replacement = new DeploymentKey
+        {
+            Id = Guid.NewGuid(),
+            LicenseRecordId = current.LicenseRecordId,
+            License = current.License,
+            Name = current.Name,
+            PublicId = publicId,
+            SecretHash = hasher.Hash(publicId, secret),
+            SecretHashVersion = DeploymentKeyHasher.CurrentVersion,
+            LastFour = secret[^4..],
+            CreatedAt = now,
+            CreatedBy = actor,
+            ExpiresAt = current.ExpiresAt
+        };
+        current.RevokedAt = now;
+        current.RevokedBy = actor;
+        current.RevocationReason = "Rotated";
+        current.ReplacedByDeploymentKeyId = replacement.Id;
+        db.DeploymentKeys.Add(replacement);
+        AddAudit(actor, "deployment-key.rotated", current, new { replacementPublicId = publicId });
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return StoreResult<CreatedDeploymentKey>.Ok(new CreatedDeploymentKey(ToView(replacement), fullValue));
+    }
+
+    public async Task<StoreResult<bool>> RevokeAsync(
+        Guid id, string? reason, string actor, CancellationToken cancellationToken = default)
+    {
+        await permissions.RequireAsync(Permissions.DeploymentKeysManage);
+        var key = await db.DeploymentKeys.SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+        if (key is null) return StoreResult<bool>.NotFound("Deployment key was not found.");
+        if (key.RevokedAt is not null) return StoreResult<bool>.Ok(true);
+        key.RevokedAt = clock.GetUtcNow();
+        key.RevokedBy = actor;
+        key.RevocationReason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim()[..Math.Min(reason.Trim().Length, 500)];
+        AddAudit(actor, "deployment-key.revoked", key, new { reason = key.RevocationReason });
+        await db.SaveChangesAsync(cancellationToken);
+        return StoreResult<bool>.Ok(true);
+    }
+
+    public async Task<StoreResult<LicenseStore.ActiveActivation>> EnrollAsync(
+        EnrollDeploymentKeyRequest request,
+        DateTimeOffset now,
+        string? requestedSigningKeyId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = ValidateEnrollRequest(request);
+        if (validation is not null)
+            return StoreResult<LicenseStore.ActiveActivation>.BadRequest(validation);
+        if (!signer.CanSign(requestedSigningKeyId))
+            return StoreResult<LicenseStore.ActiveActivation>.ServiceUnavailable(
+                "No signing key is currently able to sign. Try again once an administrator restores a default or active signing key.");
+        if (!DeploymentKeyFormat.TryParse(request.DeploymentKey, out var publicId, out var secret))
+        {
+            AddRejectionAudit(null, "unparseable", "malformed-credential", now);
+            await db.SaveChangesAsync(cancellationToken);
+            return StoreResult<LicenseStore.ActiveActivation>.Unauthorized("Deployment key is invalid.");
+        }
+
+        var requestId = Guid.Parse(request.RequestId!);
+        var tokenHash = LicenseStore.Hash(request.ActivationToken!);
+
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        try
+        {
+            var key = await db.DeploymentKeys
+                .FromSqlInterpolated($"SELECT * FROM \"DeploymentKeys\" WHERE \"PublicId\" = {publicId} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken);
+            if (key is null || key.SecretHashVersion != DeploymentKeyHasher.CurrentVersion
+                || !hasher.Verify(publicId, secret, key.SecretHash))
+            {
+                AddRejectionAudit(null, publicId, "invalid-credential", now);
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return StoreResult<LicenseStore.ActiveActivation>.Unauthorized("Deployment key is invalid.");
+            }
+            if (key.RevokedAt is not null)
+            {
+                AddRejectionAudit(key, publicId, "revoked", now);
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return StoreResult<LicenseStore.ActiveActivation>.Unauthorized("Deployment key has been revoked.");
+            }
+            if (key.ExpiresAt is not null && key.ExpiresAt <= now)
+            {
+                AddRejectionAudit(key, publicId, "expired", now);
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return StoreResult<LicenseStore.ActiveActivation>.Unauthorized("Deployment key has expired.");
+            }
+
+            var license = await db.Licenses
+                .FromSqlInterpolated($"SELECT * FROM \"Licenses\" WHERE \"Id\" = {key.LicenseRecordId} FOR UPDATE")
+                .Include(x => x.Entitlements)
+                .SingleAsync(cancellationToken);
+
+            var normalizedDeviceId = request.Device!.DeviceId!.ToUpperInvariant();
+            var result = await licenseStore.ActivateWithinLockAsync(
+                license, requestId, normalizedDeviceId, request.Device.DeviceId[^8..].ToUpperInvariant(),
+                CleanDeviceName(request.Device.DeviceName), request.Mode!, tokenHash, now,
+                key.Id, $"deployment-key:{key.PublicId}", cancellationToken);
+
+            if (result.Success)
+            {
+                key.LastUsedAt = now;
+                AddAudit($"deployment-key:{key.PublicId}", "deployment-key.enrollment-succeeded", key, new
+                {
+                    activationId = result.Value!.ActivationId,
+                    deviceSuffix = result.Value.DeviceIdSuffix
+                });
+            }
+            else
+            {
+                AddRejectionAudit(key, publicId, result.Error ?? "rejected", now);
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch (Exception exception) when (exception is DbUpdateException || LicenseStore.IsSerializationFailure(exception))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return StoreResult<LicenseStore.ActiveActivation>.Conflict(
+                "The license was activated concurrently. Retry to see the active device.");
+        }
+    }
+
+    private void AddAudit(string actor, string action, DeploymentKey key, object context) =>
+        db.AuditRecords.Add(new AuditRecord
+        {
+            Actor = actor,
+            Action = action,
+            TargetType = "deployment-key",
+            TargetId = key.PublicId,
+            Result = "success",
+            ContextJson = JsonSerializer.Serialize(new
+            {
+                publicId = key.PublicId,
+                lastFour = key.LastFour,
+                licenseRecordId = key.LicenseRecordId,
+                extra = context
+            }, JsonOptions),
+            TimestampUtc = clock.GetUtcNow()
+        });
+
+    private void AddRejectionAudit(DeploymentKey? key, string publicId, string reason, DateTimeOffset now) =>
+        db.AuditRecords.Add(new AuditRecord
+        {
+            Actor = "anonymous",
+            Action = "deployment-key.enrollment-rejected",
+            TargetType = "deployment-key",
+            TargetId = key?.PublicId ?? publicId,
+            Result = "rejected",
+            ContextJson = JsonSerializer.Serialize(new { reason, lastFour = key?.LastFour }, JsonOptions),
+            TimestampUtc = now
+        });
+
+    private static string? ValidateEnrollRequest(EnrollDeploymentKeyRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.DeploymentKey))
+            return "A deployment key is required.";
+        if (request.Device is null
+            || !string.Equals(request.Device.Scheme, DeviceIdentity.Scheme, StringComparison.Ordinal)
+            || request.Device.DeviceId is null
+            || !DeviceIdentity.IsValidDeviceId(request.Device.DeviceId))
+            return $"Device must use {DeviceIdentity.Scheme} with a 64-character SHA-256 identifier.";
+        if (request.Mode is not ("online" or "offline"))
+            return "Mode must be 'online' or 'offline'.";
+        if (!Guid.TryParse(request.RequestId, out _) || !IsStrongActivationToken(request.ActivationToken))
+            return "RequestId must be a GUID and activationToken must be 32 random bytes encoded as Base64.";
+        return null;
+    }
+
+    private static bool IsStrongActivationToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        try { return Convert.FromBase64String(value).Length == 32; }
+        catch (FormatException) { return false; }
+    }
+
+    private static string? CleanDeviceName(string? value) => string.IsNullOrWhiteSpace(value)
+        ? null
+        : value.Trim()[..Math.Min(value.Trim().Length, 100)];
+
+    private static DeploymentKeyView ToView(DeploymentKey key) => new(
+        key.Id, key.PublicId, key.Name, key.LicenseRecordId, key.LastFour,
+        key.CreatedAt, key.CreatedBy, key.ExpiresAt, key.RevokedAt, key.LastUsedAt, key.ReplacedByDeploymentKeyId);
 }

@@ -271,6 +271,19 @@ else
     if (apiCredentialPepper.Length < 32) throw new InvalidOperationException("ApiCredentials:Pepper must decode to at least 32 bytes.");
 }
 builder.Services.AddSingleton(new ApiCredentialHasher(apiCredentialPepper));
+var configuredDeploymentKeyPepper = builder.Configuration["DeploymentKeys:Pepper"];
+byte[] deploymentKeyPepper;
+if (string.IsNullOrWhiteSpace(configuredDeploymentKeyPepper) && builder.Environment.IsDevelopment())
+    deploymentKeyPepper = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+else if (string.IsNullOrWhiteSpace(configuredDeploymentKeyPepper))
+    throw new InvalidOperationException("DeploymentKeys:Pepper is required outside Development and must be at least 32 random bytes encoded as Base64.");
+else
+{
+    try { deploymentKeyPepper = Convert.FromBase64String(configuredDeploymentKeyPepper); }
+    catch (FormatException exception) { throw new InvalidOperationException("DeploymentKeys:Pepper must be valid Base64.", exception); }
+    if (deploymentKeyPepper.Length < 32) throw new InvalidOperationException("DeploymentKeys:Pepper must decode to at least 32 bytes.");
+}
+builder.Services.AddSingleton(new DeploymentKeyHasher(deploymentKeyPepper));
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<ILicenseBusinessDateResolver, ConfiguredLicenseBusinessDateResolver>();
 builder.Services.AddScoped<LicenseIdAllocator>();
@@ -281,6 +294,7 @@ builder.Services.AddScoped<LicenseImportService>();
 builder.Services.AddScoped<AuditService>();
 builder.Services.AddScoped<UserAdministrationService>();
 builder.Services.AddScoped<ApiCredentialService>();
+builder.Services.AddScoped<DeploymentKeyService>();
 builder.Services.AddScoped<CustomerAccessService>();
 builder.Services.AddScoped<IOwnedCredentialRevoker>(services => services.GetRequiredService<ApiCredentialService>());
 builder.Services.AddSingleton<SigningKeyRingService>();

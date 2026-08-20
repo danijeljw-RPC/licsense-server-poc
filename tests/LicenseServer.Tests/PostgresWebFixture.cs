@@ -142,6 +142,7 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["DEFAULT_ADMIN_PASSWORD"] = DatabaseInitializer.DefaultPassword,
                 ["ActivationCodes:Pepper"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
                 ["ApiCredentials:Pepper"] = "HyQjIiEgHx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwY=",
+                ["DeploymentKeys:Pepper"] = "MjAyNjA4MjBEZXBsb3ltZW50S2V5UGVwcGVyVGVzdA==",
                 ["Email:WorkerEnabled"] = "false",
                 ["MailerSend:WebhookSecret"] = MailerSendWebhookSecret,
                 ["Stripe:WebhookSecret"] = StripeWebhookSecret,
