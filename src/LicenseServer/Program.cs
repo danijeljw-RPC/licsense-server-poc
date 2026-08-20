@@ -1228,12 +1228,9 @@ static void ConfigureTrustedForwarders(IConfigurationSection section, ForwardedH
 
     foreach (var network in section.GetSection("KnownNetworks").GetChildren().Select(child => child.Value).Where(value => !string.IsNullOrWhiteSpace(value)))
     {
-        var parts = network!.Split('/', 2, StringSplitOptions.TrimEntries);
-        if (parts.Length != 2
-            || !IPAddress.TryParse(parts[0], out var prefix)
-            || !int.TryParse(parts[1], out var prefixLength))
+        if (!System.Net.IPNetwork.TryParse(network, out var parsed))
             throw new InvalidOperationException($"Security:ForwardedHeaders:KnownNetworks contains an invalid CIDR '{network}'.");
-        options.KnownNetworks.Add(new IPNetwork(prefix, prefixLength));
+        options.KnownIPNetworks.Add(parsed);
     }
 }
 
