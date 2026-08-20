@@ -120,10 +120,17 @@ public sealed class DeploymentKeyServiceTests(PostgresWebFixture fixture)
             licenseId, new CreateDeploymentKeyRequest("Intune", null), "stage11-test");
         var keyId = created.Value!.DeploymentKey.Id;
 
+        var ready = 0;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         async Task<StoreResult<CreatedDeploymentKey>> RotateInNewScopeAsync()
         {
             await using var scope = fixture.Factory.Services.CreateAsyncScope();
             var service = scope.ServiceProvider.GetRequiredService<DeploymentKeyService>();
+
+            if (Interlocked.Increment(ref ready) == 2) gate.TrySetResult();
+            await gate.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
             return await service.RotateAsync(keyId, "stage11-test");
         }
 
