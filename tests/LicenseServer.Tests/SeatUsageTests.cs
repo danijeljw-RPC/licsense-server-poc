@@ -166,6 +166,45 @@ public sealed class SeatUsageTests(PostgresWebFixture fixture)
         Assert.True(activeCount <= seats, $"Invalid state: {activeCount} active activations against {seats} seats.");
     }
 
+    [Fact]
+    public async Task SeatUsageBySourceDisambiguatesDuplicateDeploymentKeyNamesAndALiteralManualLabel()
+    {
+        var (licenseId, _, code) = await IssueLicenseAsync(seats: 4);
+        await ActivateAsync(licenseId, code, DeviceId(1));
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var keys = scope.ServiceProvider.GetRequiredService<DeploymentKeyService>();
+        // DeploymentKeyService.CreateAsync does not enforce unique names: two keys sharing a
+        // name, or a key literally named "Manual activation", must still be reported as
+        // distinct sources rather than merged with each other or with true manual activations.
+        var keyA = await keys.CreateAsync(licenseId, new CreateDeploymentKeyRequest("Intune", null), "seat-usage-test");
+        var keyB = await keys.CreateAsync(licenseId, new CreateDeploymentKeyRequest("Intune", null), "seat-usage-test");
+        var keyManualName = await keys.CreateAsync(licenseId, new CreateDeploymentKeyRequest("Manual activation", null), "seat-usage-test");
+        Assert.True(keyA.Success); Assert.True(keyB.Success); Assert.True(keyManualName.Success);
+
+        await keys.EnrollAsync(EnrollRequest(keyA.Value!.Secret, DeviceId(2)), DateTimeOffset.UtcNow);
+        await keys.EnrollAsync(EnrollRequest(keyB.Value!.Secret, DeviceId(3)), DateTimeOffset.UtcNow);
+        await keys.EnrollAsync(EnrollRequest(keyManualName.Value!.Secret, DeviceId(4)), DateTimeOffset.UtcNow);
+
+        var data = scope.ServiceProvider.GetRequiredService<AdminDataService>();
+        var detail = await data.GetLicenseAsync(licenseId);
+
+        Assert.NotNull(detail);
+        Assert.Equal(4, detail!.ActiveSeatCount);
+        Assert.Equal(4, detail.ActiveSeatsBySource.Count);
+        Assert.Single(detail.ActiveSeatsBySource, item => item.Source == "Manual activation");
+        Assert.Equal(2, detail.ActiveSeatsBySource.Count(item => item.Source.StartsWith("Intune (…", StringComparison.Ordinal)));
+        Assert.Single(detail.ActiveSeatsBySource, item => item.Source.StartsWith("Manual activation (…", StringComparison.Ordinal));
+        Assert.All(detail.ActiveSeatsBySource, item => Assert.Equal(1, item.ActiveCount));
+    }
+
+    private static EnrollDeploymentKeyRequest EnrollRequest(string deploymentKey, string deviceSuffix) => new(
+        deploymentKey,
+        Guid.NewGuid().ToString(),
+        Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)),
+        "offline",
+        new DeviceRequest(DeviceIdentity.Scheme, deviceSuffix, "seat-usage-test-device"));
+
     private async Task<(string LicenseId, Guid LicenseRecordId, string ActivationCode)> IssueLicenseAsync(int seats)
     {
         await using var scope = fixture.Factory.Services.CreateAsyncScope();

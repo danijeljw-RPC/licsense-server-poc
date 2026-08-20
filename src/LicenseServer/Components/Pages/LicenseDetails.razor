@@ -113,7 +113,7 @@ else
             <dt>Percentage used</dt><dd>@(license.SeatLimit > 0 ? $"{(double)license.ActiveSeatCount / license.SeatLimit:P0}" : "—")</dd>
             <dt>Historical (deactivated) activations</dt><dd>@license.HistoricalActivationCount</dd>
         </dl>
-        @if (license.ActiveSeatsBySource.Count > 1)
+        @if (license.ActiveSeatsBySource.Count > 0)
         {
             <div class="table-wrap"><table><thead><tr><th>Source</th><th>Active seats</th></tr></thead><tbody>
                 @foreach (var source in license.ActiveSeatsBySource) { <tr><td>@source.Source</td><td>@source.ActiveCount</td></tr> }

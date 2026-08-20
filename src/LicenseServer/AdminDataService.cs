@@ -99,10 +99,33 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
         var activationIds = x.Activations.Select(y => y.ActivationId).ToArray();
         var seatLimit = x.Entitlements.Count == 0 ? 0 : x.Entitlements.Min(item => item.Seats);
         var historicalActivationCount = x.Activations.Count(a => a.DeactivatedAt != null);
-        var bySource = active
-            .GroupBy(a => a.DeploymentKey?.Name ?? "Manual activation")
-            .OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal)
-            .Select(g => new SeatUsageBySource(g.Key, g.Count()))
+        // Grouped by deployment key identity (not name): DeploymentKeyService.CreateAsync allows
+        // duplicate names across keys, and even a key literally named "Manual activation" -
+        // grouping by name alone would merge distinct sources or fold a key into true manual
+        // activations. The name is used only as a display label, disambiguated with the key's
+        // last four characters if two groups would otherwise render identically.
+        var groupedBySource = active.GroupBy(a => a.DeploymentKeyId).ToList();
+        // The true manual (null-key) group is unique per license by construction, so it always
+        // renders as the bare "Manual activation" label. Deployment-key groups disambiguate by
+        // their own last-four when their display name collides with another key's name or with
+        // that literal label, since a key's LastFour always exists and the group's name alone does
+        // not.
+        var deploymentKeyNames = groupedBySource
+            .Where(g => g.Key is not null)
+            .Select(g => g.First().DeploymentKey!.Name)
+            .Append("Manual activation");
+        var duplicateNames = deploymentKeyNames.GroupBy(name => name, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
+        var bySource = groupedBySource
+            .Select(g =>
+            {
+                if (g.Key is null) return new SeatUsageBySource("Manual activation", g.Count());
+                var deploymentKey = g.First().DeploymentKey!;
+                var label = duplicateNames.Contains(deploymentKey.Name)
+                    ? $"{deploymentKey.Name} (…{deploymentKey.LastFour})" : deploymentKey.Name;
+                return new SeatUsageBySource(label, g.Count());
+            })
+            .OrderByDescending(item => item.ActiveCount).ThenBy(item => item.Source, StringComparer.Ordinal)
             .ToList();
         var history = await db.AuditRecords.AsNoTracking()
             .Where(a => a.TargetId == licenseId || (a.TargetType == "activation" && activationIds.Contains(a.TargetId)))
