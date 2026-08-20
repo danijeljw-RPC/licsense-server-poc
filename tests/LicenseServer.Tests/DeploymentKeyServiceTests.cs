@@ -98,6 +98,63 @@ public sealed class DeploymentKeyServiceTests(PostgresWebFixture fixture)
 
     [Fact]
     [Trait("ExpectedGreenStage", "11")]
+    public async Task ConcurrentRotationsOfTheSameDeploymentKeySerializeToExactlyOneWinner()
+    {
+        // Hold the row lock from a third transaction first, then release both RotateAsync calls
+        // against it together. That guarantees they overlap on the same row lock window instead of
+        // relying on scheduler timing to make two independent requests race naturally.
+        var (licenseId, _) = await IssueLicenseAsync(seats: 3);
+        await using var setupScope = fixture.Factory.Services.CreateAsyncScope();
+        var setupService = setupScope.ServiceProvider.GetRequiredService<DeploymentKeyService>();
+        var created = await setupService.CreateAsync(
+            licenseId, new CreateDeploymentKeyRequest("Intune", null), "stage11-test");
+        var keyId = created.Value!.DeploymentKey.Id;
+        var ready = new CountdownEvent(2);
+        var releaseRotations = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using var lockScope = fixture.Factory.Services.CreateAsyncScope();
+        var lockDb = lockScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await using var lockTransaction = await lockDb.Database.BeginTransactionAsync();
+        _ = await lockDb.DeploymentKeys
+            .FromSqlInterpolated($"SELECT * FROM \"DeploymentKeys\" WHERE \"Id\" = {keyId} FOR UPDATE")
+            .SingleAsync();
+
+        async Task<StoreResult<CreatedDeploymentKey>> RotateInNewScopeAsync()
+        {
+            await using var scope = fixture.Factory.Services.CreateAsyncScope();
+            var service = scope.ServiceProvider.GetRequiredService<DeploymentKeyService>();
+            ready.Signal();
+            await releaseRotations.Task;
+            return await service.RotateAsync(keyId, "stage11-test");
+        }
+
+        var firstRotation = RotateInNewScopeAsync();
+        var secondRotation = RotateInNewScopeAsync();
+        Assert.True(ready.Wait(TimeSpan.FromSeconds(5)), "Both rotations should reach the release barrier before the lock is dropped.");
+        releaseRotations.SetResult();
+
+        // Both callers are past the barrier and issuing their RotateAsync call now, but a fixed
+        // delay still cannot *guarantee* either has reached its FOR UPDATE query before the lock
+        // below is released - on a sufficiently slow/contended runner the "second" caller could
+        // still be between the release signal and its query, letting it win uncontested rather
+        // than genuinely racing. An attempt to poll pg_stat_activity for two backends observably
+        // blocked on the lock (rather than guessing a delay is long enough) did not reliably see
+        // the pooled EF Core connections from this probe connection's view during local testing,
+        // so it was not worth the added complexity and flakiness risk over the existing barrier;
+        // this delay is a pragmatic, documented gap rather than a rigorous guarantee. It cannot
+        // cause a false failure either way: if the race stops overlapping, both outcomes below
+        // (one 200, one 409) still hold trivially, so the risk is only a silent loss of coverage.
+        await Task.Delay(100);
+        await lockTransaction.CommitAsync();
+
+        var results = await Task.WhenAll(firstRotation, secondRotation);
+
+        Assert.Single(results, r => r.Success);
+        Assert.Single(results, r => !r.Success && r.StatusCode == 409);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "11")]
     public async Task RevokingADeploymentKeyDoesNotDeactivateMachinesPreviouslyEnrolledThroughIt()
     {
         var (licenseId, _) = await IssueLicenseAsync(seats: 3);

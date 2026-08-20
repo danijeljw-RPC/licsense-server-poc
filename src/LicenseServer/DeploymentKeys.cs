@@ -131,7 +131,15 @@ internal sealed class DeploymentKeyService(
     {
         await permissions.RequireAsync(Permissions.DeploymentKeysManage);
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        var current = await db.DeploymentKeys.Include(x => x.License).SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
+        // FOR UPDATE: without a row lock, two concurrent rotations of the same key can both read
+        // RevokedAt == null before either commits, and both would then create a live, unrevoked
+        // replacement - leaving two valid successor keys instead of exactly one. The lock forces
+        // the second caller to wait for the first's commit, then re-read the now-revoked row and
+        // correctly hit the RevokedAt guard below instead of racing it.
+        var current = await db.DeploymentKeys
+            .FromSqlInterpolated($"SELECT * FROM \"DeploymentKeys\" WHERE \"Id\" = {id} FOR UPDATE")
+            .Include(x => x.License)
+            .SingleOrDefaultAsync(cancellationToken);
         if (current is null) return StoreResult<CreatedDeploymentKey>.NotFound("Deployment key was not found.");
         var now = clock.GetUtcNow();
         if (current.RevokedAt is not null)

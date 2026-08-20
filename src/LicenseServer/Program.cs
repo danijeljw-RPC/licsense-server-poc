@@ -7,12 +7,14 @@ using LicenseServer.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.OpenApi;
+using System.Net;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
@@ -54,6 +56,22 @@ builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityRedirectManager>();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
+// Forwarded-header trust is opt-in, not opt-out: with no KnownProxies/KnownNetworks configured,
+// the framework default (loopback-only) is not actually safe for every deployment topology - a
+// direct caller whose connection happens to reach Kestrel as the trusted loopback address (or any
+// other unconfigured default) could still spoof X-Forwarded-For and defeat IP-based rate limiting.
+// So unless an operator has explicitly named at least one trusted proxy or network, the forwarded-
+// headers middleware is never added at all (see the guarded app.UseForwardedHeaders() call below),
+// and RemoteIpAddress always reflects the real TCP peer. This Configure<> callback is resolved
+// lazily from DI rather than read eagerly here off builder.Configuration: a WebApplicationFactory
+// test host layers its own config overrides on top of builder.Configuration only after this point
+// in Program.cs's synchronous startup code has already run, so an eager read here would silently
+// miss them (this is the same timing hazard already documented for the credential peppers).
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    ConfigureTrustedForwarders(builder.Configuration.GetSection("Security:ForwardedHeaders"), options);
+});
 
 var authentication = builder.Services.AddAuthentication(options =>
     {
@@ -338,6 +356,11 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0,
             AutoReplenishment = true
         }));
+    // This is the credential (public-id) dimension only. ASP.NET Core's named-policy mechanism
+    // (RateLimiterOptions.AddPolicy) supports exactly one partition function per policy, so it
+    // cannot itself combine this with the IP dimension below - the IP-wide limiter is therefore
+    // enforced separately, directly in the anonymous-endpoint middleware ahead of UseRateLimiter,
+    // so a caller who varies the presented public ID per request is still bounded by it.
     options.AddPolicy("deployment-key-enroll", context =>
     {
         var partitionKey = context.Items.TryGetValue("deployment-key-partition", out var value) && value is string key
@@ -353,6 +376,20 @@ builder.Services.AddRateLimiter(options =>
     });
 });
 
+// Coarse per-IP dimension for deployment-key enrollment, enforced independently of the
+// credential-partitioned "deployment-key-enroll" policy above (see the comment on that policy):
+// a caller who varies the public ID per request must still be bounded by IP.
+var deploymentKeyEnrollIpLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+    RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = builder.Configuration.GetValue("RateLimits:DeploymentKeyEnrollIpPermitLimit", 30),
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+
 var dataProtection = builder.Services.AddDataProtection().SetApplicationName("LicenseServer");
 var dataProtectionPath = builder.Configuration["DataProtection:KeysPath"];
 if (!string.IsNullOrWhiteSpace(dataProtectionPath))
@@ -362,6 +399,7 @@ if (!string.IsNullOrWhiteSpace(dataProtectionPath))
 }
 
 var app = builder.Build();
+app.Lifetime.ApplicationStopping.Register(deploymentKeyEnrollIpLimiter.Dispose);
 if (ephemeralDevelopmentPepper)
 {
     var logEphemeralPepper = LoggerMessage.Define(
@@ -370,6 +408,16 @@ if (ephemeralDevelopmentPepper)
         "ActivationCodes:Pepper is not configured. Development is using an ephemeral pepper; newly issued activation codes will not validate after restart. Configure a Base64 secret with at least 32 random bytes for persistent development data.");
     logEphemeralPepper(app.Logger, null);
 }
+
+// Read from app.Configuration (the fully built, request-time configuration) rather than
+// builder.Configuration - see the comment on the Configure<ForwardedHeadersOptions> registration
+// above for why an eager pre-Build() read here would miss WebApplicationFactory test overrides.
+var forwardedHeadersSection = app.Configuration.GetSection("Security:ForwardedHeaders");
+var trustedForwardersConfigured =
+    forwardedHeadersSection.GetSection("KnownProxies").GetChildren().Any(child => !string.IsNullOrWhiteSpace(child.Value))
+    || forwardedHeadersSection.GetSection("KnownNetworks").GetChildren().Any(child => !string.IsNullOrWhiteSpace(child.Value));
+if (trustedForwardersConfigured)
+    app.UseForwardedHeaders();
 
 app.Use(async (context, next) =>
 {
@@ -416,36 +464,84 @@ app.UseWhen(
         && context.Request.Path.Equals("/api/v1/deployment-keys/enroll", StringComparison.OrdinalIgnoreCase),
     branch => branch.Use(async (context, next) =>
     {
+        // Coarse per-IP dimension, checked first and before any body reading: bounds every caller
+        // from this IP regardless of what credential (if any) they present, so varying the public
+        // ID per request cannot evade it the way it would evade the credential-only named policy
+        // below. Cheap and synchronous (QueueLimit 0 everywhere in this app, so AttemptAcquire never
+        // waits) - rejecting here also means an IP that has exhausted this limit never reaches the
+        // body-buffering step further down.
+        using (var ipLease = deploymentKeyEnrollIpLimiter.AttemptAcquire(context))
+        {
+            if (!ipLease.IsAcquired)
+            {
+                context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    type = "https://tools.ietf.org/html/rfc9110#section-15.5.20",
+                    title = "Too Many Requests",
+                    status = StatusCodes.Status429TooManyRequests,
+                    detail = "Rate limit exceeded. Try again later."
+                }, options: null, contentType: "application/problem+json", cancellationToken: context.RequestAborted);
+                return;
+            }
+        }
+
         // Rate limiting middleware resolves its partition key synchronously from HttpContext
-        // before minimal-API model binding reads the body, so a distinct public-id partition (in
-        // addition to the IP-based device-api partition every other anonymous endpoint uses) has
-        // to be extracted here and stashed in HttpContext.Items ahead of app.UseRateLimiter().
-        // Peeking only the safe, non-secret "deploymentKey" public-id prefix - never comparing or
-        // logging the secret half - keeps this consistent with the "never log the full secret" rule.
-        context.Request.EnableBuffering();
-        using var reader = new StreamReader(context.Request.Body, System.Text.Encoding.UTF8, leaveOpen: true);
-        var body = await reader.ReadToEndAsync();
-        context.Request.Body.Position = 0;
-        string partitionKey;
-        try
+        // before minimal-API model binding reads the body, so a distinct public-id partition (for
+        // the credential-dimension "deployment-key-enroll" policy, in addition to the IP dimension
+        // just enforced above) has to be extracted here and stashed in HttpContext.Items ahead of
+        // app.UseRateLimiter(). Peeking only the safe, non-secret "deploymentKey" public-id prefix -
+        // never comparing or logging the secret half - keeps this consistent with the "never log
+        // the full secret" rule.
+        //
+        // The peek itself must not become an unbounded-read vector on an anonymous endpoint ahead
+        // of the rate limiter: the read is capped at maxPeekBytes regardless of what (if anything)
+        // the caller declares as Content-Length. This matters because the standard .NET JSON POST
+        // helper (HttpClient.PostAsJsonAsync, used by every test in this repo and the plausible
+        // shape of any real client following LICENSING-INTEGRATION.md) sends Transfer-Encoding:
+        // chunked with NO Content-Length header at all - gating on a declared length would silently
+        // skip the peek (and therefore the credential-dimension partition) for exactly that common
+        // case, which is not what "keep an IP limit alongside the public-ID limit" asked for. A
+        // request with a Content-Length already known to exceed the cap skips the read entirely
+        // without buffering anything; everyone else gets read up to one byte past the cap so an
+        // exact-cap body still parses, while an over-cap body is detected without ever materializing
+        // more than maxPeekBytes + 1 bytes into memory. Either way, a caller who omits/exceeds the
+        // cap, sends a non-JSON body, or sends unparseable JSON skips the peek or fails to extract a
+        // public ID - the credential-dimension limiter then partitions by IP instead, and the
+        // IP-dimension limiter just enforced above still bounds the request regardless.
+        const int maxPeekBytes = 4096;
+        if (context.Request.HasJsonContentType() && context.Request.ContentLength is not > maxPeekBytes)
         {
-            using var document = System.Text.Json.JsonDocument.Parse(body);
-            // TryGetProperty throws InvalidOperationException (not JsonException) when the root isn't
-            // a JSON object - a body like `null`, `[]`, or a bare string/number/bool is syntactically
-            // valid JSON, so Parse succeeds and the catch below never fires; this ValueKind guard avoids
-            // the call entirely instead of relying on a broader catch.
-            partitionKey = document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
-                && document.RootElement.TryGetProperty("deploymentKey", out var value)
-                && value.ValueKind == System.Text.Json.JsonValueKind.String
-                && DeploymentKeyFormat.TryParse(value.GetString(), out var publicId, out _)
-                ? $"dpk:{publicId}"
-                : context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            context.Request.EnableBuffering();
+            var buffer = new byte[maxPeekBytes + 1];
+            var read = await context.Request.Body.ReadAtLeastAsync(
+                buffer, maxPeekBytes + 1, throwOnEndOfStream: false, context.RequestAborted);
+            context.Request.Body.Position = 0;
+            if (read <= maxPeekBytes)
+            {
+                try
+                {
+                    using var document = System.Text.Json.JsonDocument.Parse(buffer.AsMemory(0, read));
+                    // TryGetProperty throws InvalidOperationException (not JsonException) when the root
+                    // isn't a JSON object - a body like `null`, `[]`, or a bare string/number/bool is
+                    // syntactically valid JSON, so Parse succeeds and the catch below never fires; this
+                    // ValueKind guard avoids the call entirely instead of relying on a broader catch.
+                    if (document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                        && document.RootElement.TryGetProperty("deploymentKey", out var value)
+                        && value.ValueKind == System.Text.Json.JsonValueKind.String
+                        && DeploymentKeyFormat.TryParse(value.GetString(), out var publicId, out _))
+                    {
+                        context.Items["deployment-key-partition"] = $"dpk:{publicId}";
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // Leave the partition key unset; the credential-dimension limiter falls back to IP.
+                }
+            }
+            // read > maxPeekBytes: the body is over the cap, so it's left unparsed and the partition
+            // key stays unset (falls back to IP) rather than acting on a truncated prefix.
         }
-        catch (System.Text.Json.JsonException)
-        {
-            partitionKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        }
-        context.Items["deployment-key-partition"] = partitionKey;
         await next();
     }));
 app.UseRateLimiter();
@@ -1139,6 +1235,23 @@ static bool TryReadIfMatch(HttpRequest request, out long version)
 
 static IResult LifecycleRedirect(string licenseId, string key, string? value) =>
     Results.Redirect($"/licenses/{Uri.EscapeDataString(licenseId)}?{key}={Uri.EscapeDataString(value ?? "Request failed.")}");
+
+static void ConfigureTrustedForwarders(IConfigurationSection section, ForwardedHeadersOptions options)
+{
+    foreach (var proxy in section.GetSection("KnownProxies").GetChildren().Select(child => child.Value).Where(value => !string.IsNullOrWhiteSpace(value)))
+    {
+        if (!IPAddress.TryParse(proxy, out var address))
+            throw new InvalidOperationException($"Security:ForwardedHeaders:KnownProxies contains an invalid IP address '{proxy}'.");
+        options.KnownProxies.Add(address);
+    }
+
+    foreach (var network in section.GetSection("KnownNetworks").GetChildren().Select(child => child.Value).Where(value => !string.IsNullOrWhiteSpace(value)))
+    {
+        if (!System.Net.IPNetwork.TryParse(network, out var parsed))
+            throw new InvalidOperationException($"Security:ForwardedHeaders:KnownNetworks contains an invalid CIDR '{network}'.");
+        options.KnownIPNetworks.Add(parsed);
+    }
+}
 
 static async Task<bool> ValidAntiforgeryAsync(IAntiforgery antiforgery, HttpContext context)
 {

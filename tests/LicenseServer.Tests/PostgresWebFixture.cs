@@ -143,7 +143,11 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["ActivationCodes:Pepper"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
                 ["ApiCredentials:Pepper"] = "HyQjIiEgHx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwY=",
                 ["DeploymentKeys:Pepper"] = "9vWKjZpH04swggPztM7cfUpwLXtasA7YaCyYWZPylAI=",
+                // Deliberately different: tests that burst the same credential must trip the
+                // credential-dimension limit strictly before the IP-dimension limit could account
+                // for the same 429s, and vice versa for tests that vary the credential per request.
                 ["RateLimits:DeploymentKeyEnrollPermitLimit"] = "10",
+                ["RateLimits:DeploymentKeyEnrollIpPermitLimit"] = "20",
                 ["Email:WorkerEnabled"] = "false",
                 ["MailerSend:WebhookSecret"] = MailerSendWebhookSecret,
                 ["Stripe:WebhookSecret"] = StripeWebhookSecret,
