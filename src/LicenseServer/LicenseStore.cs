@@ -281,10 +281,6 @@ internal sealed class LicenseStore(
         if (validation is not null)
             return StoreResult<ActiveActivation>.BadRequest(validation);
 
-        // Checked before any state is mutated: signing happens after this method commits (the
-        // caller needs the committed activation's ID/timestamps to build the license artifact), so
-        // a signing failure discovered only after commit would leave the activation - and the
-        // request ID that made it idempotent - unusably stuck with no artifact ever issued.
         if (!signer.CanSign(requestedSigningKeyId))
             return StoreResult<ActiveActivation>.ServiceUnavailable(
                 "No signing key is currently able to sign. Try again once an administrator restores a default or active signing key.");
@@ -307,83 +303,18 @@ internal sealed class LicenseStore(
                     license.ActivationCodeHashVersion,
                     license.ActivationCodeHash))
                 return StoreResult<ActiveActivation>.Unauthorized("Activation code is invalid.");
-            if (LifecycleBlock(license, now) is { } blocked)
-                return StoreResult<ActiveActivation>.Forbidden(blocked);
 
             var normalizedDeviceId = request.Device!.DeviceId!.ToUpperInvariant();
-
-            var priorRequest = await db.Activations
-                .SingleOrDefaultAsync(x => x.LicenseRecordId == license.Id && x.RequestId == requestId, cancellationToken);
-            if (priorRequest is not null)
+            var result = await ActivateWithinLockAsync(
+                license, requestId, normalizedDeviceId, request.Device.DeviceId[^8..].ToUpperInvariant(),
+                CleanDeviceName(request.Device.DeviceName), request.Mode!, tokenHash, now,
+                deploymentKeyId: null, auditActor: "license-client", cancellationToken);
+            if (result.Success)
             {
-                var idempotent = priorRequest.DeactivatedAt is null
-                    && string.Equals(priorRequest.DeviceIdHash, normalizedDeviceId, StringComparison.OrdinalIgnoreCase)
-                    && CryptographicOperations.FixedTimeEquals(priorRequest.TokenHash, tokenHash);
-                return idempotent
-                    ? StoreResult<ActiveActivation>.Ok(ToActive(priorRequest, license.LicenseId))
-                    : StoreResult<ActiveActivation>.Conflict("The activation request ID has already been used.");
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
             }
-
-            var activeForDevice = await db.Activations.SingleOrDefaultAsync(
-                x => x.LicenseRecordId == license.Id
-                    && x.DeactivatedAt == null
-                    && x.DeviceIdHash == normalizedDeviceId,
-                cancellationToken);
-            if (activeForDevice is not null)
-            {
-                return CryptographicOperations.FixedTimeEquals(activeForDevice.TokenHash, tokenHash)
-                    ? StoreResult<ActiveActivation>.Ok(ToActive(activeForDevice, license.LicenseId))
-                    : StoreResult<ActiveActivation>.Conflict(
-                        $"License is already active on device ...{activeForDevice.DeviceIdSuffix}. Reuse the original activation credentials or deactivate that activation first.");
-            }
-
-            var activeCount = await db.Activations.CountAsync(
-                x => x.LicenseRecordId == license.Id && x.DeactivatedAt == null,
-                cancellationToken);
-            var seatLimit = GetSeatLimit(license);
-            if (activeCount >= seatLimit)
-                return StoreResult<ActiveActivation>.Conflict(
-                    $"Activation limit reached. {activeCount} of {seatLimit} seats are currently active.");
-
-            var isTransfer = activeCount == 0 && await db.Activations.AnyAsync(
-                x => x.LicenseRecordId == license.Id && x.DeviceIdHash != normalizedDeviceId,
-                cancellationToken);
-
-            var entity = new Activation
-            {
-                Id = Guid.NewGuid(),
-                ActivationId = Guid.NewGuid().ToString("D"),
-                LicenseRecordId = license.Id,
-                License = license,
-                RequestId = requestId,
-                DeviceIdHash = normalizedDeviceId,
-                DeviceIdSuffix = request.Device.DeviceId[^8..].ToUpperInvariant(),
-                DeviceName = CleanDeviceName(request.Device.DeviceName),
-                Mode = request.Mode!,
-                TokenHash = tokenHash,
-                ActivatedAt = now,
-                RefreshAfter = request.Mode == "online" ? now.AddDays(1) : null,
-                LeaseExpiresAt = request.Mode == "online" ? now.AddDays(7) : null
-            };
-            db.Activations.Add(entity);
-            AddAudit("license-client", "activation.created", "activation", entity.ActivationId, "success", new
-            {
-                licenseId,
-                mode = entity.Mode,
-                deviceSuffix = entity.DeviceIdSuffix
-            }, now);
-            if (isTransfer)
-            {
-                AddAudit("license-client", "license.transferred", "license", licenseId, "success", new
-                {
-                    activationId = entity.ActivationId,
-                    deviceSuffix = entity.DeviceIdSuffix,
-                    mode = entity.Mode
-                }, now);
-            }
-            await db.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            return StoreResult<ActiveActivation>.Ok(ToActive(entity, license.LicenseId));
+            return result;
         }
         catch (Exception exception) when (exception is DbUpdateException || IsSerializationFailure(exception))
         {
@@ -397,7 +328,103 @@ internal sealed class LicenseStore(
         }
     }
 
-    private static bool IsSerializationFailure(Exception? exception)
+    // Called with `license` already locked (FOR UPDATE) and tracked, with Entitlements loaded, by
+    // an already-open caller transaction. Never calls SaveChanges/Commit/Rollback itself - on a
+    // Success result the caller must SaveChanges+Commit; on failure the caller lets the
+    // transaction roll back on dispose, exactly as ActivateAsync always did before this method
+    // was extracted so DeploymentKeyService.EnrollAsync could share the same seat-authoritative
+    // core after verifying a deployment key instead of an activation code.
+    internal async Task<StoreResult<ActiveActivation>> ActivateWithinLockAsync(
+        LicenseRecord license,
+        Guid requestId,
+        string normalizedDeviceId,
+        string deviceIdSuffix,
+        string? deviceName,
+        string mode,
+        byte[] tokenHash,
+        DateTimeOffset now,
+        Guid? deploymentKeyId,
+        string auditActor,
+        CancellationToken cancellationToken)
+    {
+        if (LifecycleBlock(license, now) is { } blocked)
+            return StoreResult<ActiveActivation>.Forbidden(blocked);
+
+        var priorRequest = await db.Activations
+            .SingleOrDefaultAsync(x => x.LicenseRecordId == license.Id && x.RequestId == requestId, cancellationToken);
+        if (priorRequest is not null)
+        {
+            var idempotent = priorRequest.DeactivatedAt is null
+                && string.Equals(priorRequest.DeviceIdHash, normalizedDeviceId, StringComparison.OrdinalIgnoreCase)
+                && CryptographicOperations.FixedTimeEquals(priorRequest.TokenHash, tokenHash);
+            return idempotent
+                ? StoreResult<ActiveActivation>.Ok(ToActive(priorRequest, license.LicenseId))
+                : StoreResult<ActiveActivation>.Conflict("The activation request ID has already been used.");
+        }
+
+        var activeForDevice = await db.Activations.SingleOrDefaultAsync(
+            x => x.LicenseRecordId == license.Id
+                && x.DeactivatedAt == null
+                && x.DeviceIdHash == normalizedDeviceId,
+            cancellationToken);
+        if (activeForDevice is not null)
+        {
+            return CryptographicOperations.FixedTimeEquals(activeForDevice.TokenHash, tokenHash)
+                ? StoreResult<ActiveActivation>.Ok(ToActive(activeForDevice, license.LicenseId))
+                : StoreResult<ActiveActivation>.Conflict(
+                    $"License is already active on device ...{activeForDevice.DeviceIdSuffix}. Reuse the original activation credentials or deactivate that activation first.");
+        }
+
+        var activeCount = await db.Activations.CountAsync(
+            x => x.LicenseRecordId == license.Id && x.DeactivatedAt == null,
+            cancellationToken);
+        var seatLimit = GetSeatLimit(license);
+        if (activeCount >= seatLimit)
+            return StoreResult<ActiveActivation>.Conflict(
+                $"Activation limit reached. {activeCount} of {seatLimit} seats are currently active.");
+
+        var isTransfer = activeCount == 0 && await db.Activations.AnyAsync(
+            x => x.LicenseRecordId == license.Id && x.DeviceIdHash != normalizedDeviceId,
+            cancellationToken);
+
+        var entity = new Activation
+        {
+            Id = Guid.NewGuid(),
+            ActivationId = Guid.NewGuid().ToString("D"),
+            LicenseRecordId = license.Id,
+            License = license,
+            RequestId = requestId,
+            DeviceIdHash = normalizedDeviceId,
+            DeviceIdSuffix = deviceIdSuffix,
+            DeviceName = deviceName,
+            Mode = mode,
+            TokenHash = tokenHash,
+            ActivatedAt = now,
+            RefreshAfter = mode == "online" ? now.AddDays(1) : null,
+            LeaseExpiresAt = mode == "online" ? now.AddDays(7) : null,
+            DeploymentKeyId = deploymentKeyId
+        };
+        db.Activations.Add(entity);
+        AddAudit(auditActor, "activation.created", "activation", entity.ActivationId, "success", new
+        {
+            licenseId = license.LicenseId,
+            mode = entity.Mode,
+            deviceSuffix = entity.DeviceIdSuffix,
+            deploymentKeyId
+        }, now);
+        if (isTransfer)
+        {
+            AddAudit(auditActor, "license.transferred", "license", license.LicenseId, "success", new
+            {
+                activationId = entity.ActivationId,
+                deviceSuffix = entity.DeviceIdSuffix,
+                mode = entity.Mode
+            }, now);
+        }
+        return StoreResult<ActiveActivation>.Ok(ToActive(entity, license.LicenseId));
+    }
+
+    internal static bool IsSerializationFailure(Exception? exception)
     {
         for (var current = exception; current is not null; current = current.InnerException)
         {
