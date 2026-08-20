@@ -64,6 +64,10 @@ services:
       Billing__RefundAction: ${BILLING_REFUND_ACTION:-review}
       Billing__DisputeAction: ${BILLING_DISPUTE_ACTION:-review}
       CustomerPortal__PublicBaseUrl: ${CUSTOMER_PORTAL_PUBLIC_BASE_URL:?Set CUSTOMER_PORTAL_PUBLIC_BASE_URL in .env}
+      # Trust only the reverse proxy hop(s) in front of the app before honoring X-Forwarded-For /
+      # X-Forwarded-Proto. Leave blank when exposing the container directly instead of via a proxy.
+      Security__ForwardedHeaders__KnownProxies__0: ${FORWARDED_HEADERS_KNOWN_PROXY:-}
+      Security__ForwardedHeaders__KnownNetworks__0: ${FORWARDED_HEADERS_KNOWN_NETWORK:-}
       RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-false}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
     ports:

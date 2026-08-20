@@ -131,6 +131,55 @@ public sealed class DeploymentKeyEnrollmentTests(PostgresWebFixture fixture)
         Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
         Assert.True(statuses.Take(10).All(s => s != HttpStatusCode.TooManyRequests),
             "The credential permit limit is 10, so the first 429 must not appear before the 11th request.");
+        Assert.Contains(HttpStatusCode.TooManyRequests, statuses.Skip(10).Take(10));
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "11")]
+    public async Task EnrollmentRateLimitUsesTrustedForwardedClientAddressForItsIpDimension()
+    {
+        // The credential partition is deliberately made too large to trip here, and each request uses
+        // a distinct fake public ID, so any 429 must come from the coarse IP limiter. Trusting the
+        // loopback proxy in this test lets X-Forwarded-For drive that limiter the same way a real
+        // trusted ingress would in production.
+        await using var factory = fixture.Factory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["RateLimits:DeploymentKeyEnrollPermitLimit"] = "100",
+                ["RateLimits:DeploymentKeyEnrollIpPermitLimit"] = "2",
+                ["Security:ForwardedHeaders:KnownProxies:0"] = IPAddress.Loopback.ToString(),
+                ["Security:ForwardedHeaders:KnownProxies:1"] = IPAddress.IPv6Loopback.ToString()
+            })));
+        using var client = factory.CreateClient();
+
+        async Task<HttpStatusCode> EnrollAsync(string forwardedFor, int requestNumber)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/deployment-keys/enroll")
+            {
+                Content = JsonContent.Create(EnrollBody(
+                    $"dpk_live_{requestNumber:X16}_{new string('A', 43)}",
+                    $"{requestNumber:D4}"))
+            };
+            request.Headers.TryAddWithoutValidation("X-Forwarded-For", forwardedFor);
+            return (await client.SendAsync(request)).StatusCode;
+        }
+
+        var firstIpStatuses = new[]
+        {
+            await EnrollAsync("198.51.100.10", 1),
+            await EnrollAsync("198.51.100.10", 2),
+            await EnrollAsync("198.51.100.10", 3)
+        };
+        var secondIpStatuses = new[]
+        {
+            await EnrollAsync("198.51.100.20", 4),
+            await EnrollAsync("198.51.100.20", 5)
+        };
+
+        Assert.Equal(HttpStatusCode.Unauthorized, firstIpStatuses[0]);
+        Assert.Equal(HttpStatusCode.Unauthorized, firstIpStatuses[1]);
+        Assert.Equal(HttpStatusCode.TooManyRequests, firstIpStatuses[2]);
+        Assert.All(secondIpStatuses, status => Assert.Equal(HttpStatusCode.Unauthorized, status));
     }
 
     [Fact]

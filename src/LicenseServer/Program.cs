@@ -7,12 +7,14 @@ using LicenseServer.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.OpenApi;
+using System.Net;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
@@ -54,6 +56,11 @@ builder.Services.AddAntiforgery(options => options.HeaderName = "X-CSRF-TOKEN");
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<IdentityRedirectManager>();
 builder.Services.AddScoped<AuthenticationStateProvider, IdentityRevalidatingAuthenticationStateProvider>();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    ConfigureTrustedForwarders(builder.Configuration.GetSection("Security:ForwardedHeaders"), options);
+});
 
 var authentication = builder.Services.AddAuthentication(options =>
     {
@@ -391,6 +398,8 @@ if (ephemeralDevelopmentPepper)
     logEphemeralPepper(app.Logger, null);
 }
 
+app.UseForwardedHeaders();
+
 app.Use(async (context, next) =>
 {
     const string header = "X-Correlation-ID";
@@ -475,21 +484,21 @@ app.UseWhen(
         // skip the peek (and therefore the credential-dimension partition) for exactly that common
         // case, which is not what "keep an IP limit alongside the public-ID limit" asked for. A
         // request with a Content-Length already known to exceed the cap skips the read entirely
-        // without buffering anything; everyone else gets read up to (and no more than) the cap via
-        // ReadAtLeastAsync, so a body at or over the cap is detected without ever materializing more
-        // than maxPeekBytes into memory. Either way, a caller who omits/exceeds the cap, sends a
-        // non-JSON body, or sends unparseable JSON skips the peek or fails to extract a public ID -
-        // the credential-dimension limiter then partitions by IP instead, and the IP-dimension
-        // limiter just enforced above still bounds the request regardless.
+        // without buffering anything; everyone else gets read up to one byte past the cap so an
+        // exact-cap body still parses, while an over-cap body is detected without ever materializing
+        // more than maxPeekBytes + 1 bytes into memory. Either way, a caller who omits/exceeds the
+        // cap, sends a non-JSON body, or sends unparseable JSON skips the peek or fails to extract a
+        // public ID - the credential-dimension limiter then partitions by IP instead, and the
+        // IP-dimension limiter just enforced above still bounds the request regardless.
         const int maxPeekBytes = 4096;
         if (context.Request.HasJsonContentType() && context.Request.ContentLength is not > maxPeekBytes)
         {
             context.Request.EnableBuffering();
-            var buffer = new byte[maxPeekBytes];
+            var buffer = new byte[maxPeekBytes + 1];
             var read = await context.Request.Body.ReadAtLeastAsync(
-                buffer, maxPeekBytes, throwOnEndOfStream: false, context.RequestAborted);
+                buffer, maxPeekBytes + 1, throwOnEndOfStream: false, context.RequestAborted);
             context.Request.Body.Position = 0;
-            if (read < maxPeekBytes)
+            if (read <= maxPeekBytes)
             {
                 try
                 {
@@ -511,8 +520,8 @@ app.UseWhen(
                     // Leave the partition key unset; the credential-dimension limiter falls back to IP.
                 }
             }
-            // read == maxPeekBytes: the body is at or over the cap, so it's left unparsed and the
-            // partition key stays unset (falls back to IP) rather than acting on a truncated prefix.
+            // read > maxPeekBytes: the body is over the cap, so it's left unparsed and the partition
+            // key stays unset (falls back to IP) rather than acting on a truncated prefix.
         }
         await next();
     }));
@@ -1207,6 +1216,26 @@ static bool TryReadIfMatch(HttpRequest request, out long version)
 
 static IResult LifecycleRedirect(string licenseId, string key, string? value) =>
     Results.Redirect($"/licenses/{Uri.EscapeDataString(licenseId)}?{key}={Uri.EscapeDataString(value ?? "Request failed.")}");
+
+static void ConfigureTrustedForwarders(IConfigurationSection section, ForwardedHeadersOptions options)
+{
+    foreach (var proxy in section.GetSection("KnownProxies").GetChildren().Select(child => child.Value).Where(value => !string.IsNullOrWhiteSpace(value)))
+    {
+        if (!IPAddress.TryParse(proxy, out var address))
+            throw new InvalidOperationException($"Security:ForwardedHeaders:KnownProxies contains an invalid IP address '{proxy}'.");
+        options.KnownProxies.Add(address);
+    }
+
+    foreach (var network in section.GetSection("KnownNetworks").GetChildren().Select(child => child.Value).Where(value => !string.IsNullOrWhiteSpace(value)))
+    {
+        var parts = network!.Split('/', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length != 2
+            || !IPAddress.TryParse(parts[0], out var prefix)
+            || !int.TryParse(parts[1], out var prefixLength))
+            throw new InvalidOperationException($"Security:ForwardedHeaders:KnownNetworks contains an invalid CIDR '{network}'.");
+        options.KnownNetworks.Add(new IPNetwork(prefix, prefixLength));
+    }
+}
 
 static async Task<bool> ValidAntiforgeryAsync(IAntiforgery antiforgery, HttpContext context)
 {
