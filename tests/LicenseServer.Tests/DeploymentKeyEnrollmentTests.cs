@@ -66,6 +66,7 @@ public sealed class DeploymentKeyEnrollmentTests(PostgresWebFixture fixture)
 
         var response = await enrollClient.PostAsJsonAsync("/api/v1/deployment-keys/enroll", EnrollBody(secret, "EE55"));
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Contains("has been revoked", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -88,6 +89,7 @@ public sealed class DeploymentKeyEnrollmentTests(PostgresWebFixture fixture)
         using var client = fixture.Factory.CreateClient();
         var response = await client.PostAsJsonAsync("/api/v1/deployment-keys/enroll", EnrollBody(created.Value!.Secret, "FF66"));
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Contains("has expired", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

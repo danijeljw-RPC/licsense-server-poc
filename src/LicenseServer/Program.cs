@@ -309,14 +309,13 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.OnRejected = async (ctx, token) =>
     {
-        ctx.HttpContext.Response.ContentType = "application/problem+json";
         await ctx.HttpContext.Response.WriteAsJsonAsync(new
         {
             type = "https://tools.ietf.org/html/rfc9110#section-15.5.20",
             title = "Too Many Requests",
             status = StatusCodes.Status429TooManyRequests,
             detail = "Rate limit exceeded. Try again later."
-        }, cancellationToken: token);
+        }, options: null, contentType: "application/problem+json", cancellationToken: token);
     };
     options.AddPolicy("admin-api", context =>
         context.User.HasClaim("amr", "api_key")
