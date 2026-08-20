@@ -13,6 +13,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     public DbSet<LicenseRecord> Licenses => Set<LicenseRecord>();
     public DbSet<IssuanceIdempotencyRecord> IssuanceIdempotencyRecords => Set<IssuanceIdempotencyRecord>();
     public DbSet<ApiCredential> ApiCredentials => Set<ApiCredential>();
+    public DbSet<DeploymentKey> DeploymentKeys => Set<DeploymentKey>();
     public DbSet<EmailOutboxMessage> EmailOutbox => Set<EmailOutboxMessage>();
     public DbSet<EmailDeliveryEvent> EmailDeliveryEvents => Set<EmailDeliveryEvent>();
     public DbSet<CustomerAccessChallenge> CustomerAccessChallenges => Set<CustomerAccessChallenge>();
@@ -115,6 +116,21 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             .HasForeignKey(x => x.OwnerUserId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<ApiCredential>().ToTable(table => table.HasCheckConstraint(
             "CK_ApiCredentials_Lifecycle", "\"ExpiresAt\" IS NULL OR \"ExpiresAt\" > \"CreatedAt\""));
+        builder.Entity<DeploymentKey>().HasIndex(x => x.PublicId).IsUnique();
+        builder.Entity<DeploymentKey>().HasIndex(x => x.LicenseRecordId);
+        builder.Entity<DeploymentKey>().HasIndex(x => x.ExpiresAt);
+        builder.Entity<DeploymentKey>().HasIndex(x => x.RevokedAt);
+        builder.Entity<DeploymentKey>().Property(x => x.PublicId).HasMaxLength(32);
+        builder.Entity<DeploymentKey>().Property(x => x.Name).HasMaxLength(200);
+        builder.Entity<DeploymentKey>().Property(x => x.SecretHashVersion).HasMaxLength(32);
+        builder.Entity<DeploymentKey>().Property(x => x.LastFour).HasMaxLength(4);
+        builder.Entity<DeploymentKey>().Property(x => x.CreatedBy).HasMaxLength(256);
+        builder.Entity<DeploymentKey>().Property(x => x.RevokedBy).HasMaxLength(256);
+        builder.Entity<DeploymentKey>().Property(x => x.RevocationReason).HasMaxLength(500);
+        builder.Entity<DeploymentKey>().HasOne(x => x.License).WithMany()
+            .HasForeignKey(x => x.LicenseRecordId).OnDelete(DeleteBehavior.Restrict);
+        builder.Entity<DeploymentKey>().ToTable(table => table.HasCheckConstraint(
+            "CK_DeploymentKeys_Lifecycle", "\"ExpiresAt\" IS NULL OR \"ExpiresAt\" > \"CreatedAt\""));
         builder.Entity<EmailOutboxMessage>().ToTable("EmailOutbox");
         builder.Entity<EmailOutboxMessage>().HasIndex(item => item.IdempotencyHash).IsUnique();
         builder.Entity<EmailOutboxMessage>().HasIndex(item => new { item.Status, item.NextAttemptAt });
@@ -222,6 +238,9 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             .HasFilter("\"DeactivatedAt\" IS NULL");
         builder.Entity<Activation>().HasIndex(x => new { x.LicenseRecordId, x.DeactivatedAt });
         builder.Entity<Activation>().HasIndex(x => x.LeaseExpiresAt);
+        builder.Entity<Activation>().HasIndex(x => x.DeploymentKeyId);
+        builder.Entity<Activation>().HasOne(x => x.DeploymentKey).WithMany()
+            .HasForeignKey(x => x.DeploymentKeyId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<SigningKeyRecord>().HasIndex(x => x.KeyId).IsUnique();
         builder.Entity<SigningKeyRecord>().HasIndex(x => x.IsDefault).IsUnique().HasFilter("\"IsDefault\"");
         builder.Entity<AuditRecord>().HasIndex(x => x.TimestampUtc);
