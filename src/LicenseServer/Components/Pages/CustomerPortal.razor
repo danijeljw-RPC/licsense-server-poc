@@ -22,10 +22,17 @@
                         <dt>Status</dt><dd><span class="status @license.Status">@license.Status</span></dd>
                         <dt>Product</dt><dd>@license.Product</dd>
                         <dt>Edition</dt><dd>@license.Edition</dd>
-                        <dt>Seats</dt><dd>@license.Seats</dd>
+                        <dt>Seats</dt><dd>@license.ActiveSeatCount / @license.Seats active</dd>
                         <dt>Expiry</dt><dd>@(license.ExpiresAt?.ToString("yyyy-MM-dd") ?? "Never")</dd>
                         <dt>Activation</dt><dd>@license.ActivationStatus</dd>
-                        @if (license.DeviceSuffix is not null) { <dt>Device</dt><dd>…@license.DeviceSuffix</dd> }
+                        @if (license.DeviceSuffix is not null)
+                        {
+                            <dt>Device</dt>
+                            <dd>
+                                …@license.DeviceSuffix
+                                @if (license.ActiveSeatCount > 1) { <text> (+@(license.ActiveSeatCount - 1) more)</text> }
+                            </dd>
+                        }
                     </dl>
                 </article>
             }
