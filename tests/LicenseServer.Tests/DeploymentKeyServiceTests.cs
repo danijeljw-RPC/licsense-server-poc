@@ -76,6 +76,28 @@ public sealed class DeploymentKeyServiceTests(PostgresWebFixture fixture)
 
     [Fact]
     [Trait("ExpectedGreenStage", "11")]
+    public async Task RotatingAnExpiredDeploymentKeyReturnsConflictInsteadOfCrashing()
+    {
+        var (licenseId, _) = await IssueLicenseAsync(seats: 3);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<DeploymentKeyService>();
+        var created = await service.CreateAsync(licenseId,
+            new CreateDeploymentKeyRequest("Expiring", DateTimeOffset.UtcNow.AddMinutes(1)), "stage11-test");
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var key = await db.DeploymentKeys.SingleAsync(x => x.Id == created.Value!.DeploymentKey.Id);
+        // CK_DeploymentKeys_Lifecycle requires ExpiresAt > CreatedAt on every save, not just insert,
+        // so both timestamps must move into the past together to simulate a key that has since expired.
+        key.CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-10);
+        key.ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+        await db.SaveChangesAsync();
+
+        var rotated = await service.RotateAsync(created.Value!.DeploymentKey.Id, "stage11-test");
+        Assert.False(rotated.Success);
+        Assert.Equal(409, rotated.StatusCode);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "11")]
     public async Task RevokingADeploymentKeyDoesNotDeactivateMachinesPreviouslyEnrolledThroughIt()
     {
         var (licenseId, _) = await IssueLicenseAsync(seats: 3);

@@ -133,10 +133,12 @@ internal sealed class DeploymentKeyService(
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         var current = await db.DeploymentKeys.Include(x => x.License).SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (current is null) return StoreResult<CreatedDeploymentKey>.NotFound("Deployment key was not found.");
+        var now = clock.GetUtcNow();
         if (current.RevokedAt is not null)
             return StoreResult<CreatedDeploymentKey>.Conflict("A revoked deployment key cannot be rotated.");
+        if (current.ExpiresAt is not null && current.ExpiresAt <= now)
+            return StoreResult<CreatedDeploymentKey>.Conflict("An expired deployment key cannot be rotated; create a new one.");
 
-        var now = clock.GetUtcNow();
         var (publicId, secret, fullValue) = DeploymentKeyFormat.Generate();
         var replacement = new DeploymentKey
         {
