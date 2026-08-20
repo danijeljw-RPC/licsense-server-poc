@@ -97,6 +97,42 @@ public sealed class DeploymentKeyServiceTests(PostgresWebFixture fixture)
         Assert.Equal(401, secondEnroll.StatusCode);
     }
 
+    [Fact]
+    [Trait("ExpectedGreenStage", "11")]
+    public async Task DeploymentKeyEnrollmentIsRejectedWhenTheLicenseSeatPoolIsExhausted()
+    {
+        var (licenseId, _) = await IssueLicenseAsync(seats: 1);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<DeploymentKeyService>();
+        var created = await service.CreateAsync(licenseId, new CreateDeploymentKeyRequest("Intune", null), "stage11-test");
+
+        var first = await service.EnrollAsync(EnrollRequest(created.Value!.Secret, "EE55"), DateTimeOffset.UtcNow);
+        Assert.True(first.Success, first.Error);
+
+        var second = await service.EnrollAsync(EnrollRequest(created.Value.Secret, "FF66"), DateTimeOffset.UtcNow);
+        Assert.False(second.Success);
+        Assert.Equal(409, second.StatusCode);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "11")]
+    public async Task AuditRecordsForDeploymentKeyEventsNeverContainThePlaintextSecret()
+    {
+        var (licenseId, _) = await IssueLicenseAsync(seats: 3);
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<DeploymentKeyService>();
+        var created = await service.CreateAsync(licenseId, new CreateDeploymentKeyRequest("Intune", null), "stage11-test");
+        var rotated = await service.RotateAsync(created.Value!.DeploymentKey.Id, "stage11-test");
+        await service.EnrollAsync(EnrollRequest(rotated.Value!.Secret, "GG77"), DateTimeOffset.UtcNow);
+        await service.RevokeAsync(rotated.Value.DeploymentKey.Id, "compromised", "stage11-test");
+
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var audits = await db.AuditRecords.Where(x => x.TargetType == "deployment-key").ToListAsync();
+        var joined = string.Join('\n', audits.Select(x => x.ContextJson));
+        Assert.DoesNotContain(created.Value.Secret, joined, StringComparison.Ordinal);
+        Assert.DoesNotContain(rotated.Value.Secret, joined, StringComparison.Ordinal);
+    }
+
     private async Task<(string LicenseId, Guid LicenseRecordId)> IssueLicenseAsync(int seats)
     {
         await using var scope = fixture.Factory.Services.CreateAsyncScope();

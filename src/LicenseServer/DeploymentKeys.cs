@@ -254,6 +254,17 @@ internal sealed class DeploymentKeyService(
                 AddRejectionAudit(key, publicId, result.Error ?? "rejected", now);
             }
 
+            // Intentionally diverges from ActivateWithinLockAsync's documented contract ("on a
+            // Success result the caller must SaveChanges+Commit; on failure the caller lets the
+            // transaction roll back on dispose"): we commit unconditionally here, on both the
+            // success and failure branches, because a rejection still needs its audit record
+            // (added above by AddRejectionAudit) persisted even though the enrollment itself
+            // failed. This is safe today because every failure path inside
+            // ActivateWithinLockAsync returns before mutating anything - it is read-only right up
+            // to the point it decides to insert the Activation row - so committing on failure is
+            // currently a no-op for that part of the transaction; only our own audit insert is
+            // actually persisted. If ActivateWithinLockAsync ever grows a failure path that
+            // mutates state before returning, this blanket commit would need revisiting.
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return result;
