@@ -89,7 +89,8 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
     {
         await permissions.RequireAsync(Permissions.LicensesRead);
         var x = await db.Licenses.AsNoTracking()
-            .Include(x => x.Customer).Include(x => x.Entitlements).Include(x => x.Activations)
+            .Include(x => x.Customer).Include(x => x.Entitlements)
+            .Include(x => x.Activations).ThenInclude(a => a.DeploymentKey)
             .SingleOrDefaultAsync(x => x.LicenseId == licenseId, cancellationToken);
         if (x is null) return null;
         var active = x.Activations.Where(a => a.DeactivatedAt == null)
@@ -97,6 +98,35 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             .ToList();
         var activationIds = x.Activations.Select(y => y.ActivationId).ToArray();
         var seatLimit = x.Entitlements.Count == 0 ? 0 : x.Entitlements.Min(item => item.Seats);
+        var historicalActivationCount = x.Activations.Count(a => a.DeactivatedAt != null);
+        // Grouped by deployment key identity (not name): DeploymentKeyService.CreateAsync allows
+        // duplicate names across keys, and even a key literally named "Manual activation" -
+        // grouping by name alone would merge distinct sources or fold a key into true manual
+        // activations. The name is used only as a display label, disambiguated with the key's
+        // last four characters if two groups would otherwise render identically.
+        var groupedBySource = active.GroupBy(a => a.DeploymentKeyId).ToList();
+        // The true manual (null-key) group is unique per license by construction, so it always
+        // renders as the bare "Manual activation" label. Deployment-key groups disambiguate by
+        // their own last-four when their display name collides with another key's name or with
+        // that literal label, since a key's LastFour always exists and the group's name alone does
+        // not.
+        var deploymentKeyNames = groupedBySource
+            .Where(g => g.Key is not null)
+            .Select(g => g.First().DeploymentKey!.Name)
+            .Append("Manual activation");
+        var duplicateNames = deploymentKeyNames.GroupBy(name => name, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.Ordinal);
+        var bySource = groupedBySource
+            .Select(g =>
+            {
+                if (g.Key is null) return new SeatUsageBySource("Manual activation", g.Count());
+                var deploymentKey = g.First().DeploymentKey!;
+                var label = duplicateNames.Contains(deploymentKey.Name)
+                    ? $"{deploymentKey.Name} (…{deploymentKey.LastFour})" : deploymentKey.Name;
+                return new SeatUsageBySource(label, g.Count());
+            })
+            .OrderByDescending(item => item.ActiveCount).ThenBy(item => item.Source, StringComparer.Ordinal)
+            .ToList();
         var history = await db.AuditRecords.AsNoTracking()
             .Where(a => a.TargetId == licenseId || (a.TargetType == "activation" && activationIds.Contains(a.TargetId)))
             .OrderByDescending(a => a.TimestampUtc)
@@ -113,6 +143,9 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             x.Entitlements.OrderBy(e => e.Product).Select(e => new EntitlementView(e.Product, e.Edition, e.LicenseType, e.Seats, e.UpdatesUntil)).ToList(),
             active.Count,
             seatLimit,
+            seatLimit - active.Count,
+            historicalActivationCount,
+            bySource,
             active.Select(item => new ActivationView(item.ActivationId, item.Mode, item.DeviceIdSuffix, item.DeviceName, item.ActivatedAt, item.RefreshAfter, item.LeaseExpiresAt)).ToList(),
             x.Activations.OrderByDescending(a => a.ActivatedAt).Select(a => new ActivationHistoryView(a.ActivationId, a.Mode, a.DeviceIdSuffix, a.ActivatedAt, a.DeactivatedAt)).ToList(),
             history);
@@ -238,8 +271,10 @@ public sealed record LicenseDetailView(
     DateTimeOffset? CancelledAt, string? CancellationReason, string? CancelledBy,
     DateTimeOffset? RevokedAt, string? RevocationReason, long Version, string Status,
     string Provenance, DateTimeOffset? ImportedAt,
-    IReadOnlyList<EntitlementView> Entitlements, int ActiveSeatCount, int SeatLimit, IReadOnlyList<ActivationView> ActiveActivations,
+    IReadOnlyList<EntitlementView> Entitlements, int ActiveSeatCount, int SeatLimit, int AvailableSeats, int HistoricalActivationCount,
+    IReadOnlyList<SeatUsageBySource> ActiveSeatsBySource, IReadOnlyList<ActivationView> ActiveActivations,
     IReadOnlyList<ActivationHistoryView> IssuanceHistory, IReadOnlyList<AuditView> History);
+public sealed record SeatUsageBySource(string Source, int ActiveCount);
 
 public sealed class CreateLicenseInput
 {
