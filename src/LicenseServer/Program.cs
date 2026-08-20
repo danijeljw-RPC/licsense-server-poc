@@ -420,7 +420,12 @@ app.UseWhen(
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(body);
-            partitionKey = document.RootElement.TryGetProperty("deploymentKey", out var value)
+            // TryGetProperty throws InvalidOperationException (not JsonException) when the root isn't
+            // a JSON object - a body like `null`, `[]`, or a bare string/number/bool is syntactically
+            // valid JSON, so Parse succeeds and the catch below never fires; this ValueKind guard avoids
+            // the call entirely instead of relying on a broader catch.
+            partitionKey = document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && document.RootElement.TryGetProperty("deploymentKey", out var value)
                 && value.ValueKind == System.Text.Json.JsonValueKind.String
                 && DeploymentKeyFormat.TryParse(value.GetString(), out var publicId, out _)
                 ? $"dpk:{publicId}"
