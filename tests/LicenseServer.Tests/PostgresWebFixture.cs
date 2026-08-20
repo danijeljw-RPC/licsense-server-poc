@@ -143,6 +143,7 @@ public sealed class PostgresWebFixture : IAsyncLifetime
                 ["ActivationCodes:Pepper"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
                 ["ApiCredentials:Pepper"] = "HyQjIiEgHx4dHBsaGRgXFhUUExIREA8ODQwLCgkIBwY=",
                 ["DeploymentKeys:Pepper"] = "9vWKjZpH04swggPztM7cfUpwLXtasA7YaCyYWZPylAI=",
+                ["RateLimits:DeploymentKeyEnrollPermitLimit"] = "10",
                 ["Email:WorkerEnabled"] = "false",
                 ["MailerSend:WebhookSecret"] = MailerSendWebhookSecret,
                 ["Stripe:WebhookSecret"] = StripeWebhookSecret,
