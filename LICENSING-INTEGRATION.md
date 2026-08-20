@@ -429,6 +429,32 @@ on another device. Call this from an explicit "deactivate"/"sign out" command
 in your CLI, and ideally from an uninstaller, though the latter is best-effort
 (can't guarantee network access at uninstall time).
 
+### 6.5 Deployment key enrollment (unattended fleet enrollment) — `POST {baseUrl}/api/v1/deployment-keys/enroll`
+
+For Business/Enterprise/Education-style deployments (Intune, RMM, golden images), an operator
+creates one or more **Deployment Keys** for a license from the admin API
+(`POST /api/v1/admin/licenses/{licenseId}/deployment-keys`). A Deployment Key is not the license's
+activation code — it is a separate, revocable credential in the form
+`dpk_live_<publicId>_<secret>`, shown in full only once at creation or rotation.
+
+Request body is identical to `Activate` except `activationCode` is replaced by `deploymentKey`:
+
+```json
+{
+  "deploymentKey": "dpk_live_...",
+  "requestId": "GUID",
+  "activationToken": "base64(32 random bytes)",
+  "mode": "online",
+  "device": { "scheme": "os-machine-id-sha256-v1", "deviceId": "...", "deviceName": "..." }
+}
+```
+
+The response is the same signed `ActivationResponse` as `Activate`. Enrollment consumes from the
+same seat pool as manual activation, and the resulting activation is managed identically afterward
+(`validate` / `refresh` / `deactivate`). Revoking a Deployment Key blocks *new* enrollment through
+it; machines already enrolled keep working until deactivated through the normal activation
+lifecycle. A Deployment Key grants no access beyond this one enrollment endpoint.
+
 ---
 
 ## 7. Offline activation request (air-gapped path)
