@@ -897,6 +897,54 @@ adminApi.MapPost("/activations/{activationId}/deactivate", async (
     return result.Success ? Results.Ok(new { activationId, status = "deactivated" }) : Problem(result);
 }).RequireAuthorization(Permissions.ActivationsManage);
 
+adminApi.MapPost("/licenses/{licenseId}/deployment-keys", async (
+    string licenseId, CreateDeploymentKeyRequest request, DeploymentKeyService service,
+    IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await service.CreateAsync(licenseId, request, context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success
+        ? Results.Created($"/api/v1/admin/licenses/{licenseId}/deployment-keys", result.Value)
+        : FieldProblem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysManage)
+  .WithDescription("Creates one deployment key for this license and returns its full secret exactly once.");
+
+adminApi.MapGet("/licenses/{licenseId}/deployment-keys", async (
+    string licenseId, DeploymentKeyService service, CancellationToken ct) =>
+{
+    var result = await service.ListAsync(licenseId, ct);
+    return result.Success ? Results.Ok(result.Value) : Problem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysRead)
+  .WithDescription("Lists redacted deployment keys for this license. Secrets are never returned.");
+
+adminApi.MapPatch("/deployment-keys/{id:guid}", async (
+    Guid id, RenameDeploymentKeyRequest request, DeploymentKeyService service,
+    IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await service.RenameAsync(id, request.Name, context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success ? Results.Ok(result.Value) : FieldProblem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysManage);
+
+adminApi.MapPost("/deployment-keys/{id:guid}/rotate", async (
+    Guid id, DeploymentKeyService service, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await service.RotateAsync(id, context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success ? Results.Ok(result.Value) : Problem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysManage)
+  .WithDescription("Issues a new secret and immediately invalidates the previous one. Returns the new secret exactly once.");
+
+adminApi.MapPost("/deployment-keys/{id:guid}/revoke", async (
+    Guid id, RevokeDeploymentKeyRequest request, DeploymentKeyService service,
+    IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    var result = await service.RevokeAsync(id, request.Reason, context.User.Identity?.Name ?? "unknown", ct);
+    return result.Success ? Results.NoContent() : Problem(result);
+}).RequireAuthorization(Permissions.DeploymentKeysManage)
+  .WithDescription("Blocks new enrollment through this key. Machines already enrolled through it remain active.");
+
 app.MapPost("/licenses/{licenseId}/cancel", async (string licenseId, HttpRequest request, LicenseStore store, HttpContext context, CancellationToken ct) =>
 {
     var form = await request.ReadFormAsync(ct);
