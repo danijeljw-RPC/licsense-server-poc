@@ -99,8 +99,8 @@ try {
     $serverProcess = Start-Process @startProcessArguments
 
     $ready = $false
-    foreach ($attempt in 1..40) {
-        Start-Sleep -Milliseconds 250
+    foreach ($attempt in 1..120) {
+        Start-Sleep -Milliseconds 500
         try {
             if ((Invoke-WebRequest -Uri "$serverUrl/health" -TimeoutSec 1).StatusCode -eq 200) {
                 $ready = $true
