@@ -69,3 +69,29 @@ public sealed record InviteUserRequest(string? Email, IReadOnlyList<string>? Rol
 public sealed record CreateServiceAccountRequest(string? Email, IReadOnlyList<string>? Roles);
 public sealed record CreateUserRequest(string? Email, string? AccountType, IReadOnlyList<string>? Roles);
 public sealed record UpdateUserRequest(bool? IsEnabled, IReadOnlyList<string>? Roles, bool ForcePasswordReset = false);
+
+public sealed record CreateDeploymentKeyRequest(string? Name, DateTimeOffset? ExpiresAt);
+public sealed record RenameDeploymentKeyRequest(string? Name);
+public sealed record RevokeDeploymentKeyRequest(string? Reason);
+
+public sealed record DeploymentKeyView(
+    Guid Id,
+    string PublicId,
+    string Name,
+    Guid LicenseRecordId,
+    string LastFour,
+    DateTimeOffset CreatedAt,
+    string CreatedBy,
+    DateTimeOffset? ExpiresAt,
+    DateTimeOffset? RevokedAt,
+    DateTimeOffset? LastUsedAt,
+    Guid? ReplacedByDeploymentKeyId);
+
+public sealed record CreatedDeploymentKey(DeploymentKeyView DeploymentKey, string Secret);
+
+public sealed record EnrollDeploymentKeyRequest(
+    string? DeploymentKey,
+    string? RequestId,
+    string? ActivationToken,
+    string? Mode,
+    DeviceRequest? Device);

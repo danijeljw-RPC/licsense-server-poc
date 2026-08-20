@@ -21,17 +21,19 @@ internal static class Permissions
     public const string AuditRead = "audit.read";
     public const string BillingManage = "billing.manage";
     public const string SigningKeysManage = "signingKeys.manage";
+    public const string DeploymentKeysRead = "deploymentKeys.read";
+    public const string DeploymentKeysManage = "deploymentKeys.manage";
 
     public static readonly IReadOnlyList<string> All =
     [
         LicensesRead, LicensesIssue, LicensesUpdate, LicensesCancel, LicensesRevoke, LicensesImport,
         ActivationsManage, CustomersRead, CustomersManage, ProductsRead, ProductsManage,
         UsersRead, UsersManage, ApiKeysManageSelf, ApiKeysManageAll, AuditRead, BillingManage,
-        SigningKeysManage
+        SigningKeysManage, DeploymentKeysRead, DeploymentKeysManage
     ];
 
     public static readonly IReadOnlySet<string> HighRisk = new HashSet<string>(StringComparer.Ordinal)
     {
-        UsersManage, ApiKeysManageAll, LicensesRevoke, SigningKeysManage
+        UsersManage, ApiKeysManageAll, LicensesRevoke, SigningKeysManage, DeploymentKeysManage
     };
 }

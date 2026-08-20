@@ -3,6 +3,7 @@ using System;
 using LicenseServer.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace LicenseServer.Data.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260819125447_SeatAwareMultiMachineActivations")]
+    partial class SeatAwareMultiMachineActivations
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -37,9 +40,6 @@ namespace LicenseServer.Data.Migrations
 
                     b.Property<DateTimeOffset?>("DeactivatedAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid?>("DeploymentKeyId")
-                        .HasColumnType("uuid");
 
                     b.Property<string>("DeviceIdHash")
                         .IsRequired()
@@ -79,8 +79,6 @@ namespace LicenseServer.Data.Migrations
 
                     b.HasIndex("ActivationId")
                         .IsUnique();
-
-                    b.HasIndex("DeploymentKeyId");
 
                     b.HasIndex("LeaseExpiresAt");
 
@@ -462,84 +460,6 @@ namespace LicenseServer.Data.Migrations
                     b.HasIndex("RemoteAddressHash", "CreatedAt");
 
                     b.ToTable("CustomerAccessChallenges");
-                });
-
-            modelBuilder.Entity("LicenseServer.Data.DeploymentKey", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CreatedBy")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<DateTimeOffset?>("ExpiresAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("LastFour")
-                        .IsRequired()
-                        .HasMaxLength(4)
-                        .HasColumnType("character varying(4)");
-
-                    b.Property<DateTimeOffset?>("LastUsedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid>("LicenseRecordId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<string>("PublicId")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.Property<Guid?>("ReplacedByDeploymentKeyId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("RevocationReason")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<DateTimeOffset?>("RevokedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("RevokedBy")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<byte[]>("SecretHash")
-                        .IsRequired()
-                        .HasColumnType("bytea");
-
-                    b.Property<string>("SecretHashVersion")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ExpiresAt");
-
-                    b.HasIndex("LicenseRecordId");
-
-                    b.HasIndex("PublicId")
-                        .IsUnique();
-
-                    b.HasIndex("RevokedAt");
-
-                    b.ToTable("DeploymentKeys", t =>
-                        {
-                            t.HasCheckConstraint("CK_DeploymentKeys_Lifecycle", "\"ExpiresAt\" IS NULL OR \"ExpiresAt\" > \"CreatedAt\"");
-                        });
                 });
 
             modelBuilder.Entity("LicenseServer.Data.EmailDeliveryEvent", b =>
@@ -1451,18 +1371,11 @@ namespace LicenseServer.Data.Migrations
 
             modelBuilder.Entity("LicenseServer.Data.Activation", b =>
                 {
-                    b.HasOne("LicenseServer.Data.DeploymentKey", "DeploymentKey")
-                        .WithMany()
-                        .HasForeignKey("DeploymentKeyId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("LicenseServer.Data.LicenseRecord", "License")
                         .WithMany("Activations")
                         .HasForeignKey("LicenseRecordId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.Navigation("DeploymentKey");
 
                     b.Navigation("License");
                 });
@@ -1511,17 +1424,6 @@ namespace LicenseServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Customer");
-                });
-
-            modelBuilder.Entity("LicenseServer.Data.DeploymentKey", b =>
-                {
-                    b.HasOne("LicenseServer.Data.LicenseRecord", "License")
-                        .WithMany()
-                        .HasForeignKey("LicenseRecordId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("License");
                 });
 
             modelBuilder.Entity("LicenseServer.Data.Entitlement", b =>

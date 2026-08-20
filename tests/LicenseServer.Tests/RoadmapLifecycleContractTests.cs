@@ -85,7 +85,7 @@ public sealed class RoadmapLifecycleContractTests(PostgresWebFixture fixture)
             ActivationRequest(activationCode, "offline"));
         response.EnsureSuccessStatusCode();
         var issued = await response.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
-        var verified = LicenseVerifier.Verify(issued.SignedLicense);
+        var verified = await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, issued.SignedLicense);
         Assert.Equal(expiry, verified.Data.Entitlements.Single().ExpiresAt);
     }
 
@@ -229,7 +229,7 @@ public sealed class RoadmapLifecycleContractTests(PostgresWebFixture fixture)
         using var activated = await client.PostAsJsonAsync($"/api/v1/licenses/{license.LicenseId}/activate", request);
         activated.EnsureSuccessStatusCode();
         var issued = await activated.Content.ReadFromJsonAsync<ActivationResponse>() ?? throw new InvalidOperationException();
-        Assert.NotNull(LicenseVerifier.Verify(issued.SignedLicense));
+        Assert.NotNull(await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, issued.SignedLicense));
 
         await using (var scope = fixture.Factory.Services.CreateAsyncScope())
         {
@@ -240,7 +240,7 @@ public sealed class RoadmapLifecycleContractTests(PostgresWebFixture fixture)
         using var validation = await client.PostAsJsonAsync($"/api/v1/activations/{issued.ActivationId}/validate",
             new ActivationCredentialRequest(request.ActivationToken, request.Device!.DeviceId));
         Assert.Equal(HttpStatusCode.Forbidden, validation.StatusCode);
-        Assert.NotNull(LicenseVerifier.Verify(issued.SignedLicense));
+        Assert.NotNull(await RoadmapTestSupport.VerifySignedLicenseAsync(fixture, issued.SignedLicense));
     }
 
     private static ActivateRequest ActivationRequest(string activationCode, string mode) => new(

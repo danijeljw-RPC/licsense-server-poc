@@ -52,6 +52,7 @@ services:
       Licensing__DefaultSigningKey: ${LICENSE_DEFAULT_SIGNING_KEY:-primary-2026}
       ActivationCodes__Pepper: ${ACTIVATION_CODE_PEPPER:?Set ACTIVATION_CODE_PEPPER in .env}
       ApiCredentials__Pepper: ${API_CREDENTIAL_PEPPER:?Set API_CREDENTIAL_PEPPER in .env}
+      DeploymentKeys__Pepper: ${DEPLOYMENT_KEY_PEPPER:?Set DEPLOYMENT_KEY_PEPPER in .env}
       MailerSend__ApiToken: ${MAILERSEND_API_TOKEN:?Set MAILERSEND_API_TOKEN in .env}
       MailerSend__FromEmail: ${MAILERSEND_FROM_EMAIL:?Set MAILERSEND_FROM_EMAIL in .env}
       MailerSend__FromName: ${MAILERSEND_FROM_NAME:-License Server}
@@ -63,8 +64,16 @@ services:
       Billing__RefundAction: ${BILLING_REFUND_ACTION:-review}
       Billing__DisputeAction: ${BILLING_DISPUTE_ACTION:-review}
       CustomerPortal__PublicBaseUrl: ${CUSTOMER_PORTAL_PUBLIC_BASE_URL:?Set CUSTOMER_PORTAL_PUBLIC_BASE_URL in .env}
+      # Trust only the reverse proxy hop(s) in front of the app before honoring X-Forwarded-For /
+      # X-Forwarded-Proto. Leave blank when exposing the container directly instead of via a proxy.
+      Security__ForwardedHeaders__KnownProxies__0: ${FORWARDED_HEADERS_KNOWN_PROXY:-}
+      Security__ForwardedHeaders__KnownNetworks__0: ${FORWARDED_HEADERS_KNOWN_NETWORK:-}
       RESET_ADMIN_PASSWORD: ${RESET_ADMIN_PASSWORD:-false}
-      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      # Deliberately not setting ASPNETCORE_FORWARDEDHEADERS_ENABLED: that variable makes the
+      # framework add its own ForwardedHeaders middleware using framework-default options (which
+      # trust loopback unconditionally) regardless of whether KnownProxies/KnownNetworks above are
+      # configured - bypassing the app's own explicit, config-gated forwarded-header trust entirely.
+      # Only Program.cs's gated app.UseForwardedHeaders() call should ever add this middleware.
     ports:
       - "${APP_PORT:-8080}:8080"
     volumes:

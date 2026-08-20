@@ -105,16 +105,30 @@ else
         }
     </div>
 
-    <article class="panel"><div class="panel-head"><div><p class="eyebrow">Current binding</p><h2>Activation</h2></div></div>
-        @if (license.ActiveActivation is { } active)
+    <article class="panel"><div class="panel-head"><div><p class="eyebrow">Seat usage</p><h2>Active activations</h2></div><strong>@license.ActiveSeatCount / @license.SeatLimit seats in use</strong></div>
+        <dl class="seat-usage-summary">
+            <dt>Configured seats</dt><dd>@license.SeatLimit</dd>
+            <dt>Active activations</dt><dd>@license.ActiveSeatCount</dd>
+            <dt>Available seats</dt><dd>@license.AvailableSeats</dd>
+            <dt>Percentage used</dt><dd>@(license.SeatLimit > 0 ? $"{(double)license.ActiveSeatCount / license.SeatLimit:P0}" : "—")</dd>
+            <dt>Historical (deactivated) activations</dt><dd>@license.HistoricalActivationCount</dd>
+        </dl>
+        @if (license.ActiveSeatsBySource.Count > 0)
         {
-            <div class="activation-card"><div><span>Mode</span><strong>@active.Mode</strong></div><div><span>Device</span><strong>…@active.DeviceSuffix</strong></div><div><span>Activated</span><strong>@active.ActivatedAt.ToString("u") UTC</strong></div><div><span>Lease expires</span><strong>@(active.LeaseExpiresAt?.ToString("u") ?? "Offline")</strong></div></div>
-            <div class="split-grid operations">
-                <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized Context="refreshPermissionContext"><EditForm Model="credentials" FormName="refresh-lease" OnValidSubmit="RefreshAsync"><DataAnnotationsValidator /><h2>Refresh online lease</h2><label>Activation token<InputText type="password" @bind-Value="credentials.ActivationToken" autocomplete="off" /></label><label>Full device ID<InputText type="password" @bind-Value="credentials.DeviceId" autocomplete="off" /></label><label>Signing key<InputSelect @bind-Value="credentials.KeyId"><option value="">Default (@(KeyRing.DefaultKeyId ?? "none configured"))</option>@foreach (var key in KeyRing.Keys.Where(k => k.CanSign)) { <option value="@key.KeyId">@key.KeyId</option> }</InputSelect></label><button class="button secondary" type="submit" disabled="@(active.Mode != "online")">Refresh and issue</button></EditForm></Authorized></AuthorizeView>
-                <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized><form method="post" action="@($"/licenses/{Uri.EscapeDataString(LicenseId)}/activations/{Uri.EscapeDataString(active.ActivationId)}/deactivate")"><AntiforgeryToken /><h2>Operator deactivation / transfer</h2><input type="hidden" name="Version" value="@license.Version" /><label>Required reason<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><label class="confirm"><input type="checkbox" name="Confirmed" value="true" required /> Confirm deactivation before transfer.</label><button class="button danger" type="submit">Deactivate</button></form></Authorized></AuthorizeView>
-            </div>
+            <div class="table-wrap"><table><thead><tr><th>Source</th><th>Active seats</th></tr></thead><tbody>
+                @foreach (var source in license.ActiveSeatsBySource) { <tr><td>@source.Source</td><td>@source.ActiveCount</td></tr> }
+            </tbody></table></div>
         }
-        else { <p class="empty-inline">No active device. This license is available for activation or transfer.</p> }
+        @if (license.ActiveActivations.Count > 0)
+        {
+            @foreach (var active in license.ActiveActivations)
+            {
+                <div class="activation-card"><div><span>Mode</span><strong>@active.Mode</strong></div><div><span>Device</span><strong>…@active.DeviceSuffix</strong></div><div><span>Activated</span><strong>@active.ActivatedAt.ToString("u") UTC</strong></div><div><span>Lease expires</span><strong>@(active.LeaseExpiresAt?.ToString("u") ?? "Offline")</strong></div></div>
+                <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized><form method="post" action="@($"/licenses/{Uri.EscapeDataString(LicenseId)}/activations/{Uri.EscapeDataString(active.ActivationId)}/deactivate")"><AntiforgeryToken /><h2>Operator deactivation</h2><input type="hidden" name="Version" value="@license.Version" /><label>Required reason<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><label class="confirm"><input type="checkbox" name="Confirmed" value="true" required /> Confirm deactivation for …@active.DeviceSuffix.</label><button class="button danger" type="submit">Deactivate</button></form></Authorized></AuthorizeView>
+            }
+            <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized Context="refreshPermissionContext"><EditForm Model="credentials" FormName="refresh-lease" OnValidSubmit="RefreshAsync"><DataAnnotationsValidator /><h2>Refresh online lease</h2><label>Activation<InputSelect @bind-Value="credentials.ActivationId"><option value="">Select an active activation</option>@foreach (var active in license.ActiveActivations) { <option value="@active.ActivationId">@($"…{active.DeviceSuffix} · {active.Mode}")</option> }</InputSelect></label><label>Activation token<InputText type="password" @bind-Value="credentials.ActivationToken" autocomplete="off" /></label><label>Full device ID<InputText type="password" @bind-Value="credentials.DeviceId" autocomplete="off" /></label><label>Signing key<InputSelect @bind-Value="credentials.KeyId"><option value="">Default (@(KeyRing.DefaultKeyId ?? "none configured"))</option>@foreach (var key in KeyRing.Keys.Where(k => k.CanSign)) { <option value="@key.KeyId">@key.KeyId</option> }</InputSelect></label><button class="button secondary" type="submit" disabled="@(SelectedActivation?.Mode != "online")">Refresh and issue</button></EditForm></Authorized></AuthorizeView>
+        }
+        else { <p class="empty-inline">No active devices. This license has full seat capacity available.</p> }
     </article>
 
     @if (!IsTerminal)
@@ -137,17 +151,28 @@ else
     private readonly CredentialForm credentials = new();
     private string? message; private string messageClass = "success"; private string? download; private string downloadName = "license.license"; private string? signedKeyId;
     private bool IsTerminal => license?.CancelledAt is not null || license?.RevokedAt is not null;
+    private ActivationView? SelectedActivation => license?.ActiveActivations.FirstOrDefault(item => item.ActivationId == credentials.ActivationId)
+        ?? license?.ActiveActivations.FirstOrDefault();
     // The signed artifact, not this relational index, is the source of truth for an imported
     // license (see LicenseStore.AmendTermsAsync's matching server-side check) - amending terms
     // here would silently diverge from it, even for the common single-product-import case.
     private bool CanAmendTerms => license?.Entitlements.Count == 1 && license.Provenance != LicenseProvenance.Imported;
     private string? DisplayMessage => Error ?? Notice ?? message;
     private string DisplayMessageClass => Error is not null ? "error" : Notice is not null ? "success" : messageClass;
-    protected override async Task OnParametersSetAsync() => license = await Data.GetLicenseAsync(LicenseId);
+    protected override async Task OnParametersSetAsync()
+    {
+        license = await Data.GetLicenseAsync(LicenseId);
+        if (license is not null
+            && !string.IsNullOrWhiteSpace(credentials.ActivationId)
+            && license.ActiveActivations.All(item => item.ActivationId != credentials.ActivationId))
+        {
+            credentials.ActivationId = "";
+        }
+    }
     private static string FormatExpiry(DateTimeOffset? expiry) => expiry == LicenseTerms.PerpetualExpiry ? "Never (perpetual)" : expiry?.ToString("u") ?? "No expiry";
     private async Task ActivateAsync() { var request = new ActivateRequest(Guid.NewGuid().ToString(), activate.ActivationCode, activate.ActivationToken, activate.Mode, new DeviceRequest(SoftwareLicensing.DeviceIdentity.Scheme, activate.DeviceId, activate.DeviceName)); var result = await Store.ActivateAsync(LicenseId, request, DateTimeOffset.UtcNow, string.IsNullOrWhiteSpace(activate.KeyId) ? null : activate.KeyId); if (!result.Success) { message = result.Error; messageClass = "error"; return; } if (!await SetDownloadAsync(result.Value!, "Activation issued successfully.", activate.KeyId)) return; activate.ActivationCode = activate.ActivationToken = activate.DeviceId = ""; license = await Data.GetLicenseAsync(LicenseId); }
-    private async Task RefreshAsync() { if (license?.ActiveActivation is null) return; var result = await Store.RefreshAsync(license.ActiveActivation.ActivationId, new ActivationCredentialRequest(credentials.ActivationToken, credentials.DeviceId), DateTimeOffset.UtcNow, string.IsNullOrWhiteSpace(credentials.KeyId) ? null : credentials.KeyId); if (!result.Success) { message = result.Error; messageClass = "error"; return; } if (!await SetDownloadAsync(result.Value!, "Online lease refreshed successfully.", credentials.KeyId)) return; credentials.ActivationToken = credentials.DeviceId = ""; license = await Data.GetLicenseAsync(LicenseId); }
+    private async Task RefreshAsync() { if (SelectedActivation is null || string.IsNullOrWhiteSpace(credentials.ActivationId)) return; var result = await Store.RefreshAsync(credentials.ActivationId, new ActivationCredentialRequest(credentials.ActivationToken, credentials.DeviceId), DateTimeOffset.UtcNow, string.IsNullOrWhiteSpace(credentials.KeyId) ? null : credentials.KeyId); if (!result.Success) { message = result.Error; messageClass = "error"; return; } if (!await SetDownloadAsync(result.Value!, "Online lease refreshed successfully.", credentials.KeyId)) return; credentials.ActivationId = credentials.ActivationToken = credentials.DeviceId = ""; license = await Data.GetLicenseAsync(LicenseId); }
     private async Task<bool> SetDownloadAsync(LicenseStore.ActiveActivation active, string success, string requestedKeyId) { var signing = Signer.Sign(await Store.CreateLicenseAsync(active, DateTimeOffset.UtcNow), string.IsNullOrWhiteSpace(requestedKeyId) ? null : requestedKeyId); if (!signing.Success) { message = signing.ErrorMessage; messageClass = "error"; return false; } var signed = signing.Envelope!.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }); signedKeyId = signing.Envelope!["keyId"]!.GetValue<string>(); downloadName = $"{LicenseId}-{active.ActivationId}.license"; download = $"data:application/octet-stream;base64,{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(signed))}"; message = success; messageClass = "success"; return true; }
     private sealed class ActivateForm { [System.ComponentModel.DataAnnotations.Required] public string ActivationCode { get; set; } = ""; [System.ComponentModel.DataAnnotations.Required] public string ActivationToken { get; set; } = ""; [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.RegularExpression("^[A-Fa-f0-9]{64}$")] public string DeviceId { get; set; } = ""; [System.ComponentModel.DataAnnotations.StringLength(100)] public string? DeviceName { get; set; } public string Mode { get; set; } = "online"; public string KeyId { get; set; } = ""; }
-    private sealed class CredentialForm { [System.ComponentModel.DataAnnotations.Required] public string ActivationToken { get; set; } = ""; [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.RegularExpression("^[A-Fa-f0-9]{64}$")] public string DeviceId { get; set; } = ""; public string KeyId { get; set; } = ""; }
+    private sealed class CredentialForm { [System.ComponentModel.DataAnnotations.Required] public string ActivationId { get; set; } = ""; [System.ComponentModel.DataAnnotations.Required] public string ActivationToken { get; set; } = ""; [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.RegularExpression("^[A-Fa-f0-9]{64}$")] public string DeviceId { get; set; } = ""; public string KeyId { get; set; } = ""; }
 }
