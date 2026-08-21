@@ -46,7 +46,7 @@ Each leased row flows through:
 
 | Event(s) | Category | Effect |
 |---|---|---|
-| `checkout.session.completed`, `checkout.session.async_payment_succeeded` | Checkout | Creates/reuses `Customer`, `BillingContract`, `LicenseOrder`, and Stripe customer/subscription/checkout-session mappings; **issues a new license** via `LicenseStore.IssueForBillingAsync`; queues an activation email |
+| `checkout.session.completed`, `checkout.session.async_payment_succeeded` | Checkout | Creates/reuses `Customer`, `BillingContract`, `LicenseOrder`, and Stripe customer/checkout-session mappings; **issues a new license** via `LicenseStore.IssueForBillingAsync`; queues an activation email. Two paths, branched on whether the session has a `subscription`: subscription checkouts resolve edition/license type/seats from `StripePriceMapping` (keyed on Stripe price ID) and use `current_period_end` as the expiry, also creating a `StripeSubscriptionMapping`; one-time (`mode: "payment"`) checkouts resolve terms from the extended `StripeProductMapping` row (keyed on Stripe product ID — edition/license type/seats/updates-until/expires-at, manageable at **Settings → Stripe product mappings**) with no subscription mapping created. A Stripe custom field with key `poref` (if present) is read from `custom_fields[].text.value` and stored as `metadata.purchaseOrder` on the issued license. |
 | `invoice.paid` | Renewal | Extends license terms via `LicenseStore.ApplyBillingTermsAsync`; records a renewal order; queues a receipt email |
 | `invoice.payment_failed` | Payment failure | Puts the contract into a grace period (`BillingPolicyOptions.GracePeriodDays`, default 7); shortens license terms accordingly; queues a payment-failure email |
 | `customer.subscription.created/updated/deleted` | Subscription | Updates seats/edition/period end/cancel-at-period-end on the contract and license, or marks the contract `ended` on delete |
@@ -72,6 +72,8 @@ Each leased row flows through:
 - `src/LicenseServer/Program.cs` — DI wiring (lines 183, 204-208, 222-228), webhook endpoint (line 596), admin read endpoint (line 784)
 - `src/LicenseServer/Data/Entities.cs`, `Data/ApplicationDbContext.cs` — `WebhookInbox`, `BillingContract`, `LicenseOrder`, `Stripe*Mapping` entities
 - `src/LicenseServer/Data/Migrations/20260813230126_StripeBilling.cs` — schema for the above
+- `src/LicenseServer/Data/Migrations/20260821162258_ExtendStripeProductMappingForOneTimePurchases.cs` — adds `Edition`/`LicenseType`/`Seats`/`UpdatesUntil`/`ExpiresAt` to `StripeProductMapping` for the one-time-purchase path
+- `src/LicenseServer/StripeProductMappings.cs`, `Components/Pages/StripeProductMappings.razor` — admin CRUD service and UI for the Stripe product ID → license terms matrix
 - `src/LicenseServer/LicenseServer.csproj` — `Stripe.net` package reference
 - `src/LicenseServer/appsettings.json` — `Stripe` config section
 - `.env.example`, `compose.yaml` — env var wiring

@@ -62,6 +62,23 @@ public sealed record IssueLicenseRequest(
 
 public sealed record CreateProductRequest(string? Code, string? DisplayName, string? Description);
 public sealed record UpdateProductRequest(string? DisplayName, string? Description, bool? IsActive);
+
+public sealed record CreateStripeProductMappingRequest(
+    string? StripeProductId,
+    Guid? ProductDefinitionId,
+    string? Edition,
+    string? LicenseType,
+    int? Seats,
+    DateOnly? UpdatesUntil,
+    DateTimeOffset? ExpiresAt);
+
+public sealed record UpdateStripeProductMappingRequest(
+    Guid? ProductDefinitionId,
+    string? Edition,
+    string? LicenseType,
+    int? Seats,
+    DateOnly? UpdatesUntil,
+    DateTimeOffset? ExpiresAt);
 public sealed record UpdateCustomerRequest(string? Name, string? Email);
 public sealed record RotateActivationCodeRequest(long Version);
 

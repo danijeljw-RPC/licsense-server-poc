@@ -192,6 +192,8 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
             .HasForeignKey(item => item.CustomerId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<StripeProductMapping>().HasIndex(item => item.StripeProductId).IsUnique();
         builder.Entity<StripeProductMapping>().Property(item => item.StripeProductId).HasMaxLength(255);
+        builder.Entity<StripeProductMapping>().Property(item => item.Edition).HasMaxLength(100);
+        builder.Entity<StripeProductMapping>().Property(item => item.LicenseType).HasMaxLength(30);
         builder.Entity<StripeProductMapping>().HasOne(item => item.ProductDefinition).WithMany()
             .HasForeignKey(item => item.ProductDefinitionId).OnDelete(DeleteBehavior.Restrict);
         builder.Entity<StripePriceMapping>().HasIndex(item => item.StripePriceId).IsUnique();

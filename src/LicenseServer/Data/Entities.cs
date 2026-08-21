@@ -232,7 +232,13 @@ public sealed class StripeProductMapping
     public required string StripeProductId { get; set; }
     public Guid ProductDefinitionId { get; set; }
     public ProductDefinition ProductDefinition { get; set; } = null!;
+    public string? Edition { get; set; }
+    public string? LicenseType { get; set; }
+    public int? Seats { get; set; }
+    public DateOnly? UpdatesUntil { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
 }
 
 public sealed class StripePriceMapping

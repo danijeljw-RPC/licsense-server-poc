@@ -34,7 +34,16 @@ internal sealed record BillingSnapshot(
     DateTimeOffset? CurrentPeriodEnd,
     bool CancelAtPeriodEnd,
     int Seats,
-    string? PaymentStatus);
+    string? PaymentStatus,
+    string? PurchaseOrder = null);
+
+internal sealed record OneTimePurchaseTerms(
+    ProductDefinition Product,
+    string Edition,
+    string LicenseType,
+    int Seats,
+    DateOnly? UpdatesUntil,
+    DateTimeOffset? ExpiresAt);
 
 internal sealed class BillingPolicyOptions
 {
@@ -81,8 +90,10 @@ internal sealed class StripeBillingPolicyProcessor(
 
     private async Task<BillingEventProcessResult> PurchaseAsync(BillingSnapshot snapshot, CancellationToken cancellationToken)
     {
-        if (snapshot.CheckoutSessionId is null || snapshot.SubscriptionId is null || snapshot.CustomerId is null
-            || snapshot.ProductId is null || snapshot.PriceId is null || snapshot.CurrentPeriodEnd is null)
+        if (snapshot.CheckoutSessionId is null || snapshot.CustomerId is null || snapshot.ProductId is null)
+            return Quarantine("incomplete_purchase_state");
+        var isSubscription = snapshot.SubscriptionId is not null;
+        if (isSubscription && (snapshot.PriceId is null || snapshot.CurrentPeriodEnd is null))
             return Quarantine("incomplete_purchase_state");
         if (snapshot.PaymentStatus is not ("paid" or "no_payment_required"))
             return BillingEventProcessResult.Ignored();
@@ -90,8 +101,35 @@ internal sealed class StripeBillingPolicyProcessor(
                 item => item.StripeCheckoutSessionId == snapshot.CheckoutSessionId, cancellationToken))
             return Completed();
 
-        var mapped = await ResolveProductAsync(snapshot, cancellationToken);
-        if (mapped.Error is not null) return Quarantine(mapped.Error);
+        ProductDefinition product;
+        string edition;
+        string licenseType;
+        int mappedSeats;
+        DateOnly? updatesUntil;
+        DateTimeOffset? expiry;
+        if (isSubscription)
+        {
+            var mapped = await ResolveProductAsync(snapshot, cancellationToken);
+            if (mapped.Error is not null) return Quarantine(mapped.Error);
+            product = mapped.Product!;
+            edition = mapped.Price!.Edition;
+            licenseType = mapped.Price.LicenseType;
+            mappedSeats = mapped.Price.Seats;
+            updatesUntil = null;
+            expiry = snapshot.CurrentPeriodEnd!.Value;
+        }
+        else
+        {
+            var (terms, oneTimeError) = await ResolveOneTimeProductAsync(snapshot, cancellationToken);
+            if (oneTimeError is not null) return Quarantine(oneTimeError);
+            product = terms!.Product;
+            edition = terms.Edition;
+            licenseType = terms.LicenseType;
+            mappedSeats = terms.Seats;
+            updatesUntil = terms.UpdatesUntil;
+            expiry = terms.ExpiresAt;
+        }
+        var seats = snapshot.Seats > 0 ? snapshot.Seats : mappedSeats;
         if (!CustomerEmails.TryNormalize(snapshot.CustomerEmail, out var normalizedEmail, out _)
             || string.IsNullOrWhiteSpace(snapshot.CustomerName))
             return Quarantine("invalid_customer_contact");
@@ -132,13 +170,13 @@ internal sealed class StripeBillingPolicyProcessor(
             Id = Guid.NewGuid(),
             CustomerId = customer.Id,
             Customer = customer,
-            ProductDefinitionId = mapped.Product!.Id,
-            ProductDefinition = mapped.Product,
+            ProductDefinitionId = product.Id,
+            ProductDefinition = product,
             Status = "active",
-            LicenseType = mapped.Price!.LicenseType,
-            Edition = mapped.Price.Edition,
-            Seats = snapshot.Seats > 0 ? snapshot.Seats : mapped.Price.Seats,
-            CurrentPeriodEnd = snapshot.CurrentPeriodEnd,
+            LicenseType = licenseType,
+            Edition = edition,
+            Seats = seats,
+            CurrentPeriodEnd = expiry,
             CreatedAt = clock.GetUtcNow(),
             UpdatedAt = clock.GetUtcNow()
         };
@@ -149,8 +187,8 @@ internal sealed class StripeBillingPolicyProcessor(
             BillingContractId = contract.Id,
             Customer = customer,
             CustomerId = customer.Id,
-            ProductDefinition = mapped.Product,
-            ProductDefinitionId = mapped.Product.Id,
+            ProductDefinition = product,
+            ProductDefinitionId = product.Id,
             Kind = "purchase",
             Status = "paid",
             CreatedAt = clock.GetUtcNow(),
@@ -158,14 +196,17 @@ internal sealed class StripeBillingPolicyProcessor(
         };
         db.BillingContracts.Add(contract);
         db.LicenseOrders.Add(order);
-        db.StripeSubscriptionMappings.Add(new StripeSubscriptionMapping
+        if (isSubscription)
         {
-            Id = Guid.NewGuid(),
-            StripeSubscriptionId = snapshot.SubscriptionId,
-            BillingContract = contract,
-            BillingContractId = contract.Id,
-            CreatedAt = clock.GetUtcNow()
-        });
+            db.StripeSubscriptionMappings.Add(new StripeSubscriptionMapping
+            {
+                Id = Guid.NewGuid(),
+                StripeSubscriptionId = snapshot.SubscriptionId!,
+                BillingContract = contract,
+                BillingContractId = contract.Id,
+                CreatedAt = clock.GetUtcNow()
+            });
+        }
         db.StripeCheckoutSessionMappings.Add(new StripeCheckoutSessionMapping
         {
             Id = Guid.NewGuid(),
@@ -177,8 +218,11 @@ internal sealed class StripeBillingPolicyProcessor(
         await db.SaveChangesAsync(cancellationToken);
 
         var issued = await licenses.IssueForBillingAsync(new IssueLicenseRequest(
-                customer.Name, customer.Email, mapped.Product.Id, mapped.Price.Edition, mapped.Price.LicenseType,
-                snapshot.CurrentPeriodEnd, contract.Seats, null, null),
+                customer.Name, customer.Email, product.Id, edition, licenseType,
+                expiry, seats, updatesUntil,
+                snapshot.PurchaseOrder is null
+                    ? null
+                    : new Dictionary<string, object?> { ["purchaseOrder"] = snapshot.PurchaseOrder }),
             customer, new IssuanceContext("billing:stripe", snapshot.EventId, snapshot.EventId, null), cancellationToken);
         if (!issued.Success) return Quarantine("license_issuance_failed");
         var issuedValue = issued.Value!;
@@ -198,12 +242,27 @@ internal sealed class StripeBillingPolicyProcessor(
         db.AuditRecords.Add(Audit(snapshot, "billing.purchase-completed", contract.Id, new
         {
             customerId = customer.Id,
-            productId = mapped.Product.Id,
+            productId = product.Id,
             orderId = order.Id,
-            licenseId = license.LicenseId
+            licenseId = license.LicenseId,
+            oneTime = !isSubscription,
+            purchaseOrder = snapshot.PurchaseOrder
         }));
         await db.SaveChangesAsync(cancellationToken);
         return Completed();
+    }
+
+    private async Task<(OneTimePurchaseTerms? Terms, string? Error)> ResolveOneTimeProductAsync(
+        BillingSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        var mapping = await db.StripeProductMappings.Include(item => item.ProductDefinition)
+            .SingleOrDefaultAsync(item => item.StripeProductId == snapshot.ProductId, cancellationToken);
+        if (mapping is null) return (null, "unknown_product_mapping");
+        if (mapping.Edition is null || mapping.LicenseType is null || mapping.Seats is null)
+            return (null, "incomplete_one_time_product_mapping");
+        return (new OneTimePurchaseTerms(
+            mapping.ProductDefinition, mapping.Edition, mapping.LicenseType,
+            mapping.Seats.Value, mapping.UpdatesUntil, mapping.ExpiresAt), null);
     }
 
     private async Task<BillingEventProcessResult> RenewalAsync(BillingSnapshot snapshot, CancellationToken cancellationToken)
@@ -560,7 +619,20 @@ internal sealed class StripeBillingStateProvider(
             subscription, checkout, invoice, periodEnd,
             Bool(value, "cancel_at_period_end") || Bool(subscriptionValue, "cancel_at_period_end"),
             Int(line, "quantity") ?? Int(value, "quantity") ?? 1,
-            String(value, "payment_status"));
+            String(value, "payment_status"),
+            PurchaseOrderReference(value));
+    }
+
+    private static string? PurchaseOrderReference(JsonElement value)
+    {
+        if (Property(value, "custom_fields") is not { ValueKind: JsonValueKind.Array } fields) return null;
+        foreach (var field in fields.EnumerateArray())
+        {
+            if (!string.Equals(String(field, "key"), "poref", StringComparison.Ordinal)) continue;
+            var reference = String(Path(field, "text"), "value");
+            return string.IsNullOrWhiteSpace(reference) ? null : reference;
+        }
+        return null;
     }
 
     private static bool NeedsCurrentState(string eventType, JsonElement value)
