@@ -10,7 +10,7 @@
 @if (oneTimeSecret is not null) { <article class="panel"><h2>Copy this key now</h2><p>This value will not be shown again.</p><input readonly value="@oneTimeSecret" aria-label="New API key" /></article> }
 
 <article class="panel form-panel"><h2>Create key</h2><EditForm Model="create" FormName="create-api-key" OnValidSubmit="CreateAsync"><DataAnnotationsValidator /><ValidationSummary />
-    <div class="form-grid"><label>Name<InputText @bind-Value="create.Name" /></label><label>Expiry (UTC)<InputDate Type="InputDateType.DateTimeLocal" @bind-Value="create.ExpiresAt" /></label><label>Scope<select @bind="create.Scope">@foreach (var permission in Permissions.All) { <option value="@permission">@permission</option> }</select></label></div>
+    <div class="form-grid"><label>Name<InputText @bind-Value="create.Name" /></label><label>Expiry (UTC)<InputDate Type="InputDateType.DateTimeLocal" @bind-Value="create.ExpiresAt" /></label><fieldset><legend>Scopes</legend>@foreach (var permission in Permissions.All) { <label class="checkbox-option"><input type="checkbox" checked="@create.Scopes.Contains(permission)" @onchange="@(e => ToggleScope(permission, (bool)e.Value!))" />@permission</label> }</fieldset></div>
     <button class="button" type="submit">Create key</button>
 </EditForm></article>
 
@@ -24,11 +24,12 @@
     private string? message;
     private bool isError;
     protected override async Task OnInitializedAsync() { var user = (await AuthenticationState.GetAuthenticationStateAsync()).User; ownerUserId = user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? ""; await ReloadAsync(); }
-    private async Task CreateAsync() => await ExecuteAsync(async () => { var result = await CredentialService.CreateAsync(new(create.Name, ownerUserId, [create.Scope], create.ExpiresAt), await ActorAsync()); oneTimeSecret = result.Secret; message = "API key created."; });
+    private async Task CreateAsync() => await ExecuteAsync(async () => { var result = await CredentialService.CreateAsync(new(create.Name, ownerUserId, create.Scopes.ToArray(), create.ExpiresAt), await ActorAsync()); oneTimeSecret = result.Secret; message = "API key created."; });
+    private void ToggleScope(string permission, bool isChecked) { if (isChecked) { if (!create.Scopes.Contains(permission)) create.Scopes.Add(permission); } else { create.Scopes.Remove(permission); } }
     private async Task RotateAsync(ApiCredentialView item) => await ExecuteAsync(async () => { var result = await CredentialService.RotateAsync(item.Id, await ActorAsync()); oneTimeSecret = result.Secret; message = "Old key revoked and replacement created."; });
     private async Task RevokeAsync(ApiCredentialView item) => await ExecuteAsync(async () => { await CredentialService.RevokeAsync(item.Id, await ActorAsync()); oneTimeSecret = null; message = "API key revoked."; });
     private async Task<string> ActorAsync() => (await AuthenticationState.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
     private async Task ReloadAsync() { if (!string.IsNullOrEmpty(ownerUserId)) items = await CredentialService.ListAsync(ownerUserId); }
     private async Task ExecuteAsync(Func<Task> action) { message = null; isError = false; try { await action(); } catch (Exception exception) when (exception is InvalidOperationException or UnauthorizedAccessException) { message = exception.Message; isError = true; } await ReloadAsync(); }
-    private sealed class KeyForm { [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(200)] public string Name { get; set; } = ""; public DateTimeOffset? ExpiresAt { get; set; } public string Scope { get; set; } = Permissions.LicensesRead; }
+    private sealed class KeyForm { [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(200)] public string Name { get; set; } = ""; public DateTimeOffset? ExpiresAt { get; set; } public List<string> Scopes { get; set; } = [Permissions.LicensesRead]; }
 }
