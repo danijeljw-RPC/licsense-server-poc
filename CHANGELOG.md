@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Seat-aware multi-machine activations** (#39, #43): a licence's seat count
+- Seat-aware multi-machine activations (#39, #43): a licence's seat count
   now actually gates activation, replacing the old single-live-activation
   behaviour. Active (non-deactivated) activations consume seats beneath one
   licence; a same-device retry is treated as recoverable rather than
@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   efficiently. Migration `SeatAwareMultiMachineActivations`. Admin license
   detail now shows seat usage (used/total), every active activation, and
   per-activation operator deactivation.
-- **Deployment Keys** (#40, #41): a new seat-shared credential
+- Deployment Keys (#40, #41): a new seat-shared credential
   (`dpk_live_<publicId>_<secret>`, HMAC-SHA256 hashed via
   `DeploymentKeyHasher` with its own pepper, `DeploymentKeys__Pepper`) that
   lets a machine enroll under an existing licence — for unattended fleet
