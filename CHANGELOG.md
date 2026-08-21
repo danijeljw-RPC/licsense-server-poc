@@ -9,33 +9,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Deployment Keys**: a new seat-shared credential (`dpk_live_...`, hashed
-  with `DeploymentKeyHasher`) that lets a single key enroll many devices
-  against a license's seat pool instead of one activation token per device.
-  Includes admin CRUD endpoints, an anonymous enrollment endpoint with
-  credential-partitioned, IP-wide rate limiting, and serialized rotation so
-  concurrent rotation requests can't race. Enrollment reuses
-  `LicenseStore.ActivateWithinLockAsync`, extracted for this purpose. New
-  `DeploymentKey` entity and `Activation.DeploymentKeyId` column, added via
-  migration `AddDeploymentKeys`. New `deploymentKeys.read`/`deploymentKeys.manage`
-  permissions and role grants.
-- Deployment Key admin UI on the License Details page: create, view, rotate,
-  and revoke deployment keys for a license.
-- Seat-aware activation model: licenses now track a seat count, and
-  activation enforces it instead of the previous one-device-per-license
-  assumption. New migration `SeatAwareMultiMachineActivations`.
-- Seat usage administration: admins can view per-license seat usage (grouped
-  by source — direct activation vs. deployment key) and safely adjust seat
-  counts without orphaning active devices.
-- Active seat count now shown in the customer portal.
-- Support for selecting multiple scopes at once when creating an API key
-  (previously single-scope only), with a fixed checkbox alignment on the
-  scopes list.
+- **Seat-aware multi-machine activations** (#39, #43): a licence's seat count
+  now actually gates activation, replacing the old single-live-activation
+  behaviour. Active (non-deactivated) activations consume seats beneath one
+  licence; a same-device retry is treated as recoverable rather than
+  consuming a second seat; exhausting the seat count returns a clear conflict
+  instead of the old blanket "already activated" rejection. Database changes:
+  removed the effective one-live-activation-per-licence constraint, added a
+  partial unique index on active `(LicenseRecordId, DeviceIdHash)` so one
+  device can't hold two live activations, kept `(LicenseRecordId, RequestId)`
+  unique for retry idempotency, and added an index to count active seats
+  efficiently. Migration `SeatAwareMultiMachineActivations`. Admin license
+  detail now shows seat usage (used/total), every active activation, and
+  per-activation operator deactivation.
+- **Deployment Keys** (#40, #41): a new seat-shared credential
+  (`dpk_live_<publicId>_<secret>`, HMAC-SHA256 hashed via
+  `DeploymentKeyHasher` with its own pepper, `DeploymentKeys__Pepper`) that
+  lets a machine enroll under an existing licence — for unattended fleet
+  deployment (Intune, RMM, golden images) — without distributing the
+  licence's manual activation code. Full lifecycle (create / list-redacted /
+  rename / rotate / revoke) via five new admin endpoints, gated by new
+  `deploymentKeys.read` / `deploymentKeys.manage` permissions
+  (`deploymentKeys.manage` is MFA-gated as high-risk, matching
+  `licenses.revoke`/`signingKeys.manage`). New anonymous
+  `POST /api/v1/deployment-keys/enroll` endpoint. Enrollment and manual
+  activation-code activation now share one seat-authoritative code path
+  (`LicenseStore.ActivateWithinLockAsync`, extracted from `ActivateAsync`) —
+  a deployment key shares the licence's seat pool, it does not get its own.
+  Revoking a key blocks new enrollment only; machines already enrolled
+  through it keep their activation. New audit events:
+  `deployment-key.created/renamed/rotated/revoked/enrollment-succeeded/enrollment-rejected`
+  (payloads carry only `PublicId`/`LastFour`, never the secret). New
+  `DeploymentKey` entity and `Activation.DeploymentKeyId` FK, migration
+  `AddDeploymentKeys`.
+- Deployment Key admin UI on the License Details page (#41, #53): create
+  (with optional expiry, one-time secret reveal), list (name, key preview,
+  created, last used, expiry, status), rename, rotate (one-time secret
+  reveal), revoke. Each active-activation card now shows which deployment
+  key (or "Manual activation") enrolled that device.
+- Seat usage administration (#42, #48): admin license detail now exposes
+  available seats, historical (deactivated) activation count, and an
+  active-seat breakdown by source (manual activation vs. each deployment
+  key). `AmendTermsAsync` now rejects lowering a licence's seat count below
+  its current active-activation count, running inside the same
+  `FOR UPDATE`-locked transaction as `ActivateAsync` so a concurrent
+  amendment and activation can't race into an invalid `Active > Seats`
+  state.
+- Active seat count shown in the customer portal (#42, #48).
+- Support for selecting multiple scopes at once when creating an API key,
+  replacing the previous single-`<select>` scope field with a checkbox list
+  (#54, #55).
 
-### Changed
+### Fixed
 
-- CI: fixed a broken `packages.lock.json` restore step, and disabled PDB
-  generation for all projects.
+- Every rate-limit policy in the app (`admin-api`, `device-api`, and the new
+  deployment-key policy) was effectively non-functional from the client's
+  perspective: the `OnRejected` handler wrote no response body, so the
+  app's global `UseStatusCodePagesWithReExecute` silently re-executed the
+  rejection into the Blazor SPA's 200 OK fallback (#44).
+- Deployment-key enrollment rate limiting could be bypassed by generating a
+  fresh public ID per request, since limiting partitioned solely on the
+  caller-presented credential ID. Now enforces a standalone IP-keyed limiter
+  ahead of any body reading, in addition to the credential-dimension limit
+  (#45).
+- The body-peek middleware ahead of deployment-key rate limiting read the
+  entire request body before the limiter ran, and an earlier fix that gated
+  the peek on a declared `Content-Length` silently skipped it for chunked
+  requests — which is how every `HttpClient.PostAsJsonAsync` call in this
+  repo (and any client following `LICENSING-INTEGRATION.md`) sends its body.
+  Now bounded to at most 4096 bytes via `Stream.ReadAtLeastAsync` regardless
+  of declared length (#45).
+- Two concurrent `RotateAsync` calls on the same deployment key could both
+  observe `RevokedAt == null` and both commit a live replacement key.
+  `RotateAsync` now takes a `FOR UPDATE` row lock for the duration of the
+  transaction (#45).
+- The customer portal license view assumed at most one active activation per
+  licence (`SingleOrDefault`), which stopped being safe once seats > 1 are
+  actively used; fixed alongside adding `ActiveSeatCount` to the portal view
+  (#48).
+- Fixed a crash-on-malformed-body bug in the deployment-key rate-limit
+  middleware (`JsonElement.TryGetProperty` throws on a non-object JSON
+  root), reachable by any anonymous client (#44).
+- Fixed a missing expiry guard in deployment-key `RotateAsync` that would
+  500 instead of 409 when rotating an already-expired key (#44).
+- Fixed a transaction-commit-boundary regression in the seat-checking
+  refactor that would have let concurrent-load edge cases spuriously 409 on
+  paths that previously always succeeded, by gating commit on
+  `db.ChangeTracker.HasChanges()` (#44).
+- Fixed a missing `DeploymentKeys__Pepper` entry in `compose.yaml`,
+  `.env.example`, the operator runbook, and the README, which would have
+  hard-failed container startup outside Development (#44).
+- Fixed checkbox alignment on the API key scopes list (#55).
+- CI: the activation-flow test's server-readiness poll (10s) was too short
+  once the new seat-aware and deployment-key migrations plus seeding started
+  running synchronously before Kestrel starts listening; bumped to 60s
+  (#50). Also fixed a broken `packages.lock.json` restore step and disabled
+  PDB generation for all projects.
+
+### Known limitations
+
+- Deployment-key enrollment rate limiting enforces the IP dimension and the
+  credential dimension as two independent checks rather than one combined
+  policy — ASP.NET Core's `RateLimiterOptions.AddPolicy` has no overload for
+  a pre-combined `PartitionedRateLimiter` (#45).
 
 ## [0.2.1] - 2026-08-16
 
