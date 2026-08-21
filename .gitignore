@@ -16,3 +16,4 @@ TestResults/
 coverage/
 .superpowers/
 dist/
+temp/
