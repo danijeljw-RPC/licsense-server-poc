@@ -127,6 +127,13 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             })
             .OrderByDescending(item => item.ActiveCount).ThenBy(item => item.Source, StringComparer.Ordinal)
             .ToList();
+        // Same disambiguated label as bySource above, just resolved per-row instead of per-group,
+        // so an individual activation card can show which deployment key (if any) created it.
+        string SourceLabel(Activation activation)
+        {
+            if (activation.DeploymentKey is not { } key) return "Manual activation";
+            return duplicateNames.Contains(key.Name) ? $"{key.Name} (…{key.LastFour})" : key.Name;
+        }
         var history = await db.AuditRecords.AsNoTracking()
             .Where(a => a.TargetId == licenseId || (a.TargetType == "activation" && activationIds.Contains(a.TargetId)))
             .OrderByDescending(a => a.TimestampUtc)
@@ -146,7 +153,7 @@ internal sealed class AdminDataService(ApplicationDbContext db, LicenseStore sto
             seatLimit - active.Count,
             historicalActivationCount,
             bySource,
-            active.Select(item => new ActivationView(item.ActivationId, item.Mode, item.DeviceIdSuffix, item.DeviceName, item.ActivatedAt, item.RefreshAfter, item.LeaseExpiresAt)).ToList(),
+            active.Select(item => new ActivationView(item.ActivationId, item.Mode, item.DeviceIdSuffix, item.DeviceName, item.ActivatedAt, item.RefreshAfter, item.LeaseExpiresAt, SourceLabel(item))).ToList(),
             x.Activations.OrderByDescending(a => a.ActivatedAt).Select(a => new ActivationHistoryView(a.ActivationId, a.Mode, a.DeviceIdSuffix, a.ActivatedAt, a.DeactivatedAt)).ToList(),
             history);
     }
@@ -264,7 +271,7 @@ public sealed record CustomerView(Guid Id, string Name, string Email, string? Ex
 public sealed record LicenseListView(string LicenseId, string Customer, string Status, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt, string? DeviceSuffix, string Provenance);
 public sealed record PagedLicenses(IReadOnlyList<LicenseListView> Items, int Page, int PageSize, int Total) { public int TotalPages => Math.Max(1, (int)Math.Ceiling((double)Total / PageSize)); }
 public sealed record EntitlementView(string Product, string Edition, string LicenseType, int Seats, DateOnly? UpdatesUntil);
-public sealed record ActivationView(string ActivationId, string Mode, string DeviceSuffix, string? DeviceName, DateTimeOffset ActivatedAt, DateTimeOffset? RefreshAfter, DateTimeOffset? LeaseExpiresAt);
+public sealed record ActivationView(string ActivationId, string Mode, string DeviceSuffix, string? DeviceName, DateTimeOffset ActivatedAt, DateTimeOffset? RefreshAfter, DateTimeOffset? LeaseExpiresAt, string Source);
 public sealed record ActivationHistoryView(string ActivationId, string Mode, string DeviceSuffix, DateTimeOffset ActivatedAt, DateTimeOffset? DeactivatedAt);
 public sealed record LicenseDetailView(
     string LicenseId, string Customer, string CustomerEmail, string SignedContactEmail, DateTimeOffset IssuedAt, DateTimeOffset? ExpiresAt,
