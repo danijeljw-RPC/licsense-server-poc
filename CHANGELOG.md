@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Deployment Keys**: a new seat-shared credential (`dpk_live_...`, hashed
+  with `DeploymentKeyHasher`) that lets a single key enroll many devices
+  against a license's seat pool instead of one activation token per device.
+  Includes admin CRUD endpoints, an anonymous enrollment endpoint with
+  credential-partitioned, IP-wide rate limiting, and serialized rotation so
+  concurrent rotation requests can't race. Enrollment reuses
+  `LicenseStore.ActivateWithinLockAsync`, extracted for this purpose. New
+  `DeploymentKey` entity and `Activation.DeploymentKeyId` column, added via
+  migration `AddDeploymentKeys`. New `deploymentKeys.read`/`deploymentKeys.manage`
+  permissions and role grants.
+- Deployment Key admin UI on the License Details page: create, view, rotate,
+  and revoke deployment keys for a license.
+- Seat-aware activation model: licenses now track a seat count, and
+  activation enforces it instead of the previous one-device-per-license
+  assumption. New migration `SeatAwareMultiMachineActivations`.
+- Seat usage administration: admins can view per-license seat usage (grouped
+  by source — direct activation vs. deployment key) and safely adjust seat
+  counts without orphaning active devices.
+- Active seat count now shown in the customer portal.
+- Support for selecting multiple scopes at once when creating an API key
+  (previously single-scope only), with a fixed checkbox alignment on the
+  scopes list.
+
+### Changed
+
+- CI: fixed a broken `packages.lock.json` restore step, and disabled PDB
+  generation for all projects.
+
 ## [0.2.1] - 2026-08-16
 
 ### Changed
