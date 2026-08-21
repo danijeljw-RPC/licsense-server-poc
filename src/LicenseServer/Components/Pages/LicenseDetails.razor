@@ -5,6 +5,8 @@
 @inject LicenseStore Store
 @inject ILicenseSigner Signer
 @inject ILicenseKeyRing KeyRing
+@inject DeploymentKeyService DeploymentKeys
+@inject AuthenticationStateProvider AuthenticationState
 
 <PageTitle>License @LicenseId</PageTitle>
 @if (license is null)
@@ -123,12 +125,66 @@ else
         {
             @foreach (var active in license.ActiveActivations)
             {
-                <div class="activation-card"><div><span>Mode</span><strong>@active.Mode</strong></div><div><span>Device</span><strong>…@active.DeviceSuffix</strong></div><div><span>Activated</span><strong>@active.ActivatedAt.ToString("u") UTC</strong></div><div><span>Lease expires</span><strong>@(active.LeaseExpiresAt?.ToString("u") ?? "Offline")</strong></div></div>
+                <div class="activation-card"><div><span>Mode</span><strong>@active.Mode</strong></div><div><span>Device</span><strong>…@active.DeviceSuffix</strong></div><div><span>Activated via</span><strong>@active.Source</strong></div><div><span>Activated</span><strong>@active.ActivatedAt.ToString("u") UTC</strong></div><div><span>Lease expires</span><strong>@(active.LeaseExpiresAt?.ToString("u") ?? "Offline")</strong></div></div>
                 <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized><form method="post" action="@($"/licenses/{Uri.EscapeDataString(LicenseId)}/activations/{Uri.EscapeDataString(active.ActivationId)}/deactivate")"><AntiforgeryToken /><h2>Operator deactivation</h2><input type="hidden" name="Version" value="@license.Version" /><label>Required reason<textarea name="Reason" minlength="3" maxlength="500" required></textarea></label><label class="confirm"><input type="checkbox" name="Confirmed" value="true" required /> Confirm deactivation for …@active.DeviceSuffix.</label><button class="button danger" type="submit">Deactivate</button></form></Authorized></AuthorizeView>
             }
             <AuthorizeView Policy="@Permissions.ActivationsManage"><Authorized Context="refreshPermissionContext"><EditForm Model="credentials" FormName="refresh-lease" OnValidSubmit="RefreshAsync"><DataAnnotationsValidator /><h2>Refresh online lease</h2><label>Activation<InputSelect @bind-Value="credentials.ActivationId"><option value="">Select an active activation</option>@foreach (var active in license.ActiveActivations) { <option value="@active.ActivationId">@($"…{active.DeviceSuffix} · {active.Mode}")</option> }</InputSelect></label><label>Activation token<InputText type="password" @bind-Value="credentials.ActivationToken" autocomplete="off" /></label><label>Full device ID<InputText type="password" @bind-Value="credentials.DeviceId" autocomplete="off" /></label><label>Signing key<InputSelect @bind-Value="credentials.KeyId"><option value="">Default (@(KeyRing.DefaultKeyId ?? "none configured"))</option>@foreach (var key in KeyRing.Keys.Where(k => k.CanSign)) { <option value="@key.KeyId">@key.KeyId</option> }</InputSelect></label><button class="button secondary" type="submit" disabled="@(SelectedActivation?.Mode != "online")">Refresh and issue</button></EditForm></Authorized></AuthorizeView>
         }
         else { <p class="empty-inline">No active devices. This license has full seat capacity available.</p> }
+    </article>
+
+    <article class="panel"><div class="panel-head"><div><p class="eyebrow">Machine self-enrollment</p><h2>Deployment keys</h2></div></div>
+        @if (!string.IsNullOrWhiteSpace(deploymentKeyMessage)) { <div class="alert @(deploymentKeyError ? "error" : "success")" role="status">@deploymentKeyMessage</div> }
+        @if (revealedDeploymentKeySecret is not null) { <article class="panel"><h2>Copy this key now</h2><p>This value will not be shown again. Give it to the deployment tooling that will call <code>POST /api/v1/deployment-keys/enroll</code>.</p><input readonly value="@revealedDeploymentKeySecret" aria-label="New deployment key" /></article> }
+        <AuthorizeView Policy="@Permissions.DeploymentKeysManage"><Authorized Context="deploymentKeyManageContext">
+            @if (!IsTerminal)
+            {
+                <EditForm Model="createDeploymentKey" FormName="create-deployment-key" OnValidSubmit="CreateDeploymentKeyAsync"><DataAnnotationsValidator /><ValidationSummary />
+                    <div class="form-grid"><label>Name<InputText @bind-Value="createDeploymentKey.Name" /></label><label>Expiry (UTC, optional)<InputDate Type="InputDateType.DateTimeLocal" @bind-Value="createDeploymentKey.ExpiresAt" /></label></div>
+                    <button class="button" type="submit">Generate deployment key</button>
+                </EditForm>
+            }
+        </Authorized></AuthorizeView>
+        <AuthorizeView Policy="@Permissions.DeploymentKeysRead"><Authorized Context="deploymentKeyReadContext">
+            @if (deploymentKeys.Count > 0)
+            {
+                <div class="table-wrap"><table><thead><tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>
+                    @foreach (var key in deploymentKeys)
+                    {
+                        <tr>
+                            <td>@if (renamingId == key.Id) { <input @bind="renameValue" aria-label="New name" /> } else { @key.Name }</td>
+                            <td><code>@key.PublicId…@key.LastFour</code></td>
+                            <td>@key.CreatedAt.ToString("u")</td>
+                            <td>@(key.LastUsedAt?.ToString("u") ?? "Never")</td>
+                            <td>@(key.ExpiresAt?.ToString("u") ?? "No expiry")</td>
+                            <td>@DeploymentKeyStatus(key)</td>
+                            <td>
+                                <AuthorizeView Policy="@Permissions.DeploymentKeysManage"><Authorized>
+                                    @if (key.RevokedAt is null)
+                                    {
+                                        @if (renamingId == key.Id)
+                                        {
+                                            <button class="button secondary" type="button" @onclick="() => SaveRenameAsync(key)">Save</button>
+                                            <button class="button secondary" type="button" @onclick="CancelRename">Cancel</button>
+                                        }
+                                        else
+                                        {
+                                            <button class="button secondary" type="button" @onclick="() => StartRename(key)">Rename</button>
+                                            @if (!IsTerminal && DeploymentKeyStatus(key) == "Active")
+                                            {
+                                                <button class="button secondary" type="button" @onclick="() => RotateDeploymentKeyAsync(key)">Rotate</button>
+                                            }
+                                            <button class="button danger" type="button" @onclick="() => RevokeDeploymentKeyAsync(key)">Revoke</button>
+                                        }
+                                    }
+                                </Authorized></AuthorizeView>
+                            </td>
+                        </tr>
+                    }
+                </tbody></table></div>
+            }
+            else { <p class="empty-inline">No deployment keys yet. Machines cannot self-enroll for this license until one is generated.</p> }
+        </Authorized></AuthorizeView>
     </article>
 
     @if (!IsTerminal)
@@ -161,6 +217,12 @@ else
     private string DisplayMessageClass => Error is not null ? "error" : Notice is not null ? "success" : messageClass;
     protected override async Task OnParametersSetAsync()
     {
+        // Blazor reuses this component instance across client-side navigation between different
+        // /licenses/{id} routes, so a secret revealed for one license would otherwise keep
+        // rendering under the next license's panel - clear it (and any stale status message)
+        // every time parameters are (re)bound, not just on first load.
+        revealedDeploymentKeySecret = null;
+        deploymentKeyMessage = null; deploymentKeyError = false;
         license = await Data.GetLicenseAsync(LicenseId);
         if (license is not null
             && !string.IsNullOrWhiteSpace(credentials.ActivationId)
@@ -168,6 +230,78 @@ else
         {
             credentials.ActivationId = "";
         }
+        await LoadDeploymentKeysAsync();
+    }
+    private IReadOnlyList<DeploymentKeyView> deploymentKeys = [];
+    private readonly CreateDeploymentKeyForm createDeploymentKey = new();
+    private string? deploymentKeyMessage; private bool deploymentKeyError; private string? revealedDeploymentKeySecret;
+    private Guid? renamingId; private string renameValue = "";
+    private async Task LoadDeploymentKeysAsync()
+    {
+        // Guarded like the AuthorizeView around the panel itself: a viewer without
+        // deploymentKeys.read (e.g. License Issuer) must still be able to load the rest of the
+        // page, so a permission failure here just leaves the list empty and hidden.
+        try { var result = await DeploymentKeys.ListAsync(LicenseId); deploymentKeys = result.Success ? result.Value! : []; }
+        catch (UnauthorizedAccessException) { deploymentKeys = []; }
+    }
+    // Renaming a deployment key changes the label shown on every activation card and in the
+    // "active seats by source" table above, both computed from `license`, so it must be
+    // refetched alongside the key list itself or a rename would look like it silently failed there.
+    private async Task ReloadDeploymentKeysAndLicenseAsync()
+    {
+        await LoadDeploymentKeysAsync();
+        license = await Data.GetLicenseAsync(LicenseId);
+    }
+    private async Task<string> ActorAsync() => (await AuthenticationState.GetAuthenticationStateAsync()).User.Identity?.Name ?? "unknown";
+    private async Task CreateDeploymentKeyAsync()
+    {
+        revealedDeploymentKeySecret = null;
+        var result = await DeploymentKeys.CreateAsync(LicenseId, new CreateDeploymentKeyRequest(createDeploymentKey.Name, createDeploymentKey.ExpiresAt), await ActorAsync());
+        if (!result.Success) { deploymentKeyMessage = result.Error; deploymentKeyError = true; return; }
+        revealedDeploymentKeySecret = result.Value!.Secret;
+        deploymentKeyMessage = "Deployment key generated."; deploymentKeyError = false;
+        createDeploymentKey.Name = ""; createDeploymentKey.ExpiresAt = null;
+        await LoadDeploymentKeysAsync();
+    }
+    private void StartRename(DeploymentKeyView key) { renamingId = key.Id; renameValue = key.Name; }
+    private void CancelRename() { renamingId = null; renameValue = ""; }
+    private async Task SaveRenameAsync(DeploymentKeyView key)
+    {
+        var result = await DeploymentKeys.RenameAsync(key.Id, renameValue, await ActorAsync());
+        if (!result.Success) { deploymentKeyMessage = result.Error; deploymentKeyError = true; return; }
+        deploymentKeyMessage = "Deployment key renamed."; deploymentKeyError = false;
+        renamingId = null;
+        await ReloadDeploymentKeysAndLicenseAsync();
+    }
+    private async Task RotateDeploymentKeyAsync(DeploymentKeyView key)
+    {
+        revealedDeploymentKeySecret = null;
+        var result = await DeploymentKeys.RotateAsync(key.Id, await ActorAsync());
+        if (!result.Success) { deploymentKeyMessage = result.Error; deploymentKeyError = true; return; }
+        revealedDeploymentKeySecret = result.Value!.Secret;
+        deploymentKeyMessage = "Deployment key rotated. The old key is now revoked."; deploymentKeyError = false;
+        await LoadDeploymentKeysAsync();
+    }
+    private async Task RevokeDeploymentKeyAsync(DeploymentKeyView key)
+    {
+        var result = await DeploymentKeys.RevokeAsync(key.Id, null, await ActorAsync());
+        if (!result.Success) { deploymentKeyMessage = result.Error; deploymentKeyError = true; return; }
+        // A just-created or just-rotated secret can still be on screen for this exact key when it
+        // gets revoked without a page reload in between - that credential is now dead, so stop
+        // telling the operator to copy it.
+        revealedDeploymentKeySecret = null;
+        deploymentKeyMessage = "Deployment key revoked."; deploymentKeyError = false;
+        await LoadDeploymentKeysAsync();
+    }
+    private static string DeploymentKeyStatus(DeploymentKeyView key) =>
+        key.RevokedAt is not null ? "Revoked"
+        : key.ExpiresAt is not null && key.ExpiresAt <= DateTimeOffset.UtcNow ? "Expired"
+        : "Active";
+    private sealed class CreateDeploymentKeyForm
+    {
+        [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.StringLength(200)]
+        public string Name { get; set; } = "";
+        public DateTimeOffset? ExpiresAt { get; set; }
     }
     private static string FormatExpiry(DateTimeOffset? expiry) => expiry == LicenseTerms.PerpetualExpiry ? "Never (perpetual)" : expiry?.ToString("u") ?? "No expiry";
     private async Task ActivateAsync() { var request = new ActivateRequest(Guid.NewGuid().ToString(), activate.ActivationCode, activate.ActivationToken, activate.Mode, new DeviceRequest(SoftwareLicensing.DeviceIdentity.Scheme, activate.DeviceId, activate.DeviceName)); var result = await Store.ActivateAsync(LicenseId, request, DateTimeOffset.UtcNow, string.IsNullOrWhiteSpace(activate.KeyId) ? null : activate.KeyId); if (!result.Success) { message = result.Error; messageClass = "error"; return; } if (!await SetDownloadAsync(result.Value!, "Activation issued successfully.", activate.KeyId)) return; activate.ActivationCode = activate.ActivationToken = activate.DeviceId = ""; license = await Data.GetLicenseAsync(LicenseId); }

@@ -15,3 +15,5 @@ postgres-data/
 TestResults/
 coverage/
 .superpowers/
+dist/
+temp/
