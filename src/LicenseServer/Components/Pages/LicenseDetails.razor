@@ -170,7 +170,10 @@ else
                                         else
                                         {
                                             <button class="button secondary" type="button" @onclick="() => StartRename(key)">Rename</button>
-                                            <button class="button secondary" type="button" @onclick="() => RotateDeploymentKeyAsync(key)">Rotate</button>
+                                            @if (!IsTerminal && DeploymentKeyStatus(key) == "Active")
+                                            {
+                                                <button class="button secondary" type="button" @onclick="() => RotateDeploymentKeyAsync(key)">Rotate</button>
+                                            }
                                             <button class="button danger" type="button" @onclick="() => RevokeDeploymentKeyAsync(key)">Revoke</button>
                                         }
                                     }
@@ -214,6 +217,12 @@ else
     private string DisplayMessageClass => Error is not null ? "error" : Notice is not null ? "success" : messageClass;
     protected override async Task OnParametersSetAsync()
     {
+        // Blazor reuses this component instance across client-side navigation between different
+        // /licenses/{id} routes, so a secret revealed for one license would otherwise keep
+        // rendering under the next license's panel - clear it (and any stale status message)
+        // every time parameters are (re)bound, not just on first load.
+        revealedDeploymentKeySecret = null;
+        deploymentKeyMessage = null; deploymentKeyError = false;
         license = await Data.GetLicenseAsync(LicenseId);
         if (license is not null
             && !string.IsNullOrWhiteSpace(credentials.ActivationId)
@@ -277,6 +286,10 @@ else
     {
         var result = await DeploymentKeys.RevokeAsync(key.Id, null, await ActorAsync());
         if (!result.Success) { deploymentKeyMessage = result.Error; deploymentKeyError = true; return; }
+        // A just-created or just-rotated secret can still be on screen for this exact key when it
+        // gets revoked without a page reload in between - that credential is now dead, so stop
+        // telling the operator to copy it.
+        revealedDeploymentKeySecret = null;
         deploymentKeyMessage = "Deployment key revoked."; deploymentKeyError = false;
         await LoadDeploymentKeysAsync();
     }
