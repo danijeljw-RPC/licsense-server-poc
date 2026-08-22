@@ -6,7 +6,7 @@ Code session working in a *separate* CLI-application repo, which should treat
 sections 3–10 as an implementation spec and section 10 as its task list.
 
 **Source of truth:** everything below was verified against the actual code in
-`danijeljw-RPC/licsense-server-poc` (this repo) on 2026-08-16, not guessed from
+`repasscloud/license-server-app` (this repo) on 2026-08-16, not guessed from
 the package name. File/line references let you re-verify anything.
 
 ---
@@ -129,7 +129,7 @@ a source, but `Licensing.Core` itself is published as a **GitHub Release
 artifact**, built by `.github/workflows/release-image.yml`:
 
 - Latest tagged release: **v0.2.1** (`Licensing.Core.0.2.1.nupkg`).
-- Release page: `https://github.com/danijeljw-RPC/licsense-server-poc/releases/tag/v0.2.1`
+- Release page: `https://github.com/repasscloud/license-server-app/releases/tag/v0.2.1`
 - Assets per release: the `.nupkg`, a plain-DLL `.zip` and `.tar.gz`, and
   `SHA256SUMS.txt` covering all of them — verify against it before trusting
   the download.
@@ -141,7 +141,7 @@ Two ways to consume it in the other repo:
 ```bash
 mkdir -p ./nuget-local
 curl -L -o ./nuget-local/Licensing.Core.0.2.1.nupkg \
-  https://github.com/danijeljw-RPC/licsense-server-poc/releases/download/v0.2.1/Licensing.Core.0.2.1.nupkg
+  https://github.com/repasscloud/license-server-app/releases/download/v0.2.1/Licensing.Core.0.2.1.nupkg
 # verify against SHA256SUMS.txt from the same release before using it
 ```
 

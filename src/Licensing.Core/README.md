@@ -8,7 +8,7 @@ Offline verification for signed licence files. Reference this package from any p
 dotnet add package Licensing.Core
 ```
 
-Or reference the DLL/zip/tar.gz directly from a [GitHub release](https://github.com/danijeljw-RPC/licsense-server-poc/releases) of the licensing server, verified against the accompanying `SHA256SUMS.txt`.
+Or reference the DLL/zip/tar.gz directly from a [GitHub release](https://github.com/repasscloud/license-server-app/releases) of the licensing server, verified against the accompanying `SHA256SUMS.txt`.
 
 ## Usage
 
@@ -48,4 +48,4 @@ The public keys trusted for verification are compiled into this package (`Truste
 
 ## License
 
-Apache-2.0. See [LICENSE](https://github.com/danijeljw-RPC/licsense-server-poc/blob/main/LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/repasscloud/license-server-app/blob/main/LICENSE).

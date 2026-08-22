@@ -12,10 +12,10 @@
          the local/dev fallback so an unversioned build still produces something sane. -->
     <Version>0.2.1</Version>
     <PackageId>Licensing.Core</PackageId>
-    <Authors>Danijel-James Wynyard</Authors>
+    <Authors>RePass Cloud Pty Ltd</Authors>
     <Description>Offline licence file verification: parses and validates ECDSA-signed licence envelopes against embedded trusted public keys.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/danijeljw-RPC/licsense-server-poc</RepositoryUrl>
+    <RepositoryUrl>https://github.com/repasscloud/license-server-app</RepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
