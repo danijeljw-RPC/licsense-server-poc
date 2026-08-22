@@ -4,8 +4,6 @@ namespace LicenseValidator;
 
 internal static class ValidatorApplication
 {
-    private static readonly System.Text.Json.JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
-
     public static int Run(string[] args)
     {
         try
@@ -16,7 +14,7 @@ internal static class ValidatorApplication
                 var device = DeviceIdentity.GetCurrent();
                 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(
                     device,
-                    IndentedJson));
+                    DeviceIdentityJsonContext.Default.LocalDeviceIdentity));
                 return 0;
             }
 
