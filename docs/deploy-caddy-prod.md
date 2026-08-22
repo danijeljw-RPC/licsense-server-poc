@@ -3,7 +3,7 @@
 Fronts the app with [Caddy](https://caddyfiles.com/), which terminates TLS and
 automatically obtains/renews a Let's Encrypt certificate. The app pulls its image from GHCR
 instead of building on the server — `.github/workflows/release-image.yml` publishes
-`ghcr.io/danijeljw-rpc/license-server-app` on every version tag.
+`ghcr.io/repasscloud/license-server-app` on every version tag.
 
 ## Files involved
 

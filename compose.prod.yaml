@@ -30,7 +30,7 @@ services:
     # No build section here on purpose: production pulls the image the release-image.yml
     # workflow already publishes to GHCR on every version tag, instead of rebuilding on the
     # server. See docker-up-prod.sh, which runs `compose pull` before `compose up`.
-    image: ghcr.io/${GHCR_OWNER:-danijeljw-rpc}/${IMAGE_NAME:-license-server-app}:${IMAGE_TAG:?Set IMAGE_TAG in .env.prod}
+    image: ghcr.io/${GHCR_OWNER:-repasscloud}/${IMAGE_NAME:-license-server-app}:${IMAGE_TAG:?Set IMAGE_TAG in .env.prod}
     restart: unless-stopped
     init: true
     depends_on:

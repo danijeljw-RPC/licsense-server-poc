@@ -74,7 +74,7 @@ jobs:
             exit 1
           fi
 
-      # ghcr.io rejects mixed-case paths; the GitHub org for this repo (danijeljw-RPC)
+      # ghcr.io rejects mixed-case paths; the GitHub org for this repo (repasscloud)
       # is not all lowercase, so the owner segment has to be normalized before use.
       - name: Lowercase the image owner
         id: owner
