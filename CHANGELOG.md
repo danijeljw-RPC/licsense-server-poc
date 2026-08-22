@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-23
+
+### Fixed
+
+- Guest `checkout.session.completed` webhooks were silently quarantined and
+  never issued a licence (#66). A one-time Payment Link checkout with
+  `customer_creation: if_required` can complete without Stripe ever
+  attaching a `Customer` object, leaving the webhook payload's `customer`
+  field `null`. `StripeBillingPolicyProcessor.PurchaseAsync`
+  (`src/LicenseServer/BillingPolicies.cs`) hard-required a non-null
+  `CustomerId`, so the event landed in `WebhookInbox` as
+  `Status = 'quarantined'` / `LastErrorCode = 'incomplete_purchase_state'`
+  with no `Customer`/`LicenseOrder`/`License` ever created. One-time
+  purchases now fall back to the verified checkout email
+  (`customer_details.email`) to find/create the `Customer` record when
+  Stripe didn't attach one — subscriptions still require a real
+  `CustomerId`, since Stripe always provides one for those.
+
+### Changed
+
+- `temp/stripe-products/create-products.sh` / `.ps1` now create payment
+  links with `customer_creation=always`, so new one-time Payment Links
+  always get a real Stripe `Customer` regardless of guest checkout.
+- The same scripts now update existing products and payment links in place
+  on re-run instead of only creating missing ones — re-running after
+  editing `products.csv` (new logo URL, description, tax settings, price)
+  reflashes the product and, where the Stripe API allows it, the payment
+  link's checkout config. Stripe does not allow changing a payment link's
+  charged price or `custom_fields` after creation, so those still require
+  issuing a new link; the script warns when that's the case.
+
 ## [0.3.0] - 2026-08-21
 
 ### Added
