@@ -13,6 +13,15 @@
 --
 -- Replace the example "prod_..." Stripe product IDs below with your real ones from
 -- the Stripe Dashboard (Products -> [product] -> API ID) before relying on this data.
+--
+-- How to run (production, via docker compose)
+-- ---------------------------------------------
+-- Run from the repo root, where compose.prod.yaml lives:
+--
+--   set -a; source .env.prod; set +a
+--   docker compose --env-file .env.prod -f compose.prod.yaml exec -T postgres \
+--     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+--     -f - < sql/seed-stripe-product-mappings.sql
 
 BEGIN;
 

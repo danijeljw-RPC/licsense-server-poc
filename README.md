@@ -1,6 +1,6 @@
 # Software licensing POC
 
-Current version: **v0.3.1** — see [CHANGELOG.md](CHANGELOG.md) for release notes.
+Current version: **v0.3.2** — see [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 Licensed under [Apache-2.0](LICENSE).
 

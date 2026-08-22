@@ -80,12 +80,6 @@ jobs:
         id: owner
         run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve release version
-        id: version
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: echo "number=${TAG_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: Set up .NET
         uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:
@@ -95,21 +89,22 @@ jobs:
       # (see README "Calling validation directly from an application"). Released alongside the
       # server image so a NuGet package and a plain DLL are both pullable straight from the
       # GitHub release, without anyone needing to clone and build this repo themselves.
+      #
+      # The tag (vX.Y.Z) only versions the container image below. Every attached asset is
+      # versioned from its own project's <Version> in its .csproj, not the tag, since the
+      # library/tool release cadence is independent of the server's.
       - name: Build and package Licensing.Core
-        env:
-          VERSION: ${{ steps.version.outputs.number }}
         run: |
           set -euo pipefail
-          mkdir -p artifacts/nuget artifacts/dll/"Licensing.Core-$VERSION"
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' src/Licensing.Core/Licensing.Core.csproj)
+          mkdir -p artifacts/nuget artifacts/dll/"Licensing.Core-$VERSION" release-assets
 
           dotnet pack src/Licensing.Core/Licensing.Core.csproj \
             -c Release \
-            -p:Version="$VERSION" \
             -o artifacts/nuget
 
           dotnet build src/Licensing.Core/Licensing.Core.csproj \
-            -c Release \
-            -p:Version="$VERSION"
+            -c Release
 
           cp src/Licensing.Core/bin/Release/net10.0/Licensing.Core.dll \
              artifacts/dll/"Licensing.Core-$VERSION"/
@@ -118,10 +113,81 @@ jobs:
           ( cd artifacts/dll && tar -czf "Licensing.Core-$VERSION.tar.gz" "Licensing.Core-$VERSION" )
           rm -rf artifacts/dll/"Licensing.Core-$VERSION"
 
-          mkdir -p release-assets
           cp artifacts/nuget/*.nupkg release-assets/
           cp artifacts/dll/*.zip artifacts/dll/*.tar.gz release-assets/
 
+      # LicenseGenerator is the standalone CLI users run to issue licence files; publishing
+      # self-contained Linux and Windows builds means they don't need the .NET runtime installed.
+      - name: Build and package LicenseGenerator (Linux + Windows)
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' src/LicenseGenerator/LicenseGenerator.csproj)
+          mkdir -p artifacts/publish release-assets
+
+          for RID in linux-arm64 linux-x64 win-x64; do
+            STAGE_NAME="LicenseGenerator-$VERSION-$RID"
+            STAGE_DIR="artifacts/publish/$STAGE_NAME"
+            mkdir -p "$STAGE_DIR"
+
+            dotnet publish src/LicenseGenerator/LicenseGenerator.csproj \
+              -c Release \
+              -r "$RID" \
+              --self-contained true \
+              -o "$STAGE_DIR"
+
+            cp README.md CHANGELOG.md LICENSE "$STAGE_DIR"/
+
+            ( cd artifacts/publish && zip -r "$STAGE_NAME.zip" "$STAGE_NAME" )
+            ( cd artifacts/publish && tar -czf "$STAGE_NAME.tar.gz" "$STAGE_NAME" )
+
+            cp artifacts/publish/"$STAGE_NAME.zip" artifacts/publish/"$STAGE_NAME.tar.gz" release-assets/
+          done
+
+      # LicenseValidator is the standalone CLI users run to check a licence file / product
+      # entitlement; publishing self-contained Linux and Windows builds means they don't need
+      # the .NET runtime installed.
+      - name: Build and package LicenseValidator (Linux + Windows)
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' src/LicenseValidator/LicenseValidator.csproj)
+          mkdir -p artifacts/publish release-assets
+
+          for RID in linux-arm64 linux-x64 win-x64; do
+            STAGE_NAME="LicenseValidator-$VERSION-$RID"
+            STAGE_DIR="artifacts/publish/$STAGE_NAME"
+            mkdir -p "$STAGE_DIR"
+
+            dotnet publish src/LicenseValidator/LicenseValidator.csproj \
+              -c Release \
+              -r "$RID" \
+              --self-contained true \
+              -o "$STAGE_DIR"
+
+            cp README.md CHANGELOG.md LICENSE "$STAGE_DIR"/
+
+            ( cd artifacts/publish && zip -r "$STAGE_NAME.zip" "$STAGE_NAME" )
+            ( cd artifacts/publish && tar -czf "$STAGE_NAME.tar.gz" "$STAGE_NAME" )
+
+            cp artifacts/publish/"$STAGE_NAME.zip" artifacts/publish/"$STAGE_NAME.tar.gz" release-assets/
+          done
+
+      # Full source snapshot for this release, named after the container tag since it isn't
+      # tied to any single project's version. bin/obj build output is excluded — it's not source.
+      - name: Archive src directory
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          zip -r "release-assets/src-$TAG_NAME.zip" src -x '*/bin/*' -x '*/obj/*'
+          tar -czf "release-assets/src-$TAG_NAME.tar.gz" \
+            --exclude='bin' --exclude='obj' \
+            src
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
           ( cd release-assets && sha256sum * > SHA256SUMS.txt )
           ( cd release-assets && sha256sum -c SHA256SUMS.txt )
 

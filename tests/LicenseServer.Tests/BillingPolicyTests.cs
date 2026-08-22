@@ -249,6 +249,46 @@ public sealed class BillingPolicyTests(PostgresWebFixture fixture)
 
     [Fact]
     [Trait("ExpectedGreenStage", "15")]
+    public async Task CompletedOneTimePurchaseUsesMappedSeatsNotStripeLineItemQuantity()
+    {
+        // Regression test for #68: a one-time Payment Link checkout for a fixed-seat SKU
+        // reports a Stripe line-item quantity of 1 (the buyer bought one of the SKU, not
+        // "500" of anything), but the mapped product's Seats (a fixed attribute of the
+        // edition) must still win.
+        var marker = Guid.NewGuid().ToString("N");
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        db.StripeProductMappings.Add(new StripeProductMapping
+        {
+            Id = Guid.NewGuid(),
+            StripeProductId = $"prod_{marker}",
+            ProductDefinitionId = RoadmapTestSupport.KnownProductId,
+            Edition = "enterprise",
+            LicenseType = "perpetual",
+            Seats = 500,
+            UpdatesUntil = null,
+            ExpiresAt = null,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var processor = scope.ServiceProvider.GetRequiredService<StripeBillingPolicyProcessor>();
+        var snapshot = OneTimePurchase(marker) with { Seats = 1 };
+
+        var result = await processor.ApplyAsync(snapshot);
+
+        Assert.Equal(BillingInboxStatus.Completed, result.Status);
+        db.ChangeTracker.Clear();
+        var order = await db.StripeCheckoutSessionMappings.AsNoTracking()
+            .Where(item => item.StripeCheckoutSessionId == $"cs_{marker}")
+            .Select(item => item.LicenseOrder).SingleAsync();
+        var license = await db.Licenses.AsNoTracking().Include(item => item.Entitlements)
+            .SingleAsync(item => item.Id == order.LicenseRecordId);
+        Assert.Equal(500, license.Entitlements.Single().Seats);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "15")]
     public async Task OneTimePurchaseAgainstSubscriptionOnlyMappingQuarantinesWithoutIssuingLicense()
     {
         var marker = Guid.NewGuid().ToString("N");

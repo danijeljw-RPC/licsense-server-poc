@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-23
+
+### Fixed
+
+- One-time purchases of a fixed-seat product mapping issued licenses with
+  `Seats = 1` instead of the seat count configured in `StripeProductMappings`
+  (#68). `StripeBillingPolicyProcessor.PurchaseAsync`
+  (`src/LicenseServer/BillingPolicies.cs`) preferred the Stripe checkout
+  line item's `quantity` over the mapped seat count whenever it was
+  non-zero, but for these SKUs the seat count is a fixed attribute of the
+  product/edition, not something the buyer selects via quantity - a
+  Payment Link checkout for a 500-seat enterprise SKU still reports
+  `quantity = 1`. One-time purchases now always use the mapped `Seats`
+  value; subscriptions, which genuinely use `quantity` as a seat
+  multiplier, are unaffected.
+- Permission-gated admin UI (e.g. "Rescan key directory" on
+  `/settings/signing-keys`, the users page) stayed hidden for an existing
+  session even after the account's role/permission grants changed, until
+  the user logged out and back in (#64). The Blazor auth cookie's claims
+  principal is only rebuilt at sign-in; a deploy that changes
+  `BuiltInRoles.Matrix`, or maps a legacy `Administrator` onto
+  `System Administrator`, only updates the affected role's/user's
+  security stamp when *that specific user* is edited through the admin
+  UI, not when the underlying permission matrix itself changes.
+  `IdentityRevalidatingAuthenticationStateProvider`
+  (`src/LicenseServer/Components/Account/IdentityRevalidatingAuthenticationStateProvider.cs`)
+  now also compares the session's cached `permission` claims against a
+  freshly generated set on every 30-minute revalidation pass, forcing
+  sign-out (and a clean re-login) on a mismatch instead of silently
+  keeping a stale principal.
+
 ## [0.3.1] - 2026-08-23
 
 ### Fixed
