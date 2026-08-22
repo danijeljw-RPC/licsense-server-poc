@@ -35,7 +35,9 @@ whole repo works too, but nothing else in it is required at runtime.
 The script pulls the pinned image tag, brings up postgres → app → caddy in order (each
 gated on the previous one's healthcheck), and prints the public HTTPS URL once healthy.
 
-If the GHCR image is private, pulling fails with a login hint — authenticate first:
+`ghcr.io/repasscloud/license-server-app` is a public package, so no `docker login` is
+needed to pull it. If it's ever switched back to private, pulling will fail with a login
+hint — authenticate first:
 
 ```bash
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-username> --password-stdin
