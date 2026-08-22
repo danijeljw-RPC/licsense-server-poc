@@ -26,7 +26,8 @@
 -- ---------------------------------------------
 -- Run from the repo root, where compose.prod.yaml lives:
 --
---   docker compose -f compose.prod.yaml exec -T postgres \
+--   set -a; source .env.prod; set +a
+--   docker compose --env-file .env.prod -f compose.prod.yaml exec -T postgres \
 --     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 --     -f - < sql/2026-08-23-requeue-quarantined-checkout-events.sql
 --

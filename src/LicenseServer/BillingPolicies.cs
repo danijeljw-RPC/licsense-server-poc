@@ -131,7 +131,13 @@ internal sealed class StripeBillingPolicyProcessor(
             updatesUntil = terms.UpdatesUntil;
             expiry = terms.ExpiresAt;
         }
-        var seats = snapshot.Seats > 0 ? snapshot.Seats : mappedSeats;
+        // For one-time purchases, "seats" is a fixed attribute of the mapped product/edition
+        // (StripeProductMappings.Seats), not something the buyer selects via line-item
+        // quantity - a checkout for one of these SKUs always has quantity 1 regardless of
+        // the edition's seat count, so the Stripe-reported quantity must not override it.
+        // Subscriptions genuinely use quantity as a seat multiplier (StripePriceMappings),
+        // so that override still applies there. See issue #68.
+        var seats = isSubscription && snapshot.Seats > 0 ? snapshot.Seats : mappedSeats;
         if (!CustomerEmails.TryNormalize(snapshot.CustomerEmail, out var normalizedEmail, out _)
             || string.IsNullOrWhiteSpace(snapshot.CustomerName))
             return Quarantine("invalid_customer_contact");

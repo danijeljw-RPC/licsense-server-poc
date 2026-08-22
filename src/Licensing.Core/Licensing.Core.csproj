@@ -13,6 +13,8 @@
     <Version>0.2.1</Version>
     <PackageId>Licensing.Core</PackageId>
     <Authors>RePass Cloud Pty Ltd</Authors>
+    <Company>RePass Cloud Pty Ltd</Company>
+    <Copyright>Copyright 2026 Danijel-James Wynyard</Copyright>
     <Description>Offline licence file verification: parses and validates ECDSA-signed licence envelopes against embedded trusted public keys.</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/repasscloud/license-server-app</RepositoryUrl>
