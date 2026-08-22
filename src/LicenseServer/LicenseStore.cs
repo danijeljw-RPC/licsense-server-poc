@@ -55,7 +55,15 @@ internal sealed class LicenseStore(
         if (product is null)
             return StoreResult<IssuedLicense>.BadRequest("The selected product does not exist or is archived.", "productId");
 
-        var metadata = new JsonObject { ["contactEmail"] = customerEmail };
+        var metadata = new JsonObject();
+        if (request.Metadata is not null)
+        {
+            foreach (var item in request.Metadata.Where(item =>
+                         !string.Equals(item.Key, "contactEmail", StringComparison.Ordinal)
+                         && item.Value is string or bool or int or long or decimal or double))
+                metadata[item.Key] = JsonValue.Create(item.Value);
+        }
+        metadata["contactEmail"] = customerEmail;
         var activationCode = activationCodeGenerator.Generate();
         var activationHash = activationCodeHasher.Hash(activationCode);
         var licenseId = await licenseIds.AllocateAsync(now, cancellationToken);

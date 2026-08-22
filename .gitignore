@@ -7,6 +7,7 @@ licenses/*.license
 .env
 .env.*
 !.env.example
+!.env.prod.example
 *.pfx
 *.p12
 *.key
@@ -17,3 +18,4 @@ coverage/
 .superpowers/
 dist/
 temp/
+scripts/test-publish.sh

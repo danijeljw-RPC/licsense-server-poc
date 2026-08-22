@@ -141,6 +141,140 @@ public sealed class BillingPolicyTests(PostgresWebFixture fixture)
 
     [Fact]
     [Trait("ExpectedGreenStage", "15")]
+    public void CurrentStripeCheckoutStateExtractsPurchaseOrderFromCustomFields()
+    {
+        var row = new WebhookInbox
+        {
+            Provider = "stripe",
+            ProviderEventId = "evt_poref",
+            EventType = "checkout.session.completed",
+            Category = "purchase",
+            ProtectedPayload = "unused",
+            Status = BillingInboxStatus.Categorized
+        };
+        using var document = JsonDocument.Parse("""
+        {
+          "id": "cs_poref",
+          "object": "checkout.session",
+          "customer": null,
+          "customer_details": { "name": "PO Buyer", "email": "po@example.com" },
+          "subscription": null,
+          "custom_fields": [
+            { "key": "poref", "label": { "custom": "PO Ref", "type": "custom" }, "optional": true,
+              "text": { "value": "abcd-1234" }, "type": "text" }
+          ]
+        }
+        """);
+
+        var snapshot = StripeBillingStateProvider.Parse(row, document.RootElement);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal("abcd-1234", snapshot.PurchaseOrder);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "15")]
+    public void CurrentStripeCheckoutStatePurchaseOrderIsNullWhenFieldAbsent()
+    {
+        var row = new WebhookInbox
+        {
+            Provider = "stripe",
+            ProviderEventId = "evt_no_poref",
+            EventType = "checkout.session.completed",
+            Category = "purchase",
+            ProtectedPayload = "unused",
+            Status = BillingInboxStatus.Categorized
+        };
+        using var document = JsonDocument.Parse("""
+        {
+          "id": "cs_no_poref",
+          "object": "checkout.session",
+          "customer": null,
+          "customer_details": { "name": "No PO Buyer", "email": "nopo@example.com" },
+          "subscription": null,
+          "custom_fields": []
+        }
+        """);
+
+        var snapshot = StripeBillingStateProvider.Parse(row, document.RootElement);
+
+        Assert.NotNull(snapshot);
+        Assert.Null(snapshot.PurchaseOrder);
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "15")]
+    public async Task CompletedOneTimePurchaseIssuesPerpetualLicenseFromProductMappingTerms()
+    {
+        var marker = Guid.NewGuid().ToString("N");
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        db.StripeProductMappings.Add(new StripeProductMapping
+        {
+            Id = Guid.NewGuid(),
+            StripeProductId = $"prod_{marker}",
+            ProductDefinitionId = RoadmapTestSupport.KnownProductId,
+            Edition = "enterprise",
+            LicenseType = "perpetual",
+            Seats = 500,
+            UpdatesUntil = null,
+            ExpiresAt = null,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var processor = scope.ServiceProvider.GetRequiredService<StripeBillingPolicyProcessor>();
+        var snapshot = OneTimePurchase(marker) with { PurchaseOrder = "abcd-1234" };
+
+        var result = await processor.ApplyAsync(snapshot);
+        var replay = await processor.ApplyAsync(snapshot);
+
+        Assert.Equal(BillingInboxStatus.Completed, result.Status);
+        Assert.Equal(BillingInboxStatus.Completed, replay.Status);
+        db.ChangeTracker.Clear();
+        Assert.Equal(0, await db.StripeSubscriptionMappings.CountAsync(
+            item => item.StripeSubscriptionId == $"sub_{marker}"));
+        var order = await db.StripeCheckoutSessionMappings.AsNoTracking()
+            .Where(item => item.StripeCheckoutSessionId == $"cs_{marker}")
+            .Select(item => item.LicenseOrder).SingleAsync();
+        var license = await db.Licenses.AsNoTracking().Include(item => item.Entitlements)
+            .SingleAsync(item => item.Id == order.LicenseRecordId);
+        var entitlement = license.Entitlements.Single();
+        Assert.Equal("enterprise", entitlement.Edition);
+        Assert.Equal("perpetual", entitlement.LicenseType);
+        Assert.Equal(500, entitlement.Seats);
+        Assert.Equal("abcd-1234", JsonDocument.Parse(license.MetadataJson)
+            .RootElement.GetProperty("purchaseOrder").GetString());
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "15")]
+    public async Task OneTimePurchaseAgainstSubscriptionOnlyMappingQuarantinesWithoutIssuingLicense()
+    {
+        var marker = Guid.NewGuid().ToString("N");
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        db.StripeProductMappings.Add(new StripeProductMapping
+        {
+            Id = Guid.NewGuid(),
+            StripeProductId = $"prod_{marker}",
+            ProductDefinitionId = RoadmapTestSupport.KnownProductId,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var before = await db.Licenses.CountAsync();
+        var processor = scope.ServiceProvider.GetRequiredService<StripeBillingPolicyProcessor>();
+
+        var result = await processor.ApplyAsync(OneTimePurchase(marker));
+
+        Assert.Equal(BillingInboxStatus.Quarantined, result.Status);
+        Assert.Equal("incomplete_one_time_product_mapping", result.ErrorCode);
+        Assert.Equal(before, await db.Licenses.CountAsync());
+    }
+
+    [Fact]
+    [Trait("ExpectedGreenStage", "15")]
     public async Task RenewalIsMonotonicAndSameInvoiceAcrossEventsIsIdempotent()
     {
         var marker = Guid.NewGuid().ToString("N");
@@ -366,6 +500,22 @@ public sealed class BillingPolicyTests(PostgresWebFixture fixture)
         CurrentPeriodEnd: DateTimeOffset.UtcNow.AddYears(1),
         CancelAtPeriodEnd: false,
         Seats: 2,
+        PaymentStatus: "paid");
+
+    private static BillingSnapshot OneTimePurchase(string marker) => new(
+        EventId: $"evt_purchase_{marker}",
+        Kind: BillingEventKind.PurchaseCompleted,
+        CustomerId: $"cus_{marker}",
+        CustomerName: $"Buyer {marker}",
+        CustomerEmail: $"buyer-{marker}@example.com",
+        ProductId: $"prod_{marker}",
+        PriceId: null,
+        SubscriptionId: null,
+        CheckoutSessionId: $"cs_{marker}",
+        InvoiceId: null,
+        CurrentPeriodEnd: null,
+        CancelAtPeriodEnd: false,
+        Seats: 0,
         PaymentStatus: "paid");
 
     private static string HashEmail(string email) => Convert.ToHexStringLower(

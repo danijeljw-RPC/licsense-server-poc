@@ -208,6 +208,7 @@ builder.Services.AddScoped<StripeBillingPolicyProcessor>();
 builder.Services.AddScoped<IBillingEventProcessor, StripeBillingEventProcessor>();
 builder.Services.AddScoped<BillingInboxProcessor>();
 builder.Services.AddScoped<BillingOperationsService>();
+builder.Services.AddScoped<StripeProductMappingService>();
 builder.Services.AddHostedService<BillingInboxWorker>();
 var mailerSendToken = builder.Configuration["MailerSend:ApiToken"];
 var mailerSendFrom = builder.Configuration["MailerSend:FromEmail"];
@@ -794,6 +795,50 @@ adminApi.MapPost("/billing/events/{id:guid}/reprocess", async (
     }
 }).RequireAuthorization(Permissions.BillingManage)
   .WithDescription("Resets only process state after an operator repairs mappings or configuration; payload and business data are immutable.");
+adminApi.MapGet("/stripe-product-mappings", async (
+    string? search, StripeProductMappingService service, CancellationToken ct) =>
+    Results.Ok(await service.SearchAsync(search, ct)))
+    .RequireAuthorization(Permissions.BillingManage);
+adminApi.MapPost("/stripe-product-mappings", async (
+    CreateStripeProductMappingRequest request, StripeProductMappingService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try
+    {
+        var mapping = await service.CreateAsync(request, context.User.Identity?.Name ?? "unknown", ct);
+        return Results.Created($"/api/v1/admin/stripe-product-mappings/{mapping.Id}", mapping);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["stripeProductMapping"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.BillingManage);
+adminApi.MapPut("/stripe-product-mappings/{id:guid}", async (
+    Guid id, UpdateStripeProductMappingRequest request, StripeProductMappingService service, IAntiforgery antiforgery,
+    HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try
+    {
+        await service.UpdateAsync(id, request, context.User.Identity?.Name ?? "unknown", ct);
+        return Results.NoContent();
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["stripeProductMapping"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.BillingManage);
+adminApi.MapDelete("/stripe-product-mappings/{id:guid}", async (
+    Guid id, StripeProductMappingService service, IAntiforgery antiforgery, HttpContext context, CancellationToken ct) =>
+{
+    if (!await ValidAntiforgeryAsync(antiforgery, context)) return AntiforgeryProblem();
+    try { await service.DeleteAsync(id, context.User.Identity?.Name ?? "unknown", ct); return Results.NoContent(); }
+    catch (InvalidOperationException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["stripeProductMapping"] = [exception.Message] });
+    }
+}).RequireAuthorization(Permissions.BillingManage);
 adminApi.MapGet("/api-keys", async (
     string? ownerUserId, ApiCredentialService service, HttpContext context, CancellationToken ct) =>
 {
