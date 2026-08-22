@@ -14,3 +14,4 @@ TestResults
 keys/*-private.pem
 !keys/license-primary-2026-public.pem
 README.md
+sql

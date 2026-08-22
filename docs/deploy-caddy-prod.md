@@ -28,7 +28,7 @@ whole repo works too, but nothing else in it is required at runtime.
 4. Copy the five files above onto the server (`git clone` this repo, or `scp` just those
    files).
 5. `cp .env.prod.example .env.prod`, then replace every `replace-with-*` value: image
-   tag (a released version, e.g. `v0.3.0`), domain, admin email, and all secrets/peppers.
+   tag (a released version, e.g. `v0.3.1`), domain, admin email, and all secrets/peppers.
    Keep `CUSTOMER_PORTAL_PUBLIC_BASE_URL` and `CADDY_DOMAIN` pointing at the same host.
 6. `sh ./docker-up-prod.sh`
 

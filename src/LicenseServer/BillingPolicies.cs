@@ -90,10 +90,12 @@ internal sealed class StripeBillingPolicyProcessor(
 
     private async Task<BillingEventProcessResult> PurchaseAsync(BillingSnapshot snapshot, CancellationToken cancellationToken)
     {
-        if (snapshot.CheckoutSessionId is null || snapshot.CustomerId is null || snapshot.ProductId is null)
+        if (snapshot.CheckoutSessionId is null || snapshot.ProductId is null)
             return Quarantine("incomplete_purchase_state");
         var isSubscription = snapshot.SubscriptionId is not null;
-        if (isSubscription && (snapshot.PriceId is null || snapshot.CurrentPeriodEnd is null))
+        // Subscriptions always have a real Stripe customer; only guest/one-time checkouts
+        // can legitimately have a null CustomerId (Stripe skipped creating a Customer object).
+        if (isSubscription && (snapshot.CustomerId is null || snapshot.PriceId is null || snapshot.CurrentPeriodEnd is null))
             return Quarantine("incomplete_purchase_state");
         if (snapshot.PaymentStatus is not ("paid" or "no_payment_required"))
             return BillingEventProcessResult.Ignored();
@@ -134,35 +136,64 @@ internal sealed class StripeBillingPolicyProcessor(
             || string.IsNullOrWhiteSpace(snapshot.CustomerName))
             return Quarantine("invalid_customer_contact");
 
-        var customerMapping = await db.StripeCustomerMappings.Include(item => item.Customer)
-            .SingleOrDefaultAsync(item => item.StripeCustomerId == snapshot.CustomerId, cancellationToken);
         LicenseServer.Data.Customer customer;
-        if (customerMapping is null)
+        if (snapshot.CustomerId is null)
         {
-            customer = new LicenseServer.Data.Customer
+            // Guest checkout: Stripe never attached a Customer object (e.g. a payment link
+            // configured with customer_creation=if_required). Key identity off the verified
+            // checkout email instead of a Stripe customer id, so licensing doesn't depend on
+            // how the link happens to be configured on Stripe's side.
+            var existing = await db.Customers.SingleOrDefaultAsync(
+                item => item.NormalizedEmail == normalizedEmail, cancellationToken);
+            if (existing is null)
             {
-                Id = Guid.NewGuid(),
-                Name = snapshot.CustomerName.Trim(),
-                Email = normalizedEmail!,
-                NormalizedEmail = normalizedEmail!,
-                CreatedAt = clock.GetUtcNow()
-            };
-            db.Customers.Add(customer);
-            db.StripeCustomerMappings.Add(new StripeCustomerMapping
+                customer = new LicenseServer.Data.Customer
+                {
+                    Id = Guid.NewGuid(),
+                    Name = snapshot.CustomerName.Trim(),
+                    Email = normalizedEmail!,
+                    NormalizedEmail = normalizedEmail!,
+                    CreatedAt = clock.GetUtcNow()
+                };
+                db.Customers.Add(customer);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            else
             {
-                Id = Guid.NewGuid(),
-                StripeCustomerId = snapshot.CustomerId,
-                Customer = customer,
-                CustomerId = customer.Id,
-                CreatedAt = clock.GetUtcNow()
-            });
-            await db.SaveChangesAsync(cancellationToken);
+                customer = existing;
+            }
         }
         else
         {
-            customer = customerMapping.Customer;
-            if (!string.Equals(customer.NormalizedEmail, normalizedEmail, StringComparison.Ordinal))
-                return Quarantine("conflicting_customer_mapping");
+            var customerMapping = await db.StripeCustomerMappings.Include(item => item.Customer)
+                .SingleOrDefaultAsync(item => item.StripeCustomerId == snapshot.CustomerId, cancellationToken);
+            if (customerMapping is null)
+            {
+                customer = new LicenseServer.Data.Customer
+                {
+                    Id = Guid.NewGuid(),
+                    Name = snapshot.CustomerName.Trim(),
+                    Email = normalizedEmail!,
+                    NormalizedEmail = normalizedEmail!,
+                    CreatedAt = clock.GetUtcNow()
+                };
+                db.Customers.Add(customer);
+                db.StripeCustomerMappings.Add(new StripeCustomerMapping
+                {
+                    Id = Guid.NewGuid(),
+                    StripeCustomerId = snapshot.CustomerId,
+                    Customer = customer,
+                    CustomerId = customer.Id,
+                    CreatedAt = clock.GetUtcNow()
+                });
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            else
+            {
+                customer = customerMapping.Customer;
+                if (!string.Equals(customer.NormalizedEmail, normalizedEmail, StringComparison.Ordinal))
+                    return Quarantine("conflicting_customer_mapping");
+            }
         }
 
         var contract = new BillingContract
