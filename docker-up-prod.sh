@@ -35,6 +35,15 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
+# Compose gives already-exported shell/session env vars precedence over --env-file, so a stray
+# `export IMAGE_TAG=...` (or any other var also set in .env.prod) left over in this shell would
+# silently shadow the value in the file. Re-export every var from .env.prod now so the file is
+# always the source of truth, no matter what is already in the environment.
+set -a
+# shellcheck disable=SC1090
+. "./$ENV_FILE"
+set +a
+
 # LICENSE_SIGNING_KEY_DIR is read directly out of the env file here (rather than left to Compose)
 # so a missing key directory fails before any container starts, with a clear message.
 KEY_DIR=$(sed -n 's/^[[:space:]]*LICENSE_SIGNING_KEY_DIR[[:space:]]*=[[:space:]]*\([^#[:space:]]*\).*/\1/p' "$ENV_FILE" | tail -n 1)
