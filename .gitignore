@@ -17,3 +17,4 @@ coverage/
 .superpowers/
 dist/
 temp/
+scripts/test-publish.sh
